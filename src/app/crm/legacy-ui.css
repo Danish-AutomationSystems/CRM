@@ -1,0 +1,375 @@
+:root {
+  --crm-brand: #2f6f4e;
+  --crm-brand-strong: #244f3a;
+  --crm-bg: #f4f6f7;
+  --crm-panel: #ffffff;
+  --crm-text: #1e2a33;
+  --crm-muted: #63727f;
+  --crm-line: #d9e1e8;
+  --crm-blue: #2f6fa3;
+  --crm-amber: #a86614;
+  --crm-red: #b42318;
+  --crm-shadow: 0 16px 42px rgba(31, 41, 51, 0.12);
+}
+
+.legacy-crm {
+  min-height: 100vh;
+  background: var(--crm-bg);
+  color: var(--crm-text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.legacy-busy {
+  height: 3px;
+  background: var(--crm-brand);
+}
+
+.legacy-header {
+  background: #1f352a;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.legacy-header-inner {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  margin: 0 auto;
+  max-width: 1220px;
+  padding: 10px 18px;
+}
+
+.legacy-brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 220px;
+}
+
+.legacy-brand b,
+.legacy-brand small {
+  display: block;
+}
+
+.legacy-brand small {
+  color: #c7d6cc;
+  font-size: 12px;
+}
+
+.legacy-mark {
+  background: var(--crm-brand);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(3, 1fr);
+  height: 34px;
+  padding: 7px;
+  width: 34px;
+}
+
+.legacy-mark i {
+  background: #ffffff;
+  border-radius: 999px;
+}
+
+.legacy-nav {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.legacy-nav-button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: #c5d6c9;
+  cursor: pointer;
+  font: 700 13px Arial, Helvetica, sans-serif;
+  padding: 8px 13px;
+}
+
+.legacy-nav-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.legacy-nav-button.is-active {
+  background: var(--crm-brand);
+  color: #fff;
+}
+
+.legacy-user-chip {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+  text-align: right;
+}
+
+.legacy-user-name {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.legacy-user-email {
+  color: #c7d6cc;
+  font-size: 11px;
+}
+
+.legacy-user-chip span {
+  background: #e7efe9;
+  border-radius: 999px;
+  color: var(--crm-brand-strong);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.legacy-main {
+  margin: 0 auto;
+  max-width: 1220px;
+  padding: 22px 18px 96px;
+}
+
+.legacy-page-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.legacy-page-head h1 {
+  font-size: 26px;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.legacy-page-head p,
+.legacy-panel p,
+.legacy-empty {
+  color: var(--crm-muted);
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+
+.legacy-actions,
+.legacy-grid-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.legacy-page-head button,
+.legacy-actions button,
+.legacy-grid-toolbar button,
+.legacy-panel button,
+.legacy-lock-card button,
+.legacy-primary-link {
+  background: var(--crm-brand);
+  border: 1px solid var(--crm-brand);
+  border-radius: 7px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 10px 12px;
+  text-decoration: none;
+}
+
+.legacy-actions a,
+.legacy-grid-toolbar button,
+.legacy-panel button:not(:first-child) {
+  background: #fff;
+  border-color: var(--crm-line);
+  color: var(--crm-brand-strong);
+  text-decoration: none;
+}
+
+.legacy-stats {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.legacy-stat,
+.legacy-panel,
+.legacy-lock-card {
+  background: var(--crm-panel);
+  border: 1px solid var(--crm-line);
+  border-radius: 8px;
+  box-shadow: var(--crm-shadow);
+}
+
+.legacy-stat {
+  padding: 16px;
+}
+
+.legacy-stat-value {
+  color: var(--crm-brand-strong);
+  font-size: 25px;
+  font-weight: 800;
+}
+
+.legacy-stat-label {
+  color: var(--crm-muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.legacy-panel {
+  margin-bottom: 14px;
+  padding: 16px;
+}
+
+.legacy-panel-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.legacy-list {
+  display: grid;
+  gap: 8px;
+}
+
+.legacy-list-row {
+  align-items: center;
+  background: #fbfcfb;
+  border: 1px solid var(--crm-line);
+  border-radius: 7px;
+  color: var(--crm-text);
+  display: flex;
+  justify-content: space-between;
+  padding: 11px 12px;
+  text-align: left;
+}
+
+.legacy-list-row span {
+  color: var(--crm-muted);
+  font-size: 12px;
+}
+
+.legacy-panel input,
+.legacy-panel select,
+.legacy-panel textarea {
+  border: 1px solid var(--crm-line);
+  border-radius: 7px;
+  color: var(--crm-text);
+  font: 14px Arial, Helvetica, sans-serif;
+  min-height: 38px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.legacy-panel textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.legacy-grid-toolbar {
+  margin-top: 12px;
+}
+
+.legacy-filter-grid {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) 150px 150px 120px auto;
+}
+
+.legacy-checkbox {
+  align-items: center;
+  color: var(--crm-muted);
+  display: flex;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.legacy-checkbox input {
+  min-height: auto;
+  width: auto;
+}
+
+.legacy-admin-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.legacy-lock-card {
+  margin: 72px auto;
+  max-width: 520px;
+  padding: 28px;
+  text-align: center;
+}
+
+.legacy-lock-card h1 {
+  font-size: 28px;
+  margin: 0 0 10px;
+}
+
+.legacy-quick-log {
+  background: var(--crm-brand);
+  border: 0;
+  border-radius: 999px;
+  bottom: 20px;
+  box-shadow: var(--crm-shadow);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 13px 17px;
+  position: fixed;
+  right: 20px;
+}
+
+.legacy-toast {
+  bottom: 22px;
+  left: 50%;
+  position: fixed;
+  transform: translateX(-50%);
+}
+
+@media (max-width: 760px) {
+  .legacy-header-inner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .legacy-brand {
+    min-width: 0;
+  }
+
+  .legacy-nav {
+    order: 3;
+    width: 100%;
+  }
+
+  .legacy-user-chip {
+    margin-left: auto;
+  }
+
+  .legacy-page-head,
+  .legacy-list-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .legacy-stats,
+  .legacy-admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .legacy-filter-grid {
+    grid-template-columns: 1fr;
+  }
+}
