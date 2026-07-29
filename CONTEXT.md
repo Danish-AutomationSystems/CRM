@@ -14,7 +14,7 @@ The production app is deployed at:
 
 - https://as-crm-ten.vercel.app
 
-Custom CRM subdomain setup in progress:
+Custom CRM subdomain:
 
 - https://crm.automationsystems.info
 
@@ -60,7 +60,7 @@ Pending/manual:
 - Supabase URL Configuration must include the production site/callback URLs.
 - Real Google sign-in must be tested after OAuth setup.
 - If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
-- Custom CRM subdomain DNS must be updated in GoDaddy, then verified in Vercel.
+- Custom CRM subdomain DNS is verified in Vercel; Supabase/Google OAuth URL configuration still needs to be updated for the subdomain before Google login is tested there.
 
 ## Architecture Overview
 
@@ -204,9 +204,9 @@ Custom domain attached to the Vercel project:
 
 - `crm.automationsystems.info`
 
-GoDaddy DNS is currently required because nameservers are still GoDaddy (`ns25.domaincontrol.com`, `ns26.domaincontrol.com`).
+GoDaddy DNS is used because nameservers are still GoDaddy (`ns25.domaincontrol.com`, `ns26.domaincontrol.com`).
 
-Required GoDaddy DNS record for Vercel:
+GoDaddy DNS record configured for Vercel:
 
 ```text
 Type: CNAME
@@ -231,6 +231,14 @@ After GoDaddy DNS changes, verify:
 ```bash
 npx vercel domains verify crm.automationsystems.info
 ```
+
+Current verification status:
+
+- `npx vercel domains verify crm.automationsystems.info` returned configured correctly.
+- `http://crm.automationsystems.info/login` returned HTTP 200.
+- Initial HTTPS checks failed while the certificate was not ready.
+- `npx vercel certs issue crm.automationsystems.info` succeeded.
+- `https://crm.automationsystems.info/login` now returns HTTP 200.
 
 Build settings:
 
