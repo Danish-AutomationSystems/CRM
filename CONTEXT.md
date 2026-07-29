@@ -55,6 +55,7 @@ Pending/manual:
 - Google Cloud OAuth Client ID and Client Secret must be created and pasted into Supabase.
 - Supabase URL Configuration must include the production site/callback URLs.
 - Real Google sign-in must be tested after OAuth setup.
+- If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
 
 ## Architecture Overview
 
@@ -321,6 +322,8 @@ https://as-crm-ten.vercel.app
 Redirect URLs:
 https://as-crm-ten.vercel.app/auth/callback
 ```
+
+Important: if `Site URL` remains `http://localhost:3000`, Supabase can complete Google sign-in and then send the user back to localhost with `?code=...`. The Next.js login code sends the browser origin as `redirectTo`, so a localhost redirect after production login is a Supabase dashboard URL configuration problem, not a Vercel redeploy problem.
 
 No Vercel redeploy is required after enabling the Google provider.
 
