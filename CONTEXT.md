@@ -255,11 +255,17 @@ Do this:
 2. Select the newly created project after Google finishes provisioning it.
 3. Go to `Branding` and complete the OAuth consent basics:
    - App name: `AS CRM`
-   - User support email: company/testing/admin email
-   - Developer contact email: company/testing/admin email
+   - User support email: `testing@automationsystems.org` if available in the dropdown; otherwise use the company admin/owner email shown by Google.
+   - App logo: skip for now.
+   - Application home page: `https://as-crm-ten.vercel.app`
+   - Application privacy policy link: leave blank/skip if Google allows it for Internal; otherwise add a company policy URL later.
+   - Application terms of service link: leave blank/skip if Google allows it for Internal; otherwise add a company terms URL later.
+   - Authorized domains: add `automationsystems.org` if Google asks for domains.
+   - Developer contact email: `testing@automationsystems.org` if available; otherwise use the company admin/owner email.
 4. Go to `Audience`:
-   - If `Internal` is available, choose it for company-only access.
-   - If only `External` is available, use External and add company test users while testing. The CRM backend still blocks non-`automationsystems.org` accounts.
+   - Select `Internal` if available. This is expected because the project is under the `automationsystems.org` organization.
+   - Do not use `External` unless Google does not offer Internal. If External is required, keep Publishing status as Testing and add company test users.
+   - No broad public audience is needed; this CRM is company-only.
 5. Go to `Clients`.
 6. Click `Create client`.
 7. Application type: `Web application`.
