@@ -29,6 +29,7 @@ Active migration branch:
 - `CONTEXT.md` intentionally documents secret names, locations, and formats, not raw secret values.
 - If a future task requires a secret value, ask the project owner or read it from an authorized local ignored file/environment; never print it in chat or commit it.
 - The Google sign-in domain restriction is enforced in both the OAuth request hint and backend auth checks.
+- Keep this file updated whenever project setup, deployment state, architecture, environment variable requirements, external service configuration, or important decisions change.
 
 ## Current Production Status
 
@@ -235,36 +236,42 @@ npx vercel deploy --prod --yes
 
 The current sign-in error `Unsupported provider: provider is not enabled` means Supabase Google Auth is not fully enabled/configured yet.
 
-### On The Current Google Cloud Screen
+### Current Google Cloud Project Creation
 
-The user is currently on the Google Cloud project picker in Google Auth Platform.
+The Google Cloud OAuth project is being created inside the `automationsystems.org` Google Cloud organization.
+
+Current project creation values shown in Google Cloud:
+
+```text
+Project name: AS CRM Auth
+Project ID: as-crm-auth
+Organisation: automationsystems.org
+Parent resource: automationsystems.org
+```
 
 Do this:
 
-1. Click `New project`.
-2. Name it `AS CRM Auth`.
-3. If Google only shows `No organisation`, keep that. It is acceptable; the CRM backend still enforces `automationsystems.org`.
-4. Click `Create`.
-5. Select the newly created project.
-6. Go to `Branding` and complete the OAuth consent basics:
+1. Click `Create`.
+2. Select the newly created project after Google finishes provisioning it.
+3. Go to `Branding` and complete the OAuth consent basics:
    - App name: `AS CRM`
    - User support email: company/testing/admin email
    - Developer contact email: company/testing/admin email
-7. Go to `Audience`:
+4. Go to `Audience`:
    - If `Internal` is available, choose it for company-only access.
    - If only `External` is available, use External and add company test users while testing. The CRM backend still blocks non-`automationsystems.org` accounts.
-8. Go to `Clients`.
-9. Click `Create client`.
-10. Application type: `Web application`.
-11. Name: `AS CRM Supabase Auth`.
-12. Add this Authorized redirect URI:
+5. Go to `Clients`.
+6. Click `Create client`.
+7. Application type: `Web application`.
+8. Name: `AS CRM Supabase Auth`.
+9. Add this Authorized redirect URI:
 
 ```text
 https://cympxjsqetzivwxwbhob.supabase.co/auth/v1/callback
 ```
 
-13. Click `Create`.
-14. Copy the generated `Client ID` and `Client Secret`.
+10. Click `Create`.
+11. Copy the generated `Client ID` and `Client Secret`.
 
 ### In Supabase
 
@@ -391,4 +398,3 @@ Start here:
 5. Confirm production env names with `npx vercel env ls`.
 6. Run the verification commands before editing deployment-sensitive behavior.
 7. Never overwrite user changes or remove existing migration parity code without proving the replacement.
-
