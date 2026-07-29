@@ -9,15 +9,10 @@ import { createQuoteService } from '../../../../../../server/quotes/service';
 const service = createQuoteService(quoteRepository);
 
 type RouteContext = {
-  params:
-    | Promise<{
-        quoteNo: string;
-        rev: string;
-      }>
-    | {
-        quoteNo: string;
-        rev: string;
-      };
+  params: Promise<{
+    quoteNo: string;
+    rev: string;
+  }>;
 };
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
