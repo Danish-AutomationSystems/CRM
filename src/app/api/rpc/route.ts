@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { getRequestContext } from '../../../server/auth/context';
+import '../../../server/admin/rpc';
 import '../../../server/cases/rpc';
 import '../../../server/customers/rpc';
 import '../../../server/dashboard/rpc';
