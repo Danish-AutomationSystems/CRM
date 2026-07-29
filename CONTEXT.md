@@ -55,12 +55,13 @@ Completed:
 
 Pending/manual:
 
-- Google provider must be enabled in Supabase Auth.
-- Google Cloud OAuth Client ID and Client Secret must be created and pasted into Supabase.
-- Supabase URL Configuration must include the production site/callback URLs.
-- Real Google sign-in must be tested after OAuth setup.
+- Google provider has been enabled in Supabase Auth.
+- Google Cloud OAuth Client ID and Client Secret have been pasted into Supabase.
+- Supabase URL Configuration has been updated for the CRM subdomain.
+- Google OAuth client `AS-WEBAPP` has been updated for the CRM subdomain.
+- Real Google sign-in must be tested on `https://crm.automationsystems.info/login`.
 - If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
-- Custom CRM subdomain DNS is verified in Vercel; Supabase/Google OAuth URL configuration still needs to be updated for the subdomain before Google login is tested there.
+- Custom CRM subdomain DNS is verified in Vercel.
 
 ## Architecture Overview
 
@@ -239,6 +240,7 @@ Current verification status:
 - Initial HTTPS checks failed while the certificate was not ready.
 - `npx vercel certs issue crm.automationsystems.info` succeeded.
 - `https://crm.automationsystems.info/login` now returns HTTP 200.
+- After DNS setup, the local/router resolver briefly failed to resolve `crm.automationsystems.info`, while public DNS (`8.8.8.8` and `1.1.1.1`) and Vercel verification were correct. A direct HTTPS probe with `curl --resolve crm.automationsystems.info:443:216.198.79.1` returned HTTP 200. Treat local resolve failures as DNS cache propagation unless public DNS or Vercel verification fails.
 
 Build settings:
 
@@ -370,7 +372,7 @@ https://as-crm-ten.vercel.app/auth/callback
 
 Important: if `Site URL` remains `http://localhost:3000`, Supabase can complete Google sign-in and then send the user back to localhost with `?code=...`. The Next.js login code sends the browser origin as `redirectTo`, so a localhost redirect after production login is a Supabase dashboard URL configuration problem, not a Vercel redeploy problem.
 
-After custom CRM subdomain verification, update Supabase Auth URL Configuration to:
+Supabase Auth URL Configuration has been updated to:
 
 ```text
 Site URL:
@@ -381,7 +383,7 @@ https://crm.automationsystems.info/auth/callback
 https://as-crm-ten.vercel.app/auth/callback
 ```
 
-After custom CRM subdomain verification, update Google Cloud OAuth client `AS-WEBAPP`:
+Google Cloud OAuth client `AS-WEBAPP` has been updated to include:
 
 ```text
 Authorized JavaScript origins:
