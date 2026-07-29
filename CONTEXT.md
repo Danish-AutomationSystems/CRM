@@ -52,6 +52,12 @@ Completed:
 - Deployment smoke checks after production deploy:
   - `/login` returned HTTP 200
   - `/crm` redirected to login for unauthenticated users
+- Auto-provision deployment:
+  - Commit: `4076fdf feat: auto-provision company users as L1`
+  - Vercel deployment: `dpl_5c9DWd2aQkSzdoWSdzH5CLUEwNs4`
+  - Production aliases moved to the new deployment, including `https://crm.automationsystems.info`
+  - `https://as-crm-ten.vercel.app/login` returned HTTP 200
+  - `https://crm.automationsystems.info/login` returned HTTP 200 via direct Vercel resolve probe
 
 Pending/manual:
 
