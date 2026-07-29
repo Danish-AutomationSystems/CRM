@@ -14,10 +14,9 @@ The production app is deployed at:
 
 - https://as-crm-ten.vercel.app
 
-Custom domain setup in progress:
+Custom CRM subdomain setup in progress:
 
-- https://automationsystems.info
-- https://www.automationsystems.info
+- https://crm.automationsystems.info
 
 The source repository is:
 
@@ -61,7 +60,7 @@ Pending/manual:
 - Supabase URL Configuration must include the production site/callback URLs.
 - Real Google sign-in must be tested after OAuth setup.
 - If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
-- Custom domain DNS must be updated in GoDaddy, then verified in Vercel.
+- Custom CRM subdomain DNS must be updated in GoDaddy, then verified in Vercel.
 
 ## Architecture Overview
 
@@ -201,46 +200,36 @@ Production alias:
 
 - `https://as-crm-ten.vercel.app`
 
-Custom domains attached to the Vercel project:
+Custom domain attached to the Vercel project:
 
-- `automationsystems.info`
-- `www.automationsystems.info`
+- `crm.automationsystems.info`
 
 GoDaddy DNS is currently required because nameservers are still GoDaddy (`ns25.domaincontrol.com`, `ns26.domaincontrol.com`).
 
-Required GoDaddy DNS records for Vercel:
+Required GoDaddy DNS record for Vercel:
 
 ```text
-Type: A
-Name: @
-Value: 216.198.79.1
-TTL: default / 1 hour
-
-Type: A
-Name: @
-Value: 64.29.17.1
-TTL: default / 1 hour
-
 Type: CNAME
-Name: www
+Name: crm
 Value: 7633a7ffb603e0b3.vercel-dns-017.com
 TTL: default / 1 hour
 ```
 
-Alternative, instead of individual DNS records, change domain nameservers at GoDaddy to:
+Do not point the apex/root domain `automationsystems.info` to this CRM unless explicitly requested. The intended CRM URL is the subdomain `crm.automationsystems.info`.
+
+Alternative, instead of an individual DNS record, change domain nameservers at GoDaddy to:
 
 ```text
 ns1.vercel-dns.com
 ns2.vercel-dns.com
 ```
 
-Prefer individual DNS records if the domain has any existing email/DNS records that must be preserved.
+Prefer the individual `crm` CNAME record so existing root-domain website/email/DNS records remain untouched.
 
 After GoDaddy DNS changes, verify:
 
 ```bash
-npx vercel domains verify automationsystems.info
-npx vercel domains verify www.automationsystems.info
+npx vercel domains verify crm.automationsystems.info
 ```
 
 Build settings:
@@ -373,24 +362,22 @@ https://as-crm-ten.vercel.app/auth/callback
 
 Important: if `Site URL` remains `http://localhost:3000`, Supabase can complete Google sign-in and then send the user back to localhost with `?code=...`. The Next.js login code sends the browser origin as `redirectTo`, so a localhost redirect after production login is a Supabase dashboard URL configuration problem, not a Vercel redeploy problem.
 
-After custom domain verification, update Supabase Auth URL Configuration to:
+After custom CRM subdomain verification, update Supabase Auth URL Configuration to:
 
 ```text
 Site URL:
-https://automationsystems.info
+https://crm.automationsystems.info
 
 Redirect URLs:
-https://automationsystems.info/auth/callback
-https://www.automationsystems.info/auth/callback
+https://crm.automationsystems.info/auth/callback
 https://as-crm-ten.vercel.app/auth/callback
 ```
 
-After custom domain verification, update Google Cloud OAuth client `AS-WEBAPP`:
+After custom CRM subdomain verification, update Google Cloud OAuth client `AS-WEBAPP`:
 
 ```text
 Authorized JavaScript origins:
-https://automationsystems.info
-https://www.automationsystems.info
+https://crm.automationsystems.info
 
 Authorized redirect URIs:
 https://cympxjsqetzivwxwbhob.supabase.co/auth/v1/callback
