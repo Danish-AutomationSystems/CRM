@@ -69,6 +69,19 @@ Final result: failed because Playwright Chromium is not installed. No browser sm
 
 ## Concerns
 
-- Playwright browsers are missing locally, so `npm run test:e2e` could not execute browser assertions. Exact missing executable:
-  `C:\Users\danis\AppData\Local\ms-playwright\chromium_headless_shell-1234\chrome-headless-shell-win64\chrome-headless-shell.exe`.
+- Initial Playwright execution failed because Chromium was missing locally. After running `npx playwright install chromium`, the mocked Supabase smoke command passed with 2 tests.
 - The mocked-auth Playwright smoke path expects `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:3999` and a dummy publishable key for local no-Google testing. Real preview validation still needs an actual Supabase project and test CRM user.
+
+## Post-Report Verification Update
+
+```powershell
+npx playwright install chromium
+```
+
+Result: Chromium and the headless shell installed successfully.
+
+```powershell
+$env:NEXT_PUBLIC_SUPABASE_URL='http://127.0.0.1:3999'; $env:NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY='playwright-publishable-key'; $env:CRM_ALLOWED_DOMAIN='automationsystems.org'; npm run test:e2e
+```
+
+Result: passed, 2 Playwright smoke tests.

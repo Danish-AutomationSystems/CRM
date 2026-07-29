@@ -159,7 +159,7 @@ test('mocked authenticated session renders critical CRM route containers', async
   await page.getByRole('button', { name: /Panel upgrade/ }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
   await expect(page.getByRole('heading', { name: 'Case' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Download quotation' })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: 'Download PDF' })).toHaveAttribute(
     'href',
     '/api/download/quote/QTN-2026-0001/0?format=html'
   );
