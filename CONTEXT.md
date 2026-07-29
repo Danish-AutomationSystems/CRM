@@ -242,6 +242,7 @@ Current verification status:
 - `https://crm.automationsystems.info/login` now returns HTTP 200.
 - After DNS setup, the local/router resolver briefly failed to resolve `crm.automationsystems.info`, while public DNS (`8.8.8.8` and `1.1.1.1`) and Vercel verification were correct. A direct HTTPS probe with `curl --resolve crm.automationsystems.info:443:216.198.79.1` returned HTTP 200. Treat local resolve failures as DNS cache propagation unless public DNS or Vercel verification fails.
 - User's Chrome showed `DNS_PROBE_FINISHED_NXDOMAIN` after setup. Re-checks showed public DNS still resolves the CNAME, Vercel verification is configured correctly, and direct HTTPS probing returns HTTP 200. Recommended user-side fix is DNS/browser cache flush or temporarily switching DNS to Google/Cloudflare.
+- GoDaddy DNS screenshot reviewed: `CNAME` record with `Name: crm` and value `7633a7ffb603e0b3.vercel-dns-017.com.` is correct. Existing root `A @ WebsiteBuilder Site` and `CNAME www -> automationsystems.info.` do not block the intended `crm.automationsystems.info` subdomain.
 
 Build settings:
 
