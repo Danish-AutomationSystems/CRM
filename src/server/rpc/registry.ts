@@ -38,6 +38,7 @@ export type RpcRegistry = {
     context: CrmContext
   ) => Promise<RpcResult<T>>;
   hasRpc: (name: string) => boolean;
+  listRegisteredRpcs: () => string[];
 };
 
 function normalizeName(name: string): string {
@@ -81,6 +82,10 @@ export function createRpcRegistry(): RpcRegistry {
 
     hasRpc(name) {
       return handlers.has(normalizeName(name));
+    },
+
+    listRegisteredRpcs() {
+      return [...handlers.keys()].sort((a, b) => a.localeCompare(b));
     }
   };
 }
@@ -90,3 +95,4 @@ const defaultRegistry = createRpcRegistry();
 export const registerRpc = defaultRegistry.registerRpc;
 export const callRpc = defaultRegistry.callRpc;
 export const hasRpc = defaultRegistry.hasRpc;
+export const listRegisteredRpcs = defaultRegistry.listRegisteredRpcs;
