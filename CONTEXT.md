@@ -269,7 +269,7 @@ Do this:
 5. Go to `Clients`.
 6. Click `Create client`.
 7. Application type: `Web application`.
-8. Name: `AS CRM Supabase Auth`.
+8. Name: `AS-WEBAPP`.
 9. Add this Authorized redirect URI:
 
 ```text
@@ -278,6 +278,12 @@ https://cympxjsqetzivwxwbhob.supabase.co/auth/v1/callback
 
 10. Click `Create`.
 11. Copy the generated `Client ID` and `Client Secret`.
+
+Current status:
+
+- Web application OAuth client has been created with name `AS-WEBAPP`.
+- Authorized redirect URI has been pasted into that client.
+- Next step is to copy Google-generated `Client ID` and `Client Secret` into Supabase Google provider. Do not commit those raw values.
 
 ### In Supabase
 
