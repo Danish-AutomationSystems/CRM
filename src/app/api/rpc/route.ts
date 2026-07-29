@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 
 import { getRequestContext } from '../../../server/auth/context';
+import '../../../server/cases/rpc';
 import '../../../server/customers/rpc';
+import '../../../server/dashboard/rpc';
 import { callRpc } from '../../../server/rpc/registry';
 import { normalizeRpcError, rpcBadRequest } from '../../../server/rpc/errors';
 
