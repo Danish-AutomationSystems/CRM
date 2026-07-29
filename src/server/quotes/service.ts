@@ -67,6 +67,8 @@ export type QuoteRow = {
   title: string;
   source: 'Generated' | 'External';
   fileName: string;
+  uploadMimeType: string;
+  uploadDataB64: string;
   templateId: string;
   templateName: string;
   status: 'Draft' | 'Sent' | 'Superseded';
@@ -292,6 +294,20 @@ function quoteDownloadUrl(quoteNo: string, rev: number, format = 'html'): string
   return `/api/download/quote/${encodeURIComponent(quoteNo)}/${rev}${suffix}`;
 }
 
+function cleanUploadFileName(value: unknown): string {
+  const fileName = asText(value)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+  return fileName || 'quotation';
+}
+
+function cleanMimeType(value: unknown): string {
+  const text = asText(value).toLowerCase();
+  return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(text) ? text : 'application/octet-stream';
+}
+
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -387,6 +403,14 @@ async function loadQuote(repo: QuoteRepository, user: CrmContext, quoteNo: strin
 }
 
 function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDownloadArtifact {
+  if (quote.uploadDataB64) {
+    return {
+      fileName: cleanUploadFileName(quote.fileName),
+      mimeType: cleanMimeType(quote.uploadMimeType),
+      body: Buffer.from(quote.uploadDataB64, 'base64')
+    };
+  }
+
   return {
     fileName: safeQuoteFileName(quote.quoteNo, quote.rev, customer.name),
     mimeType: 'text/html; charset=utf-8',
@@ -439,6 +463,8 @@ export function createQuoteService(repo: QuoteRepository) {
           title,
           source: 'Generated',
           fileName: '',
+          uploadMimeType: '',
+          uploadDataB64: '',
           templateId,
           templateName,
           status: 'Draft',
@@ -488,6 +514,8 @@ export function createQuoteService(repo: QuoteRepository) {
       const status = quoteStatus(input.status, 'Sent');
       const total = nonnegativeNumber(input.total, 0);
       const currency = asText(input.currency) || DEFAULT_SETTINGS.CURRENCY;
+      const fileName = cleanUploadFileName(input.fileName);
+      const uploadMimeType = cleanMimeType(input.mimeType);
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
@@ -521,7 +549,9 @@ export function createQuoteService(repo: QuoteRepository) {
           customerId: customer.id,
           title,
           source: 'External',
-          fileName: asText(input.fileName) || 'quotation',
+          fileName,
+          uploadMimeType,
+          uploadDataB64: dataB64,
           templateId: '',
           templateName: '',
           status,

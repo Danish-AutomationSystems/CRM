@@ -79,6 +79,8 @@ type QuoteDbRow = {
   title: string;
   source: QuoteRow['source'];
   file_name: string | null;
+  upload_mime_type: string | null;
+  upload_data_b64: string | null;
   template_id: string | null;
   template_name: string | null;
   status: QuoteRow['status'];
@@ -128,6 +130,10 @@ function dbNumber(value: number | ''): number | null {
 
 function dbDate(value: string): string | null {
   return value || null;
+}
+
+function dbBytes(value: string): Buffer | null {
+  return value ? Buffer.from(value, 'base64') : null;
 }
 
 function dbEmail(value: string): string | null {
@@ -215,6 +221,8 @@ function toQuote(row: QuoteDbRow): QuoteRow {
     title: row.title,
     source: row.source,
     fileName: row.file_name ?? '',
+    uploadMimeType: row.upload_mime_type ?? '',
+    uploadDataB64: row.upload_data_b64 ?? '',
     templateId: row.template_id ?? '',
     templateName: row.template_name ?? '',
     status: row.status,
@@ -380,7 +388,9 @@ export class PostgresQuoteRepository implements QuoteRepository {
 
   async getQuote(quoteNo: string, rev: number): Promise<QuoteRow | null> {
     const rows = (await this.db`
-      select quote_no, rev, case_id, customer_id, title, source, file_name, template_id,
+      select quote_no, rev, case_id, customer_id, title, source, file_name,
+             upload_mime_type, coalesce(encode(upload_data, 'base64'), '') as upload_data_b64,
+             template_id,
              template_name, status, subtotal, tax_pct, tax_amount, total, currency,
              valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
       from public.quotations
@@ -394,7 +404,9 @@ export class PostgresQuoteRepository implements QuoteRepository {
 
   async listQuotesByQuoteNo(quoteNo: string): Promise<QuoteRow[]> {
     const rows = (await this.db`
-      select quote_no, rev, case_id, customer_id, title, source, file_name, template_id,
+      select quote_no, rev, case_id, customer_id, title, source, file_name,
+             upload_mime_type, coalesce(encode(upload_data, 'base64'), '') as upload_data_b64,
+             template_id,
              template_name, status, subtotal, tax_pct, tax_amount, total, currency,
              valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
       from public.quotations
@@ -407,13 +419,14 @@ export class PostgresQuoteRepository implements QuoteRepository {
   async createQuote(row: QuoteRow): Promise<void> {
     await this.db`
       insert into public.quotations (
-        quote_no, rev, case_id, customer_id, title, source, file_name, template_id,
-        template_name, status, subtotal, tax_pct, tax_amount, total, currency,
+        quote_no, rev, case_id, customer_id, title, source, file_name, upload_mime_type,
+        upload_data, template_id, template_name, status, subtotal, tax_pct, tax_amount, total, currency,
         valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
       )
       values (
         ${row.quoteNo}, ${row.rev}, ${row.caseId || null}, ${row.customerId}, ${row.title}, ${row.source},
-        ${row.fileName}, ${row.templateId}, ${row.templateName}, ${row.status}, ${dbNumber(row.subtotal)},
+        ${row.fileName}, ${row.uploadMimeType}, ${dbBytes(row.uploadDataB64)},
+        ${row.templateId}, ${row.templateName}, ${row.status}, ${dbNumber(row.subtotal)},
         ${dbNumber(row.taxPct)}, ${dbNumber(row.taxAmount)}, ${dbNumber(row.total)}, ${row.currency},
         ${dbDate(row.validUntil)}, ${row.notes}, ${row.doc}, ${row.pdf}, ${dbEmail(row.createdBy)},
         ${row.createdAt}, ${row.updatedAt}
@@ -433,6 +446,8 @@ export class PostgresQuoteRepository implements QuoteRepository {
         title = ${row.title},
         source = ${row.source},
         file_name = ${row.fileName},
+        upload_mime_type = ${row.uploadMimeType},
+        upload_data = ${dbBytes(row.uploadDataB64)},
         template_id = ${row.templateId},
         template_name = ${row.templateName},
         status = ${row.status},

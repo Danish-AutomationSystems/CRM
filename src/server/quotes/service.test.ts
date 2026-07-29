@@ -182,9 +182,11 @@ function makeQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     caseId: 'CASE-2026-0001',
     customerId: 'CUST-0001',
     title: 'Panel quotation',
-    source: 'Generated',
-    fileName: '',
-    templateId: 'tpl-standard',
+      source: 'Generated',
+      fileName: '',
+      uploadMimeType: '',
+      uploadDataB64: '',
+      templateId: 'tpl-standard',
     templateName: 'Standard Quote',
     status: 'Draft',
     subtotal: 1000,
@@ -341,6 +343,8 @@ describe('quote service external uploads and status changes', () => {
     expect(repo.quotes[0]).toMatchObject({
       source: 'External',
       fileName: 'vendor-offer.pdf',
+      uploadMimeType: 'application/pdf',
+      uploadDataB64: Buffer.from('external quotation').toString('base64'),
       status: 'Sent',
       subtotal: '',
       taxPct: '',
@@ -468,5 +472,26 @@ describe('quote reads and direct download metadata', () => {
     await expect(
       service.getDownloadArtifact({ ...sales, email: 'outsider@automationsystems.org', allowedTags: ['NCR'] }, 'QTN-2026-0001', 0)
     ).rejects.toThrow('not an account handler');
+  });
+
+  it('returns uploaded external quotation bytes instead of a placeholder artifact', async () => {
+    const { repo, service } = makeService();
+    repo.quotes = [
+      makeQuote({
+        source: 'External',
+        fileName: 'vendor-offer.pdf',
+        uploadMimeType: 'application/pdf',
+        uploadDataB64: Buffer.from('external quotation').toString('base64'),
+        templateId: '',
+        templateName: '',
+        pdf: '/api/download/quote/QTN-2026-0001/0'
+      })
+    ];
+
+    const artifact = await service.getDownloadArtifact(sales, 'QTN-2026-0001', 0);
+
+    expect(artifact.fileName).toBe('vendor-offer.pdf');
+    expect(artifact.mimeType).toBe('application/pdf');
+    expect(Buffer.from(artifact.body as Uint8Array).toString()).toBe('external quotation');
   });
 });

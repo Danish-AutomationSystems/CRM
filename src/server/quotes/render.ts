@@ -34,7 +34,7 @@ export type RenderQuoteInput = {
 };
 
 export type QuoteDownloadArtifact = {
-  body: string;
+  body: BodyInit;
   fileName: string;
   mimeType: string;
 };

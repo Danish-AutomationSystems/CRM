@@ -1,4 +1,4 @@
-import './legacy-ui.css';
+import './legacy-full-ui.css';
 
 import { CrmApp } from './CrmApp';
 

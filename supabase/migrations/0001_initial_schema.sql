@@ -115,6 +115,8 @@ create table if not exists public.quotations (
   title text not null check (btrim(title) <> ''),
   source text not null check (source in ('Generated', 'External')),
   file_name text not null default '',
+  upload_mime_type text not null default '',
+  upload_data bytea,
   template_id text not null default '',
   template_name text not null default '',
   status text not null default 'Draft' check (status in ('Draft', 'Sent', 'Superseded')),

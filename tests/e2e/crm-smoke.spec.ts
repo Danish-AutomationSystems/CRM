@@ -33,6 +33,140 @@ function createFakeSession() {
   };
 }
 
+function bootPayload() {
+  return {
+    user: {
+      email: 'playwright@automationsystems.org',
+      name: 'Playwright Admin',
+      role: 'L6',
+      level: 6,
+      allowedTags: ['*'],
+      active: true
+    },
+    settings: {
+      tags: ['Punjab', 'Chandigarh', 'NCR'],
+      types: ['OEM', 'End User'],
+      stages: ['Lead', 'Opportunity', 'Quoted'],
+      outcomes: ['Won', 'Lost', 'Hold'],
+      priorities: ['High', 'Medium', 'Low'],
+      categories: ['Lighting'],
+      sources: ['Sales Team'],
+      taxPct: 18,
+      currency: 'INR',
+      company: 'Automation Systems NG Pvt Ltd'
+    },
+    nav: { admin: true },
+    peers: [{ email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2' }],
+    self: {
+      stats: {
+        myCustomers: 4,
+        openOpps: 2,
+        wonMonthValue: 120000,
+        wonMonthCount: 1,
+        won2wValue: 40000,
+        won2wCount: 1
+      },
+      tickets: []
+    },
+    recent: [],
+    isL1: false,
+    isBackend: true
+  };
+}
+
+const caseSummary = {
+  id: 'CASE-2026-0001',
+  title: 'Panel upgrade',
+  customerName: 'Acme Controls',
+  stage: 'Opportunity',
+  outcome: '',
+  quotedValue: 120000,
+  owners: ['Playwright Admin'],
+  assignee: 'Sales User',
+  updatedOn: '2026-07-29'
+};
+
+function rpcData(fn: string) {
+  const boot = bootPayload();
+  switch (fn) {
+    case 'api_workspace':
+      return {
+        boot,
+        customers: { scope: 'all', total: 0, customers: [] },
+        cases: [caseSummary]
+      };
+    case 'api_bootstrap':
+      return boot;
+    case 'api_listCases':
+      return [caseSummary];
+    case 'api_myCustomers':
+      return { scope: 'mine', total: 0, customers: [] };
+    case 'api_allCustomers':
+      return { scope: 'all', total: 0, customers: [] };
+    case 'api_getCase':
+      return {
+        customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+        case: {
+          ...caseSummary,
+          customerId: 'CUST-2026-0001',
+          details: 'Replace panel controls',
+          orderValue: '',
+          wonCategories: []
+        },
+        canEdit: true,
+        canAssignTicket: true,
+        quotes: [
+          {
+            quoteNo: 'QTN-2026-0001',
+            rev: 0,
+            title: 'Panel upgrade quote',
+            status: 'Sent',
+            date: '2026-07-29',
+            by: 'Playwright Admin',
+            currency: 'INR',
+            total: 120000,
+            pdf: '/api/download/quote/QTN-2026-0001/0?format=html'
+          }
+        ],
+        history: [{ when: '2026-07-29', who: 'Playwright Admin', action: 'Created', details: 'Smoke test case' }]
+      };
+    case 'api_getQuotation':
+      return {
+        customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+        quote: {
+          quoteNo: 'QTN-2026-0001',
+          rev: 0,
+          caseId: 'CASE-2026-0001',
+          source: 'Generated',
+          title: 'Panel upgrade quote',
+          status: 'Sent',
+          date: '2026-07-29',
+          by: 'Playwright Admin',
+          currency: 'INR',
+          subtotal: 101695,
+          taxPct: 18,
+          taxAmount: 18305,
+          total: 120000,
+          validUntil: '2026-08-29',
+          notes: '',
+          templateName: 'Default',
+          doc: '/api/download/quote/QTN-2026-0001/0?format=doc',
+          pdf: '/api/download/quote/QTN-2026-0001/0?format=html'
+        },
+        blocks: [{ title: 'Items', headers: ['Item', 'Amount'], rows: [['Panel upgrade', '120000']] }],
+        revisions: [{ quoteNo: 'QTN-2026-0001', rev: 0, status: 'Sent', date: '2026-07-29', total: 120000 }]
+      };
+    case 'api_admin_listUsers':
+      return [boot.user];
+    case 'api_admin_links':
+      return { database: 'Supabase Postgres', supabaseUrl: fakeSupabaseUrl, tables: ['customers', 'cases', 'quotations'] };
+    case 'api_admin_listRecycle':
+      return { customers: [] };
+    default:
+      throw new Error(`Unexpected RPC ${fn}`);
+  }
+}
+
 let fakeSupabaseServer: http.Server | undefined;
 
 test.beforeAll(async () => {
@@ -93,76 +227,45 @@ test('mocked authenticated session renders critical CRM route containers', async
   ]);
 
   await page.route('**/api/rpc', async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON() as { fn: string };
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
-        data: {
-          user: {
-            email: 'playwright@automationsystems.org',
-            name: 'Playwright Admin',
-            role: 'L6',
-            allowedTags: ['Punjab'],
-            active: true
-          },
-          settings: {
-            tags: ['Punjab', 'Chandigarh', 'NCR'],
-            stages: ['Lead', 'Opportunity', 'Quoted'],
-            outcomes: ['Won', 'Lost', 'Hold'],
-            priorities: ['High', 'Medium', 'Low']
-          },
-          nav: {
-            admin: true
-          },
-          peers: [{ email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2' }],
-          self: {
-            stats: {
-              myCustomers: 4,
-              openOpps: 2,
-              wonMonthValue: 120000,
-              won2wValue: 40000
-            },
-            tickets: [
-              {
-                id: 'CASE-2026-0001',
-                title: 'Panel upgrade',
-                customerName: 'Acme Controls',
-                stage: 'Opportunity'
-              }
-            ]
-          },
-          isL1: false,
-          isBackend: false
-        }
+        data: rpcData(body.fn)
       })
     });
   });
 
   await page.goto('/crm');
 
-  await expect(page.getByLabel('AS CRM')).toBeVisible();
+  await expect(page.getByText('AS CRM')).toBeVisible();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Customers' }).click();
+  await page.getByRole('button', { name: 'Customers' }).first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
   await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
-  await expect(page.getByLabel('Search customers')).toBeVisible();
+  await expect(page.getByPlaceholder('Search customers by name, tag, type or area…')).toBeVisible();
+  await expect(page.getByText('No customers in the database yet.')).toBeVisible();
 
   await page.getByRole('button', { name: 'Cases' }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
   await expect(page.getByRole('heading', { name: 'Cases' })).toBeVisible();
-  await expect(page.getByLabel('Case search')).toBeVisible();
+  await expect(page.getByPlaceholder('Search title / ID / customer')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Dashboard' }).click();
-  await page.getByRole('button', { name: /Panel upgrade/ }).click();
+  await page.getByText('Panel upgrade').first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
-  await expect(page.getByRole('heading', { name: 'Case' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+  await page.getByTestId('crm-route').getByRole('button', { name: 'Open' }).click();
   await expect(page.getByRole('link', { name: 'Download PDF' })).toHaveAttribute(
     'href',
     '/api/download/quote/QTN-2026-0001/0?format=html'
   );
+  await page.getByRole('button', { name: 'Close' }).click();
 
   await page.getByRole('button', { name: 'Admin' }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'admin');
