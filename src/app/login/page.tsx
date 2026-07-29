@@ -1,0 +1,65 @@
+'use client';
+
+import { createBrowserClient } from '@supabase/ssr';
+import { useEffect, useMemo, useState } from 'react';
+
+function getLoginError(): string {
+  if (typeof window === 'undefined') return '';
+  return new URLSearchParams(window.location.search).get('error') ?? '';
+}
+
+export default function LoginPage() {
+  const [error, setError] = useState('');
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const supabase = useMemo(
+    () =>
+      createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
+      ),
+    []
+  );
+
+  useEffect(() => {
+    setError(getLoginError());
+  }, []);
+
+  async function signInWithGoogle() {
+    setIsSigningIn(true);
+    setError('');
+
+    const redirectTo = `${window.location.origin}/auth/callback`;
+    const { error: signInError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+        queryParams: {
+          hd: 'automationsystems.org'
+        }
+      }
+    });
+
+    if (signInError) {
+      setError('Google sign-in could not be started.');
+      setIsSigningIn(false);
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <section className="welcome-panel" aria-labelledby="login-title">
+        <p className="eyebrow">Automation Systems</p>
+        <h1 id="login-title">AS CRM</h1>
+        <p className="lede">Sign in with your Automation Systems Google account.</p>
+        {error ? (
+          <p role="alert" className="lede">
+            {error}
+          </p>
+        ) : null}
+        <button type="button" onClick={signInWithGoogle} disabled={isSigningIn}>
+          {isSigningIn ? 'Opening Google...' : 'Continue with Google'}
+        </button>
+      </section>
+    </main>
+  );
+}
