@@ -283,7 +283,8 @@ Current status:
 
 - Web application OAuth client has been created with name `AS-WEBAPP`.
 - Authorized redirect URI has been pasted into that client.
-- Next step is to copy Google-generated `Client ID` and `Client Secret` into Supabase Google provider. Do not commit those raw values.
+- Google-generated `Client ID` and `Client Secret` have been generated and supplied by the user in chat.
+- Next step is to copy those values into Supabase Google provider and save. Do not commit those raw values.
 
 ### In Supabase
 
@@ -302,6 +303,8 @@ Client Secret: <GOOGLE_OAUTH_CLIENT_SECRET>
 ```
 
 Then save.
+
+Hosted Supabase provider settings are configured in the Dashboard unless a Supabase Management API access token is explicitly available. The project service-role key is not the same as a Supabase Management API access token.
 
 Go to:
 
