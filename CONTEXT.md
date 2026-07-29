@@ -458,6 +458,8 @@ Smoke test:
 - Backend auth checks must reject users outside the allowed domain even if Google/Supabase accepts the identity.
 - Initial admin user was seeded as L6 with access to all tags.
 - User/role/tag management lives in the admin service/RPC layer.
+- If login succeeds at Google/Supabase but the login page shows `Your account is not allowed to access AS CRM.`, the signed-in email passed OAuth but does not exist as an active row in `public.users`, is inactive, has an invalid role, or is outside `CRM_ALLOWED_DOMAIN`.
+- New Google accounts are not auto-provisioned as CRM users. Add them through the CRM admin user-management UI or seed/insert them into `public.users` with a valid role (`L1`-`L6`), `active=true`, and appropriate `allowed_tags`.
 
 ## Important Implementation Notes
 
