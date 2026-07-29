@@ -26,11 +26,16 @@ class FakeQuoteRepository implements QuoteRepository {
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  lockedQuoteFamilies: string[] = [];
   quoteSeq = 1;
   caseSeq = 2;
 
   async withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async lockQuoteFamily(quoteNo: string): Promise<void> {
+    this.lockedQuoteFamilies.push(quoteNo.trim().toUpperCase());
   }
 
   async nextQuoteNo(): Promise<string> {
@@ -312,6 +317,7 @@ describe('quote service generated quotations', () => {
     expect(result).toEqual({ quoteNo: 'QTN-2026-0001', rev: 1, caseId: 'CASE-2026-0001' });
     expect(repo.quotes[0].status).toBe('Superseded');
     expect(repo.quotes[1]).toMatchObject({ quoteNo: 'QTN-2026-0001', rev: 1, status: 'Draft' });
+    expect(repo.lockedQuoteFamilies).toEqual(['QTN-2026-0001']);
   });
 });
 

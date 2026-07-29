@@ -61,8 +61,38 @@ export type ActivityLogEntry = {
   who: string;
 };
 
+export type CustomerCaseSummary = {
+  id: string;
+  customerId: string;
+  title: string;
+  stage: string;
+  outcome: string;
+  orderValue: number | '';
+  quotedValue: number | '';
+  owners: string[];
+  assignee: string;
+  updatedAt: string;
+};
+
+export type CustomerQuoteSummary = {
+  quoteNo: string;
+  rev: number;
+  caseId: string;
+  customerId: string;
+  title: string;
+  source: 'Generated' | 'External';
+  status: 'Draft' | 'Sent' | 'Superseded';
+  total: number | '';
+  currency: string;
+  fileName: string;
+  doc: string;
+  pdf: string;
+  createdAt: string;
+};
+
 export type CustomerRepository = {
   withTransaction<T>(fn: (repo?: CustomerRepository) => Promise<T>): Promise<T>;
+  lockCustomerName(name: string): Promise<void>;
   nextCustomerId(): Promise<string>;
   nextContactId(): Promise<string>;
   listCustomers(): Promise<CustomerRow[]>;
@@ -73,6 +103,8 @@ export type CustomerRepository = {
   deleteCustomer(id: string): Promise<void>;
   moveCustomerToRecycleBin(customer: CustomerRow, deletedBy: string): Promise<void>;
   listContactsByCustomer(customerId: string): Promise<ContactRow[]>;
+  listCasesByCustomer(customerId: string): Promise<CustomerCaseSummary[]>;
+  listQuotesByCustomer(customerId: string): Promise<CustomerQuoteSummary[]>;
   countContactsByCustomer(): Promise<Record<string, number>>;
   getContact(contactId: string): Promise<ContactRow | null>;
   createContact(contact: ContactRow): Promise<void>;
@@ -446,7 +478,11 @@ export function createCustomerService(repo: CustomerRepository) {
         };
       }
 
-      const contacts = await repo.listContactsByCustomer(customer.id);
+      const [contacts, cases, quotes] = await Promise.all([
+        repo.listContactsByCustomer(customer.id),
+        repo.listCasesByCustomer(customer.id),
+        repo.listQuotesByCustomer(customer.id)
+      ]);
       return {
         access: 'FULL' as const,
         canEditTags: roleLevel(user) >= 3,
@@ -454,8 +490,8 @@ export function createCustomerService(repo: CustomerRepository) {
         customer,
         handlers: handlerList,
         contacts,
-        cases: [],
-        quotes: []
+        cases,
+        quotes
       };
     },
 
@@ -464,15 +500,18 @@ export function createCustomerService(repo: CustomerRepository) {
       const name = asText(input?.name);
       if (!name) throw new Error('Customer name is required.');
 
-      const duplicate = await repo.findCustomerByName(name);
-      if (duplicate && !input.force) {
-        throw new Error(
-          `DUPLICATE: A customer named "${duplicate.name}" already exists (${duplicate.id}). Save again to create anyway.`
-        );
-      }
-
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        if (!input.force) {
+          await trx.lockCustomerName(name);
+          const duplicate = await trx.findCustomerByName(name);
+          if (duplicate) {
+            throw new Error(
+              `DUPLICATE: A customer named "${duplicate.name}" already exists (${duplicate.id}). Save again to create anyway.`
+            );
+          }
+        }
+
         const id = await trx.nextCustomerId();
         const now = nowIso();
         await trx.createCustomer({
@@ -570,15 +609,15 @@ export function createCustomerService(repo: CustomerRepository) {
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
-        const existing = new Set((await trx.listCustomers()).map((row) => lower(row.name)));
         let created = 0;
         const skipped: string[] = [];
 
         for (const row of rows) {
           const name = asText(row.name);
           if (!name) continue;
-          const key = lower(name);
-          if (existing.has(key)) {
+          await trx.lockCustomerName(name);
+          const duplicate = await trx.findCustomerByName(name);
+          if (duplicate) {
             skipped.push(name);
             continue;
           }
@@ -609,7 +648,6 @@ export function createCustomerService(repo: CustomerRepository) {
             assignedBy: normalizeEmail(user.email),
             assignedAt: now
           });
-          existing.add(key);
           created++;
         }
 

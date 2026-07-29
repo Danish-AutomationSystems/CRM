@@ -70,6 +70,10 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     return fn(this);
   }
 
+  async lockCustomerName(): Promise<void> {}
+
+  async lockQuoteFamily(): Promise<void> {}
+
   async listUsers(): Promise<UserRow[]> {
     return this.users;
   }
@@ -149,6 +153,43 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
 
   async listContactsByCustomer(customerId: string): Promise<ContactRow[]> {
     return this.contacts.filter((contact) => contact.customerId === customerId);
+  }
+
+  async listCasesByCustomer(customerId: string): Promise<Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>>> {
+    return this.cases
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({
+        id: row.id,
+        customerId: row.customerId,
+        title: row.title,
+        stage: row.stage,
+        outcome: row.outcome,
+        orderValue: row.orderValue,
+        quotedValue: '',
+        owners: [row.owner, ...row.extraOwners].filter(Boolean),
+        assignee: row.assignee,
+        updatedAt: row.updatedAt
+      }));
+  }
+
+  async listQuotesByCustomer(customerId: string): Promise<Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>>> {
+    return this.quotes
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({
+        quoteNo: row.quoteNo,
+        rev: row.rev,
+        caseId: row.caseId,
+        customerId: row.customerId,
+        title: row.title,
+        source: row.source,
+        status: row.status,
+        total: row.total,
+        currency: row.currency,
+        fileName: row.fileName,
+        doc: row.doc,
+        pdf: row.pdf,
+        createdAt: row.createdAt
+      }));
   }
 
   async countContactsByCustomer(): Promise<Record<string, number>> {

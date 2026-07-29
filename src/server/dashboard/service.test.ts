@@ -37,6 +37,8 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
     return fn(this);
   }
 
+  async lockCustomerName(): Promise<void> {}
+
   async nextCustomerId(): Promise<string> {
     return `CUST-${String(this.nextCustomer++).padStart(4, '0')}`;
   }
@@ -81,6 +83,27 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
 
   async listContactsByCustomer(customerId: string) {
     return this.contacts.filter((contact) => contact.customerId === customerId);
+  }
+
+  async listCasesByCustomer(customerId: string): Promise<Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>>> {
+    return this.cases
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({
+        id: row.id,
+        customerId: row.customerId,
+        title: row.title,
+        stage: row.stage,
+        outcome: row.outcome,
+        orderValue: row.orderValue,
+        quotedValue: '',
+        owners: [row.owner, ...row.extraOwners].filter(Boolean),
+        assignee: row.assignee,
+        updatedAt: row.updatedAt
+      }));
+  }
+
+  async listQuotesByCustomer(): Promise<Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>>> {
+    return [];
   }
 
   async countContactsByCustomer(): Promise<Record<string, number>> {

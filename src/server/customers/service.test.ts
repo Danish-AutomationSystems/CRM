@@ -23,6 +23,9 @@ class FakeCustomerRepository implements CustomerRepository {
   users: UserRow[] = [];
   casesByCustomerId = new Map<string, number>();
   quotesByCustomerId = new Map<string, number>();
+  cases: Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>> = [];
+  quotes: Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>> = [];
+  lockedNames: string[] = [];
   recycleBin: CustomerRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   nextCustomer = 1;
@@ -30,6 +33,10 @@ class FakeCustomerRepository implements CustomerRepository {
 
   async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
+  }
+
+  async lockCustomerName(name: string): Promise<void> {
+    this.lockedNames.push(name.trim().toLowerCase().replace(/\s+/g, ' '));
   }
 
   async nextCustomerId(): Promise<string> {
@@ -75,6 +82,14 @@ class FakeCustomerRepository implements CustomerRepository {
 
   async listContactsByCustomer(customerId: string): Promise<ContactRow[]> {
     return this.contacts.filter((contact) => contact.customerId === customerId);
+  }
+
+  async listCasesByCustomer(customerId: string): Promise<Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>>> {
+    return this.cases.filter((row) => row.customerId === customerId);
+  }
+
+  async listQuotesByCustomer(customerId: string): Promise<Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>>> {
+    return this.quotes.filter((row) => row.customerId === customerId);
   }
 
   async countContactsByCustomer(): Promise<Record<string, number>> {
@@ -242,6 +257,53 @@ describe('customer service search and grids', () => {
 });
 
 describe('customer service mutations', () => {
+  it('returns full customer detail with contacts, cases, and quotation summaries', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [{ id: 'CT-0001', customerId: 'CUST-0001', name: 'Buyer', designation: '', phone: '', email: '', notes: '' }];
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Panel upgrade',
+        stage: 'Opportunity',
+        outcome: '',
+        orderValue: '',
+        quotedValue: 1180,
+        owners: [baseUser.email],
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      }
+    ];
+    repo.quotes = [
+      {
+        quoteNo: 'QTN-2026-0001',
+        rev: 0,
+        caseId: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Panel quotation',
+        source: 'Generated',
+        status: 'Draft',
+        total: 1180,
+        currency: 'INR',
+        fileName: '',
+        doc: '/api/download/quote/QTN-2026-0001/0?format=html',
+        pdf: '/api/download/quote/QTN-2026-0001/0?format=html',
+        createdAt: '2026-07-29T00:00:00.000Z'
+      }
+    ];
+
+    const result = await service.getCustomer(baseUser, 'CUST-0001');
+
+    expect(result).toMatchObject({
+      access: 'FULL',
+      contacts: [expect.objectContaining({ id: 'CT-0001' })],
+      cases: [expect.objectContaining({ id: 'CASE-2026-0001', quotedValue: 1180 })],
+      quotes: [expect.objectContaining({ quoteNo: 'QTN-2026-0001', total: 1180 })]
+    });
+  });
+
   it('requires force to create a duplicate customer name', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
@@ -253,6 +315,7 @@ describe('customer service mutations', () => {
     await expect(service.createCustomer(baseUser, { name: ' alpha panels ', force: true })).resolves.toEqual({
       id: 'CUST-0001'
     });
+    expect(repo.lockedNames).toEqual(['alpha panels']);
   });
 
   it('creates Direct placeholder handlers for L5/L6 creators and real self handlers for sales creators', async () => {
@@ -378,6 +441,7 @@ describe('contact and handler service APIs', () => {
     ]);
 
     expect(result).toEqual({ created: 1, skipped: ['existing co'] });
+    expect(repo.lockedNames).toEqual(['existing co', 'new co']);
     expect(repo.handlers).toEqual([
       expect.objectContaining({ customerId: 'CUST-0001', email: baseUser.email })
     ]);

@@ -6,7 +6,9 @@ import { CRM_ID_FORMATS } from '../db/schema';
 import { normalizeEmail } from '../domain/lists';
 import type {
   ActivityLogEntry,
+  CustomerCaseSummary,
   ContactRow,
+  CustomerQuoteSummary,
   CustomerRepository,
   CustomerRow,
   CustomerUserRow,
@@ -52,6 +54,35 @@ type HandlerDbRow = {
   user_email: string;
   assigned_by: string | null;
   assigned_at: string | Date;
+};
+
+type CustomerCaseDbRow = {
+  case_id: string;
+  customer_id: string;
+  title: string;
+  stage: string;
+  outcome: string | null;
+  order_value: string | number | null;
+  quoted_value: string | number | null;
+  owners: string[] | null;
+  assignee: string | null;
+  updated_at: string | Date;
+};
+
+type CustomerQuoteDbRow = {
+  quote_no: string;
+  rev: number;
+  case_id: string | null;
+  customer_id: string;
+  title: string;
+  source: 'Generated' | 'External';
+  status: 'Draft' | 'Sent' | 'Superseded';
+  total: string | number | null;
+  currency: string;
+  file_name: string | null;
+  doc_link: string | null;
+  pdf_link: string | null;
+  created_at: string | Date;
 };
 
 type UserDbRow = {
@@ -122,11 +153,58 @@ function toUser(row: UserDbRow): CustomerUserRow {
   };
 }
 
+function numberOrBlank(value: string | number | null | undefined): number | '' {
+  if (value === null || value === undefined || value === '') return '';
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : '';
+}
+
+function toCustomerCase(row: CustomerCaseDbRow): CustomerCaseSummary {
+  return {
+    id: row.case_id,
+    customerId: row.customer_id,
+    title: row.title,
+    stage: row.stage,
+    outcome: row.outcome ?? '',
+    orderValue: numberOrBlank(row.order_value),
+    quotedValue: numberOrBlank(row.quoted_value),
+    owners: row.owners ?? [],
+    assignee: normalizeEmail(row.assignee),
+    updatedAt: dateString(row.updated_at)
+  };
+}
+
+function toCustomerQuote(row: CustomerQuoteDbRow): CustomerQuoteSummary {
+  return {
+    quoteNo: row.quote_no,
+    rev: Number(row.rev),
+    caseId: row.case_id ?? '',
+    customerId: row.customer_id,
+    title: row.title,
+    source: row.source,
+    status: row.status,
+    total: numberOrBlank(row.total),
+    currency: row.currency,
+    fileName: row.file_name ?? '',
+    doc: row.doc_link ?? '',
+    pdf: row.pdf_link ?? '',
+    createdAt: dateString(row.created_at)
+  };
+}
+
+function customerNameLockKey(name: string): string {
+  return `customer-name:${name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
 export class PostgresCustomerRepository implements CustomerRepository {
   constructor(private readonly db: DbExecutor = sql) {}
 
   async withTransaction<T>(fn: (repo?: CustomerRepository) => Promise<T>): Promise<T> {
     return withTransaction((tx) => fn(new PostgresCustomerRepository(tx)));
+  }
+
+  async lockCustomerName(name: string): Promise<void> {
+    await this.db`select pg_advisory_xact_lock(hashtext(${customerNameLockKey(name)}))`;
   }
 
   async nextCustomerId(): Promise<string> {
@@ -241,6 +319,50 @@ export class PostgresCustomerRepository implements CustomerRepository {
     `) as ContactDbRow[];
 
     return rows.map(toContact);
+  }
+
+  async listCasesByCustomer(customerId: string): Promise<CustomerCaseSummary[]> {
+    const rows = (await this.db`
+      with handler_owners as (
+        select customer_id, array_agg(user_email order by user_email) filter (where user_email <> 'direct') as owners
+        from public.handlers
+        where customer_id = ${customerId}
+        group by customer_id
+      ),
+      latest_quotes as (
+        select distinct on (case_id)
+          case_id,
+          total as quoted_value
+        from public.quotations
+        where customer_id = ${customerId}
+          and status <> 'Superseded'
+          and case_id is not null
+        order by case_id, rev desc
+      )
+      select c.case_id, c.customer_id, c.title, c.stage, c.outcome, c.order_value,
+             lq.quoted_value,
+             coalesce(ho.owners, array_remove(string_to_array(coalesce(c.owner, ''), '|'), '')) as owners,
+             c.assignee, c.updated_at
+      from public.cases c
+      left join handler_owners ho on ho.customer_id = c.customer_id
+      left join latest_quotes lq on lq.case_id = c.case_id
+      where c.customer_id = ${customerId}
+      order by c.updated_at desc
+    `) as CustomerCaseDbRow[];
+
+    return rows.map(toCustomerCase);
+  }
+
+  async listQuotesByCustomer(customerId: string): Promise<CustomerQuoteSummary[]> {
+    const rows = (await this.db`
+      select quote_no, rev, case_id, customer_id, title, source, status, total,
+             currency, file_name, doc_link, pdf_link, created_at
+      from public.quotations
+      where customer_id = ${customerId}
+      order by quote_no desc, rev desc
+    `) as CustomerQuoteDbRow[];
+
+    return rows.map(toCustomerQuote);
   }
 
   async countContactsByCustomer(): Promise<Record<string, number>> {

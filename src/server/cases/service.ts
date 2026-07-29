@@ -96,6 +96,7 @@ export type CaseActivityLogEntry = {
 
 export type CaseRepository = {
   withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T>;
+  lockCustomerName(name: string): Promise<void>;
   nextCustomerId(): Promise<string>;
   nextCaseId(): Promise<string>;
   getCustomer(id: string): Promise<CaseCustomerRow | null>;
@@ -652,6 +653,7 @@ export function createCaseService(repo: CaseRepository) {
           const newCustomer = input.newCustomer ?? {};
           const name = asText(newCustomer.name);
           if (!name) throw new Error('Pick an existing customer or enter a new customer name.');
+          await trx.lockCustomerName(name);
           const duplicate = await trx.findCustomerByName(name);
           if (duplicate) {
             customerId = duplicate.id;

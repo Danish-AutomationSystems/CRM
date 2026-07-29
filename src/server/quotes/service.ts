@@ -103,6 +103,7 @@ export type QuoteActivityLogEntry = {
 
 export type QuoteRepository = {
   withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T>;
+  lockQuoteFamily(quoteNo: string): Promise<void>;
   nextQuoteNo(): Promise<string>;
   nextCaseId(): Promise<string>;
   listTemplates(): Promise<Array<{ id: string; name: string }>>;
@@ -316,6 +317,7 @@ async function allocateQuoteRevision(
     return { quoteNo: await repo.nextQuoteNo(), rev: 0, caseId: input.caseId, previous: [] };
   }
 
+  await repo.lockQuoteFamily(input.baseQuoteNo);
   const previous = await repo.listQuotesByQuoteNo(input.baseQuoteNo);
   if (!previous.length) throw new Error(`Quotation ${input.baseQuoteNo} was not found.`);
   const caseId = input.caseId || previous[0].caseId;

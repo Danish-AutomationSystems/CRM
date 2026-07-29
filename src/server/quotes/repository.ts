@@ -248,11 +248,19 @@ function dbOutcome(value: QuoteCaseRow['outcome']): 'Won' | 'Lost' | 'Hold' | nu
   return value || null;
 }
 
+function quoteFamilyLockKey(quoteNo: string): string {
+  return `quote-family:${quoteNo.trim().toUpperCase()}`;
+}
+
 export class PostgresQuoteRepository implements QuoteRepository {
   constructor(private readonly db: DbExecutor = sql) {}
 
   async withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T> {
     return withTransaction((tx) => fn(new PostgresQuoteRepository(tx)));
+  }
+
+  async lockQuoteFamily(quoteNo: string): Promise<void> {
+    await this.db`select pg_advisory_xact_lock(hashtext(${quoteFamilyLockKey(quoteNo)}))`;
   }
 
   async nextQuoteNo(): Promise<string> {

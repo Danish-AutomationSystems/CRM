@@ -24,11 +24,16 @@ class FakeCaseRepository implements CaseRepository {
   handlers: HandlerRow[] = [];
   quotes: QuoteRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async lockCustomerName(name: string): Promise<void> {
+    this.lockedNames.push(name.trim().toLowerCase().replace(/\s+/g, ' '));
   }
 
   async nextCustomerId(): Promise<string> {
@@ -331,6 +336,7 @@ describe('case reads, lists, and quick log', () => {
 
     const reused = await service.quickLog(sales, { newCustomer: { name: 'site co' }, title: 'Second enquiry' });
     expect(reused.customerId).toBe('CUST-0002');
+    expect(repo.lockedNames).toEqual(['site co', 'site co']);
 
     await expect(service.quickLog(sales, { customerId: 'CUST-0099', title: 'No access' })).rejects.toThrow('not an account handler');
   });

@@ -191,11 +191,19 @@ function dbEmail(value: string): string | null {
   return normalizeEmail(value) || null;
 }
 
+function customerNameLockKey(name: string): string {
+  return `customer-name:${name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
 export class PostgresCaseRepository implements CaseRepository {
   constructor(private readonly db: DbExecutor = sql) {}
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return withTransaction((tx) => fn(new PostgresCaseRepository(tx)));
+  }
+
+  async lockCustomerName(name: string): Promise<void> {
+    await this.db`select pg_advisory_xact_lock(hashtext(${customerNameLockKey(name)}))`;
   }
 
   async nextCustomerId(): Promise<string> {

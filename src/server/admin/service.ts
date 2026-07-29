@@ -107,6 +107,7 @@ export type AdminActivityLogEntry = {
 
 export type AdminRepository = {
   withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T>;
+  lockCustomerName(name: string): Promise<void>;
   listUsers(): Promise<AdminUserRow[]>;
   getUser(email: string): Promise<AdminUserRow | null>;
   createUser(user: AdminUserRow): Promise<void>;
@@ -117,6 +118,7 @@ export type AdminRepository = {
   nextContactId(): Promise<string>;
   listCustomers(): Promise<AdminCustomerRow[]>;
   getCustomer(id: string): Promise<AdminCustomerRow | null>;
+  findCustomerByName(name: string): Promise<AdminCustomerRow | null>;
   createCustomer(customer: AdminCustomerRow): Promise<void>;
   listContactsByCustomer(customerId: string): Promise<AdminContactRow[]>;
   createContact(contact: AdminContactRow): Promise<void>;
@@ -307,6 +309,10 @@ function localName(email: string): string {
 
 function customerKey(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function customerNameLockKey(name: string): string {
+  return `customer-name:${customerKey(name)}`;
 }
 
 function settingsFromRows(rows: readonly AdminSettingRow[]): ResolvedSettings {
@@ -565,13 +571,8 @@ export function createAdminService(repo: AdminRepository) {
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
-        const [customers, users, settings] = await Promise.all([
-          trx.listCustomers(),
-          trx.listUsers(),
-          trx.listSettings()
-        ]);
+        const [users, settings] = await Promise.all([trx.listUsers(), trx.listSettings()]);
         const allowed = settingsFromRows(settings);
-        const existingNames = new Map(customers.map((customer) => [customerKey(customer.name), customer.id]));
         const activeUsers = new Set(
           users.filter((row) => row.active).map((row) => normalizeEmail(row.email))
         );
@@ -585,10 +586,10 @@ export function createAdminService(repo: AdminRepository) {
           const name = asText(row.name);
           if (!name) continue;
 
-          const key = customerKey(name);
-          const existingId = existingNames.get(key);
-          if (existingId) {
-            skipped.push(`${name} (exists as ${existingId})`);
+          await trx.lockCustomerName(name);
+          const existing = await trx.findCustomerByName(name);
+          if (existing) {
+            skipped.push(`${name} (exists as ${existing.id})`);
             continue;
           }
 
@@ -611,7 +612,6 @@ export function createAdminService(repo: AdminRepository) {
             createdAt: now,
             updatedAt: now
           });
-          existingNames.set(key, customerId);
 
           if (asText(row.contactName)) {
             const contactId = await trx.nextContactId();
@@ -790,6 +790,10 @@ export class PostgresAdminRepository implements AdminRepository {
     return withTransaction((tx) => fn(new PostgresAdminRepository(tx)));
   }
 
+  async lockCustomerName(name: string): Promise<void> {
+    await this.db`select pg_advisory_xact_lock(hashtext(${customerNameLockKey(name)}))`;
+  }
+
   async listUsers(): Promise<AdminUserRow[]> {
     const rows = (await this.db`
       select email, name, role, allowed_tags, active, added_at, added_by
@@ -874,6 +878,18 @@ export class PostgresAdminRepository implements AdminRepository {
              sei, remarks, status, created_by, created_at, updated_at
       from public.customers
       where customer_id = ${id}
+      limit 1
+    `) as CustomerDbRow[];
+    return rows[0] ? toCustomer(rows[0]) : null;
+  }
+
+  async findCustomerByName(name: string): Promise<AdminCustomerRow | null> {
+    const rows = (await this.db`
+      select customer_id, name, tags, type, priority, area, address, gstin, website, notes,
+             sei, remarks, status, created_by, created_at, updated_at
+      from public.customers
+      where name_key = ${customerKey(name)}
+        and status <> 'Archived'
       limit 1
     `) as CustomerDbRow[];
     return rows[0] ? toCustomer(rows[0]) : null;

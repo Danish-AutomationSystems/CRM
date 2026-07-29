@@ -40,11 +40,16 @@ class FakeAdminRepository implements AdminRepository {
   importContacts: ImportContactRow[] = [];
   recycle: RecycleRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  lockedNames: string[] = [];
   customerSeq = 1;
   contactSeq = 1;
 
   async withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async lockCustomerName(name: string): Promise<void> {
+    this.lockedNames.push(name.trim().toLowerCase().replace(/\s+/g, ' '));
   }
 
   async listUsers(): Promise<UserRow[]> {
@@ -89,6 +94,11 @@ class FakeAdminRepository implements AdminRepository {
 
   async getCustomer(id: string): Promise<CustomerRow | null> {
     return this.customers.find((customer) => customer.id === id) ?? null;
+  }
+
+  async findCustomerByName(name: string): Promise<CustomerRow | null> {
+    const key = name.trim().toLowerCase().replace(/\s+/g, ' ');
+    return this.customers.find((customer) => customer.name.trim().toLowerCase().replace(/\s+/g, ' ') === key) ?? null;
   }
 
   async createCustomer(customer: CustomerRow): Promise<void> {
@@ -410,6 +420,7 @@ describe('admin service imports', () => {
     ]);
     expect(repo.importCustomers).toEqual([]);
     expect(repo.logs).toEqual([expect.objectContaining({ action: 'IMPORT', details: '2 customers imported, 1 skipped' })]);
+    expect(repo.lockedNames).toEqual(['existing co', 'new co', 'fallback co']);
   });
 
   it('imports contacts, skips unmatched and blank contacts, caps runs at 500, clears rows, and logs', async () => {
