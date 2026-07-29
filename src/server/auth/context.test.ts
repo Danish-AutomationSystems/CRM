@@ -6,11 +6,26 @@ import {
   normalizeCrmRole,
   requireActiveCrmUser,
   type CrmUserRow,
+  type UserProvisioner,
   type UserLookup
 } from './context';
 
 function userLookup(rows: CrmUserRow[]): UserLookup {
   return async (email: string) => rows.find((row) => row.email === email) ?? null;
+}
+
+function userProvisioner(rows: CrmUserRow[]): UserProvisioner {
+  return async (email: string) => {
+    const user: CrmUserRow = {
+      email,
+      name: email,
+      role: 'L1',
+      allowed_tags: [],
+      active: true
+    };
+    rows.push(user);
+    return user;
+  };
 }
 
 describe('assertAllowedDomain', () => {
@@ -64,9 +79,37 @@ describe('requireActiveCrmUser', () => {
     ).rejects.toThrow('not active');
   });
 
-  it('rejects missing CRM users', async () => {
+  it('auto-provisions missing company users as active L1 users', async () => {
+    const rows: CrmUserRow[] = [];
+
     await expect(
-      requireActiveCrmUser('missing@automationsystems.org', userLookup([]))
+      requireActiveCrmUser(
+        'missing@automationsystems.org',
+        userLookup(rows),
+        userProvisioner(rows)
+      )
+    ).resolves.toEqual({
+      email: 'missing@automationsystems.org',
+      name: 'missing@automationsystems.org',
+      role: 'L1',
+      allowedTags: [],
+      active: true
+    });
+
+    expect(rows).toEqual([
+      {
+        email: 'missing@automationsystems.org',
+        name: 'missing@automationsystems.org',
+        role: 'L1',
+        allowed_tags: [],
+        active: true
+      }
+    ]);
+  });
+
+  it('rejects missing CRM users when auto-provisioning is unavailable', async () => {
+    await expect(
+      requireActiveCrmUser('missing@automationsystems.org', userLookup([]), null)
     ).rejects.toThrow('not registered');
   });
 

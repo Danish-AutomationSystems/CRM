@@ -20,6 +20,7 @@ export type CrmUserRow = {
 };
 
 export type UserLookup = (email: string) => Promise<CrmUserRow | null>;
+export type UserProvisioner = (email: string) => Promise<CrmUserRow | null>;
 
 type RequestContextOptions = {
   getAuthenticatedEmail?: (request: Request) => Promise<string | null>;
@@ -96,16 +97,31 @@ async function lookupUserByEmail(email: string): Promise<CrmUserRow | null> {
   return rows[0] ?? null;
 }
 
+async function provisionL1UserByEmail(email: string): Promise<CrmUserRow | null> {
+  const { sql } = await import('../db/client');
+  await sql`
+    insert into public.users (email, name, role, allowed_tags, active, added_by)
+    values (${email}, ${email}, 'L1', array[]::text[], true, 'auto-provision')
+    on conflict (email) do nothing
+  `;
+
+  return lookupUserByEmail(email);
+}
+
 export async function requireActiveCrmUser(
   email: string,
-  lookupUser: UserLookup = lookupUserByEmail
+  lookupUser: UserLookup = lookupUserByEmail,
+  provisionUser: UserProvisioner | null = provisionL1UserByEmail
 ): Promise<CrmUser> {
   const normalizedEmail = normalizeEmail(email);
   assertAllowedDomain(normalizedEmail);
 
-  const user = await lookupUser(normalizedEmail);
+  let user = await lookupUser(normalizedEmail);
   if (!user) {
-    throw new Error('This Google account is not registered in AS CRM.');
+    user = provisionUser ? await provisionUser(normalizedEmail) : null;
+    if (!user) {
+      throw new Error('This Google account is not registered in AS CRM.');
+    }
   }
 
   if (!user.active) {
