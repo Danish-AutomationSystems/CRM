@@ -14,6 +14,11 @@ The production app is deployed at:
 
 - https://as-crm-ten.vercel.app
 
+Custom domain setup in progress:
+
+- https://automationsystems.info
+- https://www.automationsystems.info
+
 The source repository is:
 
 - https://github.com/Danish-AutomationSystems/CRM.git
@@ -56,6 +61,7 @@ Pending/manual:
 - Supabase URL Configuration must include the production site/callback URLs.
 - Real Google sign-in must be tested after OAuth setup.
 - If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
+- Custom domain DNS must be updated in GoDaddy, then verified in Vercel.
 
 ## Architecture Overview
 
@@ -195,6 +201,48 @@ Production alias:
 
 - `https://as-crm-ten.vercel.app`
 
+Custom domains attached to the Vercel project:
+
+- `automationsystems.info`
+- `www.automationsystems.info`
+
+GoDaddy DNS is currently required because nameservers are still GoDaddy (`ns25.domaincontrol.com`, `ns26.domaincontrol.com`).
+
+Required GoDaddy DNS records for Vercel:
+
+```text
+Type: A
+Name: @
+Value: 216.198.79.1
+TTL: default / 1 hour
+
+Type: A
+Name: @
+Value: 64.29.17.1
+TTL: default / 1 hour
+
+Type: CNAME
+Name: www
+Value: 7633a7ffb603e0b3.vercel-dns-017.com
+TTL: default / 1 hour
+```
+
+Alternative, instead of individual DNS records, change domain nameservers at GoDaddy to:
+
+```text
+ns1.vercel-dns.com
+ns2.vercel-dns.com
+```
+
+Prefer individual DNS records if the domain has any existing email/DNS records that must be preserved.
+
+After GoDaddy DNS changes, verify:
+
+```bash
+npx vercel domains verify automationsystems.info
+npx vercel domains verify www.automationsystems.info
+```
+
 Build settings:
 
 - Framework: Next.js
@@ -324,6 +372,29 @@ https://as-crm-ten.vercel.app/auth/callback
 ```
 
 Important: if `Site URL` remains `http://localhost:3000`, Supabase can complete Google sign-in and then send the user back to localhost with `?code=...`. The Next.js login code sends the browser origin as `redirectTo`, so a localhost redirect after production login is a Supabase dashboard URL configuration problem, not a Vercel redeploy problem.
+
+After custom domain verification, update Supabase Auth URL Configuration to:
+
+```text
+Site URL:
+https://automationsystems.info
+
+Redirect URLs:
+https://automationsystems.info/auth/callback
+https://www.automationsystems.info/auth/callback
+https://as-crm-ten.vercel.app/auth/callback
+```
+
+After custom domain verification, update Google Cloud OAuth client `AS-WEBAPP`:
+
+```text
+Authorized JavaScript origins:
+https://automationsystems.info
+https://www.automationsystems.info
+
+Authorized redirect URIs:
+https://cympxjsqetzivwxwbhob.supabase.co/auth/v1/callback
+```
 
 No Vercel redeploy is required after enabling the Google provider.
 
