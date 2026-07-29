@@ -1,7 +1,9 @@
 'use client';
 
 import { createBrowserClient } from '@supabase/ssr';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+
+export const dynamic = 'force-dynamic';
 
 function getLoginError(): string {
   if (typeof window === 'undefined') return '';
@@ -11,14 +13,6 @@ function getLoginError(): string {
 export default function LoginPage() {
   const [error, setError] = useState('');
   const [isSigningIn, setIsSigningIn] = useState(false);
-  const supabase = useMemo(
-    () =>
-      createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-      ),
-    []
-  );
 
   useEffect(() => {
     setError(getLoginError());
@@ -28,6 +22,15 @@ export default function LoginPage() {
     setIsSigningIn(true);
     setError('');
 
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    if (!url || !key) {
+      setError('Supabase sign-in is not configured yet.');
+      setIsSigningIn(false);
+      return;
+    }
+
+    const supabase = createBrowserClient(url, key);
     const redirectTo = `${window.location.origin}/auth/callback`;
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
