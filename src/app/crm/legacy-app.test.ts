@@ -82,6 +82,7 @@ function mockRpc(handler: (fn: string, args: unknown[]) => unknown) {
 describe('legacy CRM full client', () => {
   beforeEach(() => {
     vi.useRealTimers();
+    window.history.pushState(null, '', '/crm');
   });
 
   afterEach(() => {
@@ -90,6 +91,7 @@ describe('legacy CRM full client', () => {
     delete window.BOOT;
     delete window.__AS_CRM_XSS__;
     vi.unstubAllGlobals();
+    window.history.pushState(null, '', '/crm');
   });
 
   test('renders the route container and bootstraps through the fetch-backed legacy gs helper', async () => {
@@ -239,5 +241,163 @@ describe('legacy CRM full client', () => {
     const crmApp = fs.readFileSync(path.join(process.cwd(), 'src', 'app', 'crm', 'CrmApp.tsx'), 'utf8');
 
     expect(crmApp).not.toMatch(/PlaceholderDetail|Start with search|sampleActions/);
+  });
+
+  describe('tab URL sync', () => {
+    test('navigating to a tab updates the browser URL to match the route', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("cases")');
+
+      await waitFor(() => expect(window.location.pathname).toBe('/crm/cases'));
+    });
+
+    test('navigating to a detail view encodes the record id in the URL', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-2026-0001")');
+
+      await waitFor(() => expect(window.location.pathname).toBe('/crm/case/CASE-2026-0001'));
+      expect(screen.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
+    });
+
+    test('navigating from one detail record to another re-syncs the URL', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-A")');
+      await waitFor(() => expect(window.location.pathname).toBe('/crm/case/CASE-A'));
+
+      window.eval('nav("case", "CASE-B")');
+      await waitFor(() => expect(window.location.pathname).toBe('/crm/case/CASE-B'));
+    });
+
+    test('mounting with an initial route restores that view after boot instead of staying on dash', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      window.history.pushState(null, '', '/crm/admin');
+
+      render(createElement(CrmApp, { initialRoute: 'admin', initialArg: null }));
+
+      expect(await screen.findByRole('heading', { name: 'Admin' })).toBeInTheDocument();
+      // Boot's vDash always lands on dash first and its render .then is
+      // unguarded - give that macrotask a chance to run and clobber us if
+      // the restore isn't actually winning.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(screen.getByTestId('crm-route')).toHaveAttribute('data-route', 'admin');
+      expect(screen.queryByRole('heading', { name: 'Overview' })).not.toBeInTheDocument();
+      expect(window.location.pathname).toBe('/crm/admin');
+    });
+
+    test('browser back/forward (popstate) restores the matching view without adding history entries', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("cases")');
+      await waitFor(() => expect(window.location.pathname).toBe('/crm/cases'));
+
+      // Simulate the browser having already moved to '/crm' (as it does
+      // before ever dispatching popstate) - capture the length AFTER that,
+      // so the assertion below proves our popstate handler doesn't add a
+      // second entry on top of it.
+      window.history.pushState(null, '', '/crm');
+      const historyLengthBeforePop = window.history.length;
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      expect(screen.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
+      expect(window.history.length).toBe(historyLengthBeforePop);
+    });
+
+    test('a synchronous boot lock does not rewrite the deep-linked URL', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      Object.defineProperty(window, 'fetch', { configurable: true, writable: true, value: fetchMock });
+      window.BOOT = {
+        ok: false,
+        reason: 'NOT_REGISTERED: Ask your manager to add you to CRM users.',
+        email: 'new.user@automationsystems.org'
+      };
+      window.history.pushState(null, '', '/crm/cases');
+
+      render(createElement(CrmApp, { initialRoute: 'cases', initialArg: null }));
+
+      expect(await screen.findByRole('heading', { name: 'You are not registered yet' })).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(window.location.pathname).toBe('/crm/cases');
+    });
+
+    test('an async boot failure does not rewrite the deep-linked URL', async () => {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: false, error: 'Authentication required.' }), { status: 401 }));
+      vi.stubGlobal('fetch', fetchMock);
+      Object.defineProperty(window, 'fetch', { configurable: true, writable: true, value: fetchMock });
+      window.history.pushState(null, '', '/crm/cases');
+
+      render(createElement(CrmApp, { initialRoute: 'cases', initialArg: null }));
+
+      expect(await screen.findByRole('heading', { name: 'Access pending' })).toBeInTheDocument();
+      expect(window.location.pathname).toBe('/crm/cases');
+    });
+
+    test('deep-linking into a role-hidden tab falls back to the dashboard', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L1');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      window.history.pushState(null, '', '/crm/cases');
+      const historyLengthBeforeRender = window.history.length;
+
+      render(createElement(CrmApp, { initialRoute: 'cases', initialArg: null }));
+
+      expect(await screen.findByRole('heading', { name: 'My work' })).toBeInTheDocument();
+      await waitFor(() => expect(window.location.pathname).toBe('/crm'));
+      expect(screen.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
+      // replaceState, not pushState - no new entry for an access fallback.
+      expect(window.history.length).toBe(historyLengthBeforeRender);
+    });
+
+    test('unmounting before the deferred restore fires does not throw or call the RPC layer again', async () => {
+      const fetchMock = mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      window.history.pushState(null, '', '/crm/admin');
+
+      const { unmount } = render(createElement(CrmApp, { initialRoute: 'admin', initialArg: null }));
+      // Let the boot mutation's microtask arm the deferred restore, then tear
+      // down before its setTimeout(0) macrotask ever runs.
+      await Promise.resolve();
+      const callCountAtUnmount = fetchMock.mock.calls.length;
+      unmount();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(fetchMock.mock.calls.length).toBe(callCountAtUnmount);
+    });
   });
 });

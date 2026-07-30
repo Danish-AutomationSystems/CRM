@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-07-30
+Last updated: 2026-07-31
 
 ## Project Purpose
 
@@ -70,6 +70,22 @@ Completed:
   - Generator script (`scripts/port-legacy-index.mjs`) safe DOM helpers (`setHtml`, `setText`) and unmounted DOM error suppression in `oops(e)` to prevent errors during fast route switching.
 - Generator CSS Protection:
   - `scripts/port-legacy-index.mjs` writes raw legacy AppsScript CSS to `legacy-full-ui.baseline.css` so that `src/app/crm/legacy-full-ui.css` remains manually maintained and is never overwritten on regeneration.
+- CRM Tab URL Routing (2026-07-31):
+  - The CRM previously ran the whole authenticated app behind a single `/crm` route. The legacy client switched views (Dashboard/Customers/Cases/Admin/detail views) purely in-memory (`S.route`/`S.routeArg`), never touching `window.location`, so refreshing always reset the user to Dashboard and browser back/forward did nothing.
+  - Added `src/app/crm/[[...slug]]/page.tsx`, an optional catch-all route replacing `src/app/crm/page.tsx`, mapping `/crm`, `/crm/customers`, `/crm/customer/:id`, `/crm/cases`, `/crm/case/:id`, `/crm/admin` to an initial `{route, arg}` via `src/app/crm/route-map.ts` (pure, unit-tested slug<->path<->route-state mapping). Unknown slugs fall back to `dash`. No `src/middleware.ts` change was needed - it already prefix-protects `/crm/*`.
+  - `src/app/crm/LegacyFullCrmApp.tsx` now syncs the URL from the legacy app's existing `#main[data-route]` attribute (the generator already stamps this on every `S.route=` assignment) via a `MutationObserver`, using raw `window.history.pushState(null, '', path)` - deliberately NOT `next/navigation`'s `router.push`, which would remount the page's client subtree (the catch-all segment value changes) and re-`eval` the ~115KB legacy script on every tab click. Next.js 15 patches `window.history.pushState` itself (`node_modules/next/dist/client/components/app-router.js`) to keep its internal router state in sync, so raw `pushState` is the supported integration point, confirmed by Playwright back/forward tests passing against the real dev server.
+  - The record id (`S.routeArg`) for detail views is read directly off the `window.S` global at MutationObserver time (indirect `eval` puts legacy script globals on `window`), never from a new DOM attribute - this keeps the frozen legacy artifact (see below) completely untouched.
+  - Handles the async boot race: `init()` always lands on `vDash` first (its render `.then` has no route guard, unlike the other views), so a deep-linked initial route is restored via a one-shot flag consumed on the first `data-route` mutation, deferred to a `setTimeout(0)` macrotask so it runs after `vDash`'s render and isn't clobbered.
+  - Role-hidden tabs (e.g. an L1 user deep-linking `/crm/cases`, whose nav button is `display:none`): silently falls back to the dashboard and rewrites the URL to `/crm` via `replaceState` (not `pushState`), so Back still exits the CRM cleanly. Server-side RPC authorization remains the actual security boundary; this is UX-only.
+  - Tests: `src/app/crm/route-map.test.ts` (pure mapping + round-trip), `src/app/crm/legacy-app.test.ts` `describe('tab URL sync', ...)` (boot-race, popstate, hidden-tab fallback, clean unmount), `tests/e2e/crm-smoke.spec.ts` (nav click updates URL without remounting via a `window.__mountProbe` sentinel, refresh restores the exact view, cold deep link, back/forward, unauthenticated deep links preserve `next=`).
+  - Design doc: `docs/superpowers/specs/2026-07-31-crm-tab-routing-design.md`.
+
+### Known issue: the legacy artifact and its generator have drifted - treat the artifact as frozen
+
+- `scripts/port-legacy-index.mjs` has a latent bug: its `el(x).innerHTML = EXPR;` / `el(x).textContent = EXPR;` -> `setHtml(...)`/`setText(...)` transforms do not correctly locate the statement's true closing `;` (a naive attempt at fixing this during the tab-routing work still broke on nested callbacks and CSS strings containing `;`). Running `node scripts/port-legacy-index.mjs` today **produces syntactically invalid JavaScript** in `src/app/crm/legacy-full.generated.ts`.
+- The committed `legacy-full.generated.ts` predates those transforms (it has zero `setHtml(`/`setText(` call sites), so it remains valid and is what's actually deployed. This means the 2026-07-30 "Generator script ... safe DOM helpers (`setHtml`, `setText`)" line above is **aspirational, not actually shipped** - the generator was edited to add that transform, but the artifact was never successfully regenerated afterward.
+- Until the generator's expression-scanning is fixed (properly tracking string-literal and paren/brace/bracket depth, not just "stop at the first `;`") and verified with a syntax-check test (e.g. `new Function(legacyAppScript)` must not throw) before being trusted, **do not run the generator and commit its output**. Treat `src/app/crm/legacy-full.generated.ts` as a frozen, hand-verified artifact. Build any new CRM behavior in the React wrapper (`LegacyFullCrmApp.tsx`, `CrmApp.tsx`, `route-map.ts`, the `[[...slug]]` page) instead, exactly as the tab-routing work above did.
+- Separately useful invariant if anyone does fix the generator: the artifact emits `S.route='case'; setRouteAttr('case'); S.routeArg=id; setTab('cases');` - i.e. `setRouteAttr` (which stamps `data-route`) fires *before* `S.routeArg` is assigned. Reading `S.routeArg` is only safe from a `MutationObserver` callback (a microtask, so it runs after the full synchronous statement list), never synchronously right after observing the attribute change.
 
 Pending/manual:
 
@@ -94,9 +110,13 @@ Pending/manual:
 - `src/app/auth/callback/route.ts`
   - Handles Supabase OAuth callback and session exchange.
 
-- `src/app/crm/page.tsx`
-  - Protected CRM route.
+- `src/app/crm/[[...slug]]/page.tsx`
+  - Protected CRM route, an optional catch-all so `/crm`, `/crm/customers`, `/crm/customer/:id`, `/crm/cases`, `/crm/case/:id`, and `/crm/admin` all resolve here.
   - Imports the migrated full legacy CRM UI CSS.
+  - Maps `params.slug` to an initial `{route, arg}` via `src/app/crm/route-map.ts` and passes it into `CrmApp`/`LegacyFullCrmApp` so a refresh or deep link restores the correct tab instead of always landing on Dashboard.
+
+- `src/app/crm/route-map.ts`
+  - Pure, unit-tested slug <-> URL path <-> legacy `{route, arg}` mapping used by both the server page and the client wrapper.
 
 - `src/app/api/rpc/route.ts`
   - Server-side RPC endpoint.
@@ -460,6 +480,14 @@ Smoke test:
 
 - `tests/e2e/crm-smoke.spec.ts`
 
+The mocked-authenticated-session Playwright tests (nav/URL sync, tab routing, refresh restore, back/forward) are skipped by default and only run when a fake local Supabase env is set, since `playwright.config.ts` spawns `npm run dev` and passes through the process env:
+
+```powershell
+$env:NEXT_PUBLIC_SUPABASE_URL='http://127.0.0.1:3999'
+$env:NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY='dummy-anon-key'
+npx playwright test
+```
+
 ## Known Product Decisions
 
 - Google Drive upload is intentionally not part of the current migrated version.
@@ -502,6 +530,7 @@ Smoke test:
 - `docs/qa/final-migration-checklist.md`
 - `docs/superpowers/specs/2026-07-29-vercel-supabase-crm-migration-design.md`
 - `docs/superpowers/plans/2026-07-29-vercel-supabase-crm-migration.md`
+- `docs/superpowers/specs/2026-07-31-crm-tab-routing-design.md`
 - `docs/superpowers/agent-reports/*`
 
 ## If A New Agent Takes Over

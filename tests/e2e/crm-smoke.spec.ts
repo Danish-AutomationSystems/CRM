@@ -1,6 +1,7 @@
 import http from 'node:http';
 
 import { expect, test } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 
 const fakeSupabasePort = 3999;
 const fakeSupabaseUrl = `http://127.0.0.1:${fakeSupabasePort}`;
@@ -207,12 +208,15 @@ test('unauthenticated CRM visit reaches the login gate', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
 });
 
-test('mocked authenticated session renders critical CRM route containers', async ({ context, page }) => {
-  test.skip(
-    !isFakeSupabaseConfigured(),
-    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
-  );
+test('unauthenticated deep links to a CRM subroute redirect back to that subroute after login', async ({ page }) => {
+  await page.goto('/crm/cases');
+  await expect(page).toHaveURL(/\/login\?next=%2Fcrm%2Fcases$/);
 
+  await page.goto('/crm/case/CASE-2026-0001');
+  await expect(page).toHaveURL(/\/login\?next=%2Fcrm%2Fcase%2FCASE-2026-0001$/);
+});
+
+async function setUpAuthenticatedSession(context: BrowserContext, page: Page) {
   await context.addCookies([
     {
       name: storageCookieName,
@@ -239,6 +243,15 @@ test('mocked authenticated session renders critical CRM route containers', async
       })
     });
   });
+}
+
+test('mocked authenticated session renders critical CRM route containers', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
 
   await page.goto('/crm');
 
@@ -271,4 +284,117 @@ test('mocked authenticated session renders critical CRM route containers', async
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'admin');
   await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Run customer import' })).toBeVisible();
+});
+
+test('clicking a tab updates the URL without remounting the legacy app', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm');
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
+
+  // Stamp a sentinel that only survives if the legacy app's global scope
+  // (and the React host it's eval'd into) is never torn down. If tab
+  // navigation ever regresses to next/navigation's router.push instead of
+  // a raw history.pushState, the catch-all segment's client subtree
+  // remounts and this sentinel is lost.
+  await page.evaluate(() => {
+    (window as unknown as { __mountProbe?: string }).__mountProbe = 'still-mounted';
+  });
+
+  await page.getByRole('button', { name: 'Cases' }).first().click();
+  await expect(page).toHaveURL(/\/crm\/cases$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
+  expect(await page.evaluate(() => (window as unknown as { __mountProbe?: string }).__mountProbe)).toBe(
+    'still-mounted'
+  );
+});
+
+test('opening a case shows its id in the URL', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm');
+
+  await page.getByRole('button', { name: 'Cases' }).first().click();
+  await page.getByText('Panel upgrade').first().click();
+
+  await expect(page).toHaveURL(/\/crm\/case\/CASE-2026-0001$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
+});
+
+test('refreshing a case view keeps the user on that case instead of resetting to the dashboard', async ({
+  context,
+  page
+}) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm');
+  await page.getByRole('button', { name: 'Cases' }).first().click();
+  await page.getByText('Panel upgrade').first().click();
+  await expect(page).toHaveURL(/\/crm\/case\/CASE-2026-0001$/);
+
+  await page.reload();
+
+  await expect(page).toHaveURL(/\/crm\/case\/CASE-2026-0001$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+});
+
+test('a cold deep link renders the target view directly, without visiting the dashboard first', async ({
+  context,
+  page
+}) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/admin');
+
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'admin');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run customer import' })).toBeVisible();
+});
+
+test('browser back and forward move between previously visited tabs', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm');
+
+  await page.getByRole('button', { name: 'Customers' }).first().click();
+  await expect(page).toHaveURL(/\/crm\/customers$/);
+
+  await page.getByRole('button', { name: 'Cases' }).click();
+  await expect(page).toHaveURL(/\/crm\/cases$/);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/crm\/customers$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
+  await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/crm$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+
+  await page.goForward();
+  await expect(page).toHaveURL(/\/crm\/customers$/);
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
 });
