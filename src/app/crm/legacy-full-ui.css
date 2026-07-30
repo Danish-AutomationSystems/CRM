@@ -4,6 +4,7 @@
     --tint:#E7EFE9; --ink:#17251E; --muted:#5C6E64; --line:#DEE5E0; --amber:#B97B0F;
     --amber-bg:#F7ECD9; --red:#B3402F; --red-bg:#F6E4E0; --blue:#2F5FA8; --blue-bg:#E2EAF6;
     --mono:'IBM Plex Mono',ui-monospace,monospace; --disp:'Space Grotesk',sans-serif; --body:'Inter',sans-serif;
+    --brand-lt:#E7F5ED; --brand-glow:rgba(30,138,82,0.12);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html{-webkit-text-size-adjust:100%}
