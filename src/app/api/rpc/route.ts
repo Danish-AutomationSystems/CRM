@@ -35,11 +35,19 @@ export async function POST(request: Request): Promise<NextResponse> {
     const context = await getRequestContext(request);
     const result = await callRpc(body.fn, body.args, request, context);
 
-    return NextResponse.json({
-      ok: true,
-      data: result.data,
-      metadata: result.metadata
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        data: result.data,
+        metadata: result.metadata
+      },
+      {
+        headers: {
+          'Vary': 'Accept-Encoding',
+          'Cache-Control': 'no-store, max-age=0'
+        }
+      }
+    );
   } catch (error) {
     const rpcError = normalizeRpcError(error);
 
