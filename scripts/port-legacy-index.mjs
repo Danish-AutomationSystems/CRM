@@ -93,8 +93,14 @@ script = replaceBetween(script, 'function gs(fn){', 'var toastT = null;', rpcGs)
 script = script.replace(
   'function el(id){ return document.getElementById(id); }',
   `function el(id){ return document.getElementById(id); }
+function setHtml(id, html){ var n = typeof id === 'string' ? el(id) : id; if(n) n.innerHTML = html; }
+function setText(id, txt){ var n = typeof id === 'string' ? el(id) : id; if(n) n.textContent = txt; }
 function setRouteAttr(name){ var m=el('main'); if(m) m.setAttribute('data-route', name); }`
 );
+
+// Safe DOM element property assignments to prevent null dereference errors when unmounted during route changes
+script = script.replace(/el\(([^)]+)\)\.innerHTML\s*=\s*/g, 'setHtml($1, ');
+script = script.replace(/el\(([^)]+)\)\.textContent\s*=\s*/g, 'setText($1, ');
 script = script.replace(
   'function oops(e){ toast(errMsg(e), true); }',
   `function oops(e){

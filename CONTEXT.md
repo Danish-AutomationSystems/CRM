@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-07-29
+Last updated: 2026-07-30
 
 ## Project Purpose
 
@@ -22,9 +22,9 @@ The source repository is:
 
 - https://github.com/Danish-AutomationSystems/CRM.git
 
-Active migration branch:
+Active deployment branch:
 
-- `migration/vercel-supabase-crm`
+- `main` (feature work was developed on `migration/vercel-supabase-crm` and merged into `main`)
 
 ## Security Rules For Future Agents
 
@@ -57,7 +57,19 @@ Completed:
   - Vercel deployment: `dpl_5c9DWd2aQkSzdoWSdzH5CLUEwNs4`
   - Production aliases moved to the new deployment, including `https://crm.automationsystems.info`
   - `https://as-crm-ten.vercel.app/login` returned HTTP 200
-  - `https://crm.automationsystems.info/login` returned HTTP 200 via direct Vercel resolve probe
+  - UI Revamp & Modernization (2026-07-30):
+  - CSS design system tokens (`--sp-*`, `--fs-*`, `--r-*`, `--shadow-*`, `--brand-lt`, `--brand-glow`).
+  - Sticky header with backdrop blur filter (`backdrop-filter: blur(12px)`).
+  - Modern responsive mobile layout with hamburger toggle (`.nav-toggle`).
+  - Redesigned login page (`/login`) with brand mark icon, diagonal green gradient background, and styled button.
+- Performance & Latency Optimizations (2026-07-30):
+  - Supabase B-tree and GIN database indexes (`supabase/migrations/0003_performance_indexes.sql`).
+  - RPC Gzip/Brotli payload compression headers (`/api/rpc`).
+  - Selective SQL query field projection.
+  - Client SWR memory caching with automatic write-invalidation (`cacheBustKey`).
+  - Generator script (`scripts/port-legacy-index.mjs`) safe DOM helpers (`setHtml`, `setText`) and unmounted DOM error suppression in `oops(e)` to prevent errors during fast route switching.
+- Generator CSS Protection:
+  - `scripts/port-legacy-index.mjs` writes raw legacy AppsScript CSS to `legacy-full-ui.baseline.css` so that `src/app/crm/legacy-full-ui.css` remains manually maintained and is never overwritten on regeneration.
 
 Pending/manual:
 
