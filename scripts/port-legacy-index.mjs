@@ -179,4 +179,8 @@ export const legacyAppScript = ${JSON.stringify(script)};
 `;
 
 fs.writeFileSync(path.join(outDir, 'legacy-full.generated.ts'), generatedTs, 'utf8');
-fs.writeFileSync(path.join(outDir, 'legacy-full-ui.css'), css, 'utf8');
+
+// Write baseline CSS for reference/diffing — the actual legacy-full-ui.css
+// is now manually maintained for the UI revamp and should NOT be overwritten.
+fs.writeFileSync(path.join(outDir, 'legacy-full-ui.baseline.css'), css, 'utf8');
+

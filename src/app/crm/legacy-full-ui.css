@@ -1,9 +1,10 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
 :root{
-    --deep:#0F231B; --paper:#F3F5F3; --card:#FFFFFF; --brand:#1E8A52; --brand-dk:#15703F;
+    --deep:#0F231B; --paper:#F5F7F6; --card:#FFFFFF; --brand:#1E8A52; --brand-dk:#15703F;
     --tint:#E7EFE9; --ink:#17251E; --muted:#5C6E64; --line:#DEE5E0; --amber:#B97B0F;
     --amber-bg:#F7ECD9; --red:#B3402F; --red-bg:#F6E4E0; --blue:#2F5FA8; --blue-bg:#E2EAF6;
     --mono:'IBM Plex Mono',ui-monospace,monospace; --disp:'Space Grotesk',sans-serif; --body:'Inter',sans-serif;
+    --brand-lt:#E7F5ED; --brand-glow:rgba(30,138,82,0.12);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html{-webkit-text-size-adjust:100%}
@@ -16,22 +17,25 @@
   #busy:after{content:"";position:absolute;left:-40%;width:40%;top:0;bottom:0;background:var(--brand);animation:slide 1s linear infinite}
   @keyframes slide{to{left:100%}}
 
-  header{background:var(--deep);color:#EAF3EC;border-bottom:3px solid var(--brand)}
-  .hwrap{max-width:1180px;margin:0 auto;padding:0 20px;display:flex;align-items:center;gap:22px;min-height:58px;flex-wrap:wrap}
-  .brand{display:flex;align-items:center;gap:11px;padding:10px 0}
-  .mark{width:30px;height:30px;border:2px solid var(--brand);border-radius:6px;display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 5px;background:rgba(30,138,82,.12)}
+  header{background:var(--deep);color:#EAF3EC;border-bottom:3px solid var(--brand);position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  .hwrap{max-width:1180px;margin:0 auto;padding:0 var(--sp-5);display:flex;align-items:center;gap:var(--sp-5);min-height:58px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) 0}
+  .mark{width:34px;height:34px;border:2px solid var(--brand);border-radius:var(--r-sm);display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 5px;background:rgba(30,138,82,.12);transition:transform var(--duration-fast) var(--ease-out)}
+  .mark:hover{transform:scale(1.05)}
   .mark i{display:block;height:3px;border-radius:2px;background:#9FD4B4}
   .mark i:nth-child(2){background:var(--brand)}
   .brand b{font-family:var(--disp);font-size:17px;letter-spacing:.04em}
   .brand small{display:block;font-size:10.5px;color:#9DB3A4;letter-spacing:.02em;margin-top:-2px}
-  nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}
-  nav button{appearance:none;border:0;background:transparent;color:#C5D6C9;font:600 13px var(--body);padding:8px 13px;border-radius:7px;cursor:pointer;letter-spacing:.01em}
+  nav{display:flex;gap:var(--sp-1);flex:1;flex-wrap:wrap;transition:max-height var(--duration-normal) var(--ease-out),opacity var(--duration-normal) var(--ease-out)}
+  nav button{appearance:none;border:0;background:transparent;color:#C5D6C9;font:600 13px var(--body);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);cursor:pointer;letter-spacing:.01em;transition:background var(--duration-fast),color var(--duration-fast);min-height:40px}
   nav button:hover{background:rgba(255,255,255,.08);color:#fff}
-  nav button.on{background:var(--brand);color:#fff}
-  .uchip{display:flex;align-items:center;gap:9px;padding:6px 0;margin-left:auto}
+  nav button.on{background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(30,138,82,.25)}
+  .uchip{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) 0;margin-left:auto}
   .uname{font-weight:600;font-size:13px;color:#fff}
   .umail{font-size:11px;color:#9DB3A4}
-  .rolebadge{font:600 10px var(--mono);letter-spacing:.06em;color:#0F231B;background:#9FD4B4;border-radius:4px;padding:3px 7px;text-transform:uppercase}
+  .rolebadge{font:600 10px var(--mono);letter-spacing:.06em;color:#0F231B;background:#9FD4B4;border-radius:var(--r-sm);padding:3px 7px;text-transform:uppercase}
+  .nav-toggle{display:none;appearance:none;border:0;background:transparent;color:#C5D6C9;font-size:22px;cursor:pointer;padding:var(--sp-2);border-radius:var(--r-sm);line-height:1}
+  .nav-toggle:hover{background:rgba(255,255,255,.08);color:#fff}
 
   main{max-width:1180px;margin:0 auto;padding:var(--sp-5) var(--sp-5) 80px}
   .row{display:flex;gap:var(--sp-4);flex-wrap:wrap}
