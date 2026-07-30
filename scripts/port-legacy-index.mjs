@@ -30,6 +30,10 @@ let script = between(source, '<script id="appjs">', '</script>').trim();
 
 body = body.replace('<main id="main"></main>', '<main id="main" data-testid="crm-route" data-route="dash"></main>');
 body = body.replace('<button id="qlbtn" ', '<button id="qlbtn" style="display:none" ');
+body = body.replace(
+  '<nav id="nav">',
+  '<button class="nav-toggle" id="navToggle" onclick="document.getElementById(\'nav\').classList.toggle(\'nav-open\');this.setAttribute(\'aria-expanded\',document.getElementById(\'nav\').classList.contains(\'nav-open\'))" aria-label="Toggle navigation" aria-expanded="false">☰</button><nav id="nav" role="navigation" aria-label="Main navigation">'
+);
 
 const rpcGs = `function gs(fn){
   var args = Array.prototype.slice.call(arguments,1);
