@@ -119,17 +119,18 @@
   #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   #toast.err{border-left-color:var(--red);background:#2A1515}
 
-  .kv{display:grid;grid-template-columns:130px 1fr;gap:7px 12px;font-size:13px}
+  .kv{display:grid;grid-template-columns:140px 1fr;gap:var(--sp-2) var(--sp-3);font-size:13px}
   .kv b{font-weight:600;color:var(--muted);font-size:12px}
-  .tagpick{display:flex;flex-wrap:wrap;gap:6px}
-  .tagpick button{appearance:none;font:500 12px var(--body);border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:18px;padding:4px 11px;cursor:pointer}
-  .tagpick button.on{background:var(--brand);border-color:var(--brand);color:#fff}
-  .lockcard{max-width:480px;margin:80px auto;background:#fff;border:1px solid var(--line);border-top:4px solid var(--amber);border-radius:12px;padding:30px;text-align:center}
-  .lockcard h1{margin-bottom:10px}
-  .lines th,.lines td{padding:6px 7px}
-  .lines input{padding:6px 8px;font-size:13px}
+  .tagpick{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+  .tagpick button{appearance:none;font:500 12px var(--body);border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:var(--r-pill);padding:var(--sp-1) var(--sp-3);cursor:pointer;transition:background var(--duration-fast),border-color var(--duration-fast),color var(--duration-fast),transform var(--duration-fast)}
+  .tagpick button:hover{border-color:var(--brand);color:var(--brand-dk)}
+  .tagpick button.on{background:var(--brand);border-color:var(--brand);color:#fff;transform:scale(1.02)}
+  .lockcard{max-width:480px;margin:80px auto;background:#fff;border:1px solid var(--line);border-top:4px solid var(--amber);border-radius:var(--r-lg);padding:var(--sp-8);text-align:center;box-shadow:var(--shadow-lg)}
+  .lockcard h1{margin-bottom:var(--sp-3)}
+  .lines th,.lines td{padding:var(--sp-2) var(--sp-2)}
+  .lines input{padding:var(--sp-2) var(--sp-2);font-size:13px}
   .lines .num{text-align:right;font-family:var(--mono)}
-  .totrow{display:flex;justify-content:flex-end;gap:14px;align-items:center;font-size:13.5px;padding:5px 8px}
+  .totrow{display:flex;justify-content:flex-end;gap:var(--sp-4);align-items:center;font-size:13.5px;padding:5px var(--sp-2)}
   .totrow b{min-width:120px;text-align:right}
   .filterbar{display:flex;gap:var(--sp-3);flex-wrap:wrap;align-items:center;margin-bottom:var(--sp-4)}
   tr.fr th{padding:3px var(--sp-2);background:#F3F6F4;position:sticky;top:0;z-index:2}
@@ -161,14 +162,14 @@
   .seg button:last-child{border-right:0}
   .seg button.on{background:var(--brand);color:#fff}
 
-  .fu{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;flex-wrap:wrap}
+  .fu{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-md);margin-bottom:var(--sp-2);flex-wrap:wrap;transition:border-color var(--duration-fast)}
   .fu.due{border-left:3px solid var(--amber)}
   .fu.over{border-left:3px solid var(--red)}
   .fu .gr{flex:1;min-width:150px}
 
-  #qlbtn{position:fixed;right:18px;bottom:18px;z-index:80;border:none;background:var(--brand);color:#fff;font:600 14px var(--body);padding:13px 19px;border-radius:30px;box-shadow:0 6px 20px rgba(15,35,27,.30);cursor:pointer;display:none}
-  #qlbtn:hover{background:var(--brand-dk)}
-  .ql-res{border:1px solid var(--line);border-radius:8px;max-height:200px;overflow:auto;margin-top:8px}
+  #qlbtn{position:fixed;right:var(--sp-5);bottom:var(--sp-5);z-index:80;border:none;background:var(--brand);color:#fff;font:600 14px var(--body);padding:var(--sp-3) var(--sp-5);border-radius:var(--r-pill);box-shadow:var(--shadow-lg);cursor:pointer;display:none;transition:background var(--duration-fast),transform var(--duration-fast),box-shadow var(--duration-fast)}
+  #qlbtn:hover{background:var(--brand-dk);transform:translateY(-2px);box-shadow:var(--shadow-xl)}
+  .ql-res{border:1px solid var(--line);border-radius:var(--r-md);max-height:200px;overflow:auto;margin-top:var(--sp-2)}
   .ql-res .qr{margin:0;border:0;border-bottom:1px solid #ECF0ED;border-radius:0;cursor:pointer}
   .ql-res .qr:last-child{border-bottom:0}
   .ql-res .qr:hover{background:#F6FAF7}
