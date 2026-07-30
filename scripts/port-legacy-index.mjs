@@ -96,6 +96,14 @@ script = script.replace(
 function setRouteAttr(name){ var m=el('main'); if(m) m.setAttribute('data-route', name); }`
 );
 script = script.replace(
+  'function oops(e){ toast(errMsg(e), true); }',
+  `function oops(e){
+  var msg = errMsg(e);
+  if(msg && (msg.indexOf('Cannot set properties of null') > -1 || msg.indexOf("setting 'innerHTML'") > -1 || msg.indexOf("setting 'textContent'") > -1)){ return; }
+  toast(msg, true);
+}`
+);
+script = script.replace(
   `function esc(v){
   return String(v===null||v===undefined?'':v)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
