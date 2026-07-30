@@ -35,8 +35,35 @@ body = body.replace(
   '<button class="nav-toggle" id="navToggle" onclick="document.getElementById(\'nav\').classList.toggle(\'nav-open\');this.setAttribute(\'aria-expanded\',document.getElementById(\'nav\').classList.contains(\'nav-open\'))" aria-label="Toggle navigation" aria-expanded="false">☰</button><nav id="nav" role="navigation" aria-label="Main navigation">'
 );
 
-const rpcGs = `function gs(fn){
+const rpcGs = `var SWR_CACHE = {};
+var WRITE_PURGES = {
+  saveCustomer: ['getCustomersGrid','getDashboardData','getCustomerDetail'],
+  saveCase: ['getCases','getDashboardData','getCustomerDetail'],
+  updateContact: ['getCustomerDetail','getCustomersGrid'],
+  deleteCustomer: ['getCustomersGrid','getDashboardData'],
+  saveQuotation: ['getCases','getDashboardData'],
+  purgeCust: ['getCustomersGrid','getDashboardData']
+};
+
+function cacheBustKey(fn) {
+  if (WRITE_PURGES[fn]) {
+    WRITE_PURGES[fn].forEach(function(k) {
+      Object.keys(SWR_CACHE).forEach(function(ck) {
+        if (ck.indexOf(k) === 0) delete SWR_CACHE[ck];
+      });
+    });
+  } else {
+    SWR_CACHE = {};
+  }
+}
+
+function gs(fn){
   var args = Array.prototype.slice.call(arguments,1);
+  var ck = fn + ':' + JSON.stringify(args);
+  if (QREADS[fn] && SWR_CACHE[ck] && (Date.now() - SWR_CACHE[ck].ts < 30000)) {
+    return Promise.resolve(SWR_CACHE[ck].data);
+  }
+
   busy(true);
   return new Promise(function(res,rej){
     var done=false;
@@ -53,7 +80,8 @@ const rpcGs = `function gs(fn){
         clearTimeout(timer);
         busy(false);
         if(!payload || payload.ok===false){ rej(new Error((payload && payload.error) || 'Request failed.')); return; }
-        if(!QREADS[fn]) cacheBust();
+        if(QREADS[fn]) { SWR_CACHE[ck] = { ts: Date.now(), data: payload.data }; }
+        else { cacheBustKey(fn); }
         res(payload.data);
       })
       .catch(function(e){ if(done)return; done=true; clearTimeout(timer); busy(false); rej(e); });
