@@ -37,6 +37,20 @@
   .nav-toggle{display:none;appearance:none;border:0;background:transparent;color:#C5D6C9;font-size:22px;cursor:pointer;padding:var(--sp-2);border-radius:var(--r-sm);line-height:1}
   .nav-toggle:hover{background:rgba(255,255,255,.08);color:#fff}
 
+  /* Below this, the header nav no longer reliably fits on one line (it
+     starts wrapping mid-item, e.g. an orphaned last button on its own row)
+     well before the phone-only content breakpoint further down, so the
+     collapsible drawer nav gets its own wider threshold covering common
+     tablet-portrait widths (iPad Mini/Air/Pro all fall in 744-834px). */
+  @media(max-width:900px){
+    .nav-toggle{display:block}
+    nav{max-height:0;overflow:hidden;opacity:0;order:3;flex:0 0 100%;width:100%;margin-top:var(--sp-1);flex-direction:column;gap:0}
+    nav.nav-open{max-height:300px;opacity:1;padding-bottom:var(--sp-2)}
+    nav button{width:100%;text-align:left;border-radius:0;padding:var(--sp-3) var(--sp-4)}
+    .uchip{margin-left:0}
+    .hwrap{gap:var(--sp-2)}
+  }
+
   main{max-width:1180px;margin:0 auto;padding:var(--sp-5) var(--sp-5) 80px}
   .row{display:flex;gap:var(--sp-4);flex-wrap:wrap}
   .col{flex:1;min-width:300px}
@@ -184,12 +198,7 @@
   .table-scroll.has-scroll::after{opacity:1}
 
   @media(max-width:720px){
-    .nav-toggle{display:block}
-    nav{max-height:0;overflow:hidden;opacity:0;order:3;width:100%;margin-top:var(--sp-1);flex-direction:column;gap:0}
-    nav.nav-open{max-height:300px;opacity:1;padding-bottom:var(--sp-2)}
-    nav button{width:100%;text-align:left;border-radius:0;padding:var(--sp-3) var(--sp-4)}
-    .uchip{margin-left:0}
-    .hwrap{gap:var(--sp-2);padding:0 var(--sp-4)}
+    .hwrap{padding:0 var(--sp-4)}
     main{padding:var(--sp-4) var(--sp-4) 92px}
     .stats{grid-template-columns:repeat(2,1fr);gap:var(--sp-3)}
     h1{font-size:19px}

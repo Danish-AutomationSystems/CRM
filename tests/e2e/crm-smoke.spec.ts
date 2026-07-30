@@ -398,3 +398,42 @@ test('browser back and forward move between previously visited tabs', async ({ c
   await expect(page).toHaveURL(/\/crm\/customers$/);
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
 });
+
+const mobileNavBreakpoints = [
+  { name: 'phone (390x844)', width: 390, height: 844 },
+  { name: 'tablet portrait (768x1024)', width: 768, height: 1024 }
+];
+
+for (const bp of mobileNavBreakpoints) {
+  test(`the collapsed nav drawer spans the full header width on ${bp.name}`, async ({ context, page }) => {
+    test.skip(
+      !isFakeSupabaseConfigured(),
+      `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+    );
+
+    // Regression test: the mobile nav's `flex:1` (inherited from the
+    // desktop rule, flex-basis 0%) meant an explicit `width:100%` alone did
+    // not force it onto its own row - it grew to fill only the leftover
+    // space next to the user-info chip, splitting the screen into two
+    // narrow columns instead of stacking full-width below the header.
+    await page.setViewportSize({ width: bp.width, height: bp.height });
+    await setUpAuthenticatedSession(context, page);
+
+    await page.goto('/crm');
+    await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
+
+    await page.locator('#navToggle').click();
+    await expect(page.locator('#nav')).toHaveClass(/nav-open/);
+
+    const navBox = await page.locator('#nav').boundingBox();
+    const hwrapBox = await page.locator('.hwrap').boundingBox();
+    expect(navBox).not.toBeNull();
+    expect(hwrapBox).not.toBeNull();
+    expect(navBox!.width).toBeGreaterThan(hwrapBox!.width * 0.9);
+
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+  });
+}

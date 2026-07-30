@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-07-31
+Last updated: 2026-07-31 (mobile nav drawer fix)
 
 ## Project Purpose
 
@@ -79,6 +79,13 @@ Completed:
   - Role-hidden tabs (e.g. an L1 user deep-linking `/crm/cases`, whose nav button is `display:none`): silently falls back to the dashboard and rewrites the URL to `/crm` via `replaceState` (not `pushState`), so Back still exits the CRM cleanly. Server-side RPC authorization remains the actual security boundary; this is UX-only.
   - Tests: `src/app/crm/route-map.test.ts` (pure mapping + round-trip), `src/app/crm/legacy-app.test.ts` `describe('tab URL sync', ...)` (boot-race, popstate, hidden-tab fallback, clean unmount), `tests/e2e/crm-smoke.spec.ts` (nav click updates URL without remounting via a `window.__mountProbe` sentinel, refresh restores the exact view, cold deep link, back/forward, unauthenticated deep links preserve `next=`).
   - Design doc: `docs/superpowers/specs/2026-07-31-crm-tab-routing-design.md`.
+- Mobile Nav Drawer Fix (2026-07-31):
+  - Real-device report (Android Chrome, `crm.automationsystems.info`): opening the mobile hamburger nav on `/crm/cases` showed the user-info chip and the Dashboard/Customers/Cases/Admin buttons side by side in two narrow columns instead of the nav stacking full-width below the header, wasting most of the screen.
+  - Root cause in `src/app/crm/legacy-full-ui.css`: the mobile `nav.nav-open` rule set `width:100%` but `nav`'s base (desktop) rule sets `flex:1`, whose `flex-basis:0%` takes priority over `width` for main-axis sizing in a flex row. So `nav` only grew to fill the leftover space next to `.uchip` on the same line instead of being forced onto its own row. Fixed by adding `flex:0 0 100%` alongside `width:100%` in the mobile rule.
+  - Also widened the hamburger-drawer breakpoint from `max-width:720px` to a dedicated `max-width:900px` media query (kept separate from the phone-only content rules - 2-column stat grid, smaller `h1`, full-screen modals - which stay at 720px). Below 900px the desktop nav was wrapping an orphaned last button onto its own line, which visibly broke on common tablet-portrait widths like iPad (768-834px logical px); above 1024px the desktop nav fits on one line cleanly.
+  - Verified with real Playwright screenshots (not just DOM assertions) across 360-1440px viewport widths on both Dashboard and Cases, confirming no horizontal page overflow and the drawer spans the full header width when open.
+  - Regression coverage added to `tests/e2e/crm-smoke.spec.ts`: `the collapsed nav drawer spans the full header width on ...` at phone (390x844) and tablet-portrait (768x1024) widths, asserting `#nav`'s bounding-box width against `.hwrap`'s and checking for zero horizontal document overflow.
+  - No `ui-ux-pro-max`/`ui-styling` skill exists in the current tool environment despite being referenced by earlier CONTEXT.md UI-revamp entries; this fix was done via direct CSS diagnosis and Playwright visual verification.
 
 ### Known issue: the legacy artifact and its generator have drifted - treat the artifact as frozen
 
