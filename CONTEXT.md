@@ -456,6 +456,10 @@ Smoke test:
 - Preserve feature parity first; fix existing product bugs later.
 - Keep RPC and data behavior close to the Apps Script implementation to reduce migration risk.
 - Security and correctness are preferred over broad rewrites.
+- Current production behavior has been approved for now.
+- Next requested work is latency improvement and a responsive UI revamp without harming functionality or changing base business logic.
+- The UI is currently mounted as a large generated legacy Apps Script client (`src/app/crm/legacy-full.generated.ts`) with full legacy CSS (`src/app/crm/legacy-full-ui.css`), which preserved parity but is not the desired long-term UI architecture.
+- Future latency/UI work must proceed through approved spec/planning first, use TDD for production changes, and keep `CONTEXT.md` updated after every meaningful setup/design/deployment decision.
 
 ## Admin/User Access Model
 
