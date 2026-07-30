@@ -463,6 +463,7 @@ Smoke test:
 - The UI is currently mounted as a large generated legacy Apps Script client (`src/app/crm/legacy-full.generated.ts`) with full legacy CSS (`src/app/crm/legacy-full-ui.css`), which preserved parity but is not the desired long-term UI architecture.
 - Future latency/UI work must proceed through approved spec/planning first, use TDD for production changes, and keep `CONTEXT.md` updated after every meaningful setup/design/deployment decision.
 - UI revamp completion (2026-07-30): CSS overhaul + generator tweaks applied to modernize the CRM frontend. Changes are frontend-only — responsive layout, design system tokens (`--sp-*`, `--fs-*`, `--r-*`, `--shadow-*`), polished typography/spacing, smooth transitions, mobile hamburger nav, mobile full-screen modals, and premium login page restyle. No backend, business logic, or feature parity changes. Design spec: `docs/superpowers/specs/2026-07-30-ui-revamp-design.md`, Plan: `docs/superpowers/plans/2026-07-30-ui-revamp.md`.
+- Performance & Latency Optimization (2026-07-30): Multi-layer optimization completed — Supabase Postgres performance indexes (`0003_performance_indexes.sql`), RPC payload Gzip/Brotli compression, server query projection, and client SWR caching with instant write-invalidation. Preserved 100% feature parity, data safety, and security rules. Spec: `docs/superpowers/specs/2026-07-30-latency-optimization-design.md`, Plan: `docs/superpowers/plans/2026-07-30-latency-optimization.md`.
 
 ## Admin/User Access Model
 
