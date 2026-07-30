@@ -48,27 +48,28 @@
   .crumb a{color:var(--brand-dk);text-decoration:none;font-weight:600;cursor:pointer;transition:color var(--duration-fast)}
   .crumb a:hover{text-decoration:underline;color:var(--brand)}
 
-  .btn{appearance:none;border:1px solid var(--brand);background:var(--brand);color:#fff;font:600 13px var(--body);padding:8px 15px;border-radius:7px;cursor:pointer;white-space:nowrap}
-  .btn:hover{background:var(--brand-dk);border-color:var(--brand-dk)}
-  .btn:disabled{opacity:.55;cursor:default}
+  .btn{appearance:none;border:1px solid var(--brand);background:var(--brand);color:#fff;font:600 13px var(--body);padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);cursor:pointer;white-space:nowrap;transition:background var(--duration-fast),border-color var(--duration-fast),transform var(--duration-fast),box-shadow var(--duration-fast)}
+  .btn:hover{background:var(--brand-dk);border-color:var(--brand-dk);transform:translateY(-1px);box-shadow:0 2px 8px rgba(30,138,82,.2)}
+  .btn:active{transform:translateY(0)}
+  .btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
   .btn.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
-  .btn.ghost:hover{border-color:var(--brand);color:var(--brand-dk);background:#fff}
+  .btn.ghost:hover{border-color:var(--brand);color:var(--brand-dk);background:#fff;transform:translateY(-1px)}
   .btn.danger{background:#fff;color:var(--red);border-color:#E4C4BD}
-  .btn.danger:hover{background:var(--red-bg)}
-  .btn.sm{padding:5px 10px;font-size:12px;border-radius:6px}
-  .btn.lk{background:none;border:none;color:var(--brand-dk);padding:2px 4px;font-weight:600;text-decoration:none}
-  .btn.lk:hover{text-decoration:underline;background:none}
-  input,select,textarea{font:400 13.5px var(--body);color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:7px;padding:8px 10px;width:100%;outline:none}
-  input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(30,138,82,.14)}
+  .btn.danger:hover{background:var(--red-bg);transform:translateY(-1px)}
+  .btn.sm{padding:5px var(--sp-3);font-size:12px;border-radius:var(--r-sm)}
+  .btn.lk{background:none;border:none;color:var(--brand-dk);padding:2px 4px;font-weight:600;text-decoration:none;transform:none;box-shadow:none}
+  .btn.lk:hover{text-decoration:underline;background:none;transform:none;box-shadow:none}
+  input,select,textarea{font:400 13.5px var(--body);color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-2) var(--sp-3);width:100%;outline:none;transition:border-color var(--duration-fast),box-shadow var(--duration-fast);min-height:40px}
+  input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-glow)}
   textarea{resize:vertical;min-height:64px}
   label{display:block;font:600 12px var(--body);color:var(--muted);margin:0 0 5px}
-  .frow{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .frow{display:flex;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3)}
   .frow>div{flex:1;min-width:140px}
   .req:after{content:" *";color:var(--red)}
   .hint{font-size:12px;color:var(--muted);margin-top:5px}
 
-  .chip{display:inline-block;font:500 11.5px var(--body);background:var(--tint);color:#2C5240;border:1px solid #CFE0D5;border-radius:20px;padding:2px 9px;margin:2px 4px 2px 0}
-  .badge{display:inline-block;font:600 11px var(--body);border-radius:5px;padding:2.5px 8px;border:1px solid transparent}
+  .chip{display:inline-block;font:500 11.5px var(--body);background:var(--tint);color:#2C5240;border:1px solid #CFE0D5;border-radius:var(--r-pill);padding:2px 9px;margin:2px 4px 2px 0;transition:transform var(--duration-fast)}
+  .badge{display:inline-block;font:600 11px var(--body);border-radius:5px;padding:2.5px var(--sp-2);border:1px solid transparent;transition:transform var(--duration-fast)}
   .b-green{background:var(--tint);color:#1C6A42;border-color:#C6DCCD}
   .b-amber{background:var(--amber-bg);color:#8A5C0B;border-color:#E8D5AE}
   .b-red{background:var(--red-bg);color:var(--red);border-color:#E6C7C0}
