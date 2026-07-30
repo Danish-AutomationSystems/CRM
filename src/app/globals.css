@@ -47,12 +47,13 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Login page layout (existing, kept) */
+/* Login page layout */
 .app-shell {
   display: grid;
   min-height: 100vh;
   place-items: center;
   padding: var(--sp-6);
+  background: linear-gradient(135deg, #F5F7F6 0%, #E7F5ED 50%, #F5F7F6 100%);
 }
 .welcome-panel {
   width: min(100%, 560px);
@@ -61,6 +62,29 @@ body {
   background: var(--panel);
   padding: var(--sp-8);
   box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.login-mark {
+  width: 48px;
+  height: 48px;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  background: rgba(30, 138, 82, 0.08);
+  margin: 0 auto var(--sp-5);
+}
+.login-mark i {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: #9FD4B4;
+}
+.login-mark i:nth-child(2) {
+  background: var(--accent);
 }
 .eyebrow {
   margin: 0 0 var(--sp-2);
@@ -72,3 +96,54 @@ body {
 }
 h1 { margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: var(--fs-3xl); line-height: 1.1; }
 .lede { margin: var(--sp-4) 0 0; color: var(--muted); font-size: 1rem; line-height: 1.6; }
+
+.login-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-6);
+  margin-top: var(--sp-6);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-sm);
+  font: 600 15px 'Inter', sans-serif;
+  cursor: pointer;
+  min-height: 48px;
+  transition: background var(--duration-fast), transform var(--duration-fast), box-shadow var(--duration-fast);
+}
+.login-btn:hover:not(:disabled) {
+  background: #15703F;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(30, 138, 82, 0.25);
+}
+.login-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+.login-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-error {
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-3) var(--sp-4);
+  background: #FDF3F3;
+  border: 1px solid #E6C7C0;
+  border-radius: var(--r-sm);
+  color: #B42318;
+  font-size: var(--fs-base);
+  text-align: left;
+}
+
+@media (max-width: 480px) {
+  .welcome-panel {
+    padding: var(--sp-6);
+    border-radius: var(--r-md);
+  }
+  .app-shell {
+    padding: var(--sp-4);
+  }
+}

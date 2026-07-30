@@ -51,16 +51,24 @@ export default function LoginPage() {
   return (
     <main className="app-shell">
       <section className="welcome-panel" aria-labelledby="login-title">
+        <div className="login-mark" aria-hidden="true">
+          <i /><i /><i />
+        </div>
         <p className="eyebrow">Automation Systems</p>
         <h1 id="login-title">AS CRM</h1>
-        <p className="lede">Sign in with your Automation Systems Google account.</p>
+        <p className="lede">Sign in with your company Google account to continue.</p>
         {error ? (
-          <p role="alert" className="lede">
+          <p role="alert" className="login-error">
             {error}
           </p>
         ) : null}
-        <button type="button" onClick={signInWithGoogle} disabled={isSigningIn}>
-          {isSigningIn ? 'Opening Google...' : 'Continue with Google'}
+        <button
+          type="button"
+          className="login-btn"
+          onClick={signInWithGoogle}
+          disabled={isSigningIn}
+        >
+          {isSigningIn ? 'Opening Google…' : 'Continue with Google'}
         </button>
       </section>
     </main>
