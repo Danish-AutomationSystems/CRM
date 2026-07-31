@@ -43,12 +43,21 @@
      collapsible drawer nav gets its own wider threshold covering common
      tablet-portrait widths (iPad Mini/Air/Pro all fall in 744-834px). */
   @media(max-width:900px){
-    .nav-toggle{display:block}
+    /* Conventional mobile header: toggle leads on the far left (it was
+       sitting to the right of the title, easy to miss/confuse with the
+       brand mark's bar icon), brand next to it, then the user chip pinned
+       right on the SAME row - one tidy row instead of the toggle+brand+
+       (wrapped, left-aligned) user-card stack this replaces. */
+    .hwrap{gap:var(--sp-2)}
+    .nav-toggle{display:flex;align-items:center;justify-content:center;order:-1;flex:0 0 auto}
+    .brand{flex:0 1 auto;min-width:0}
+    .brand small{display:none}
+    .brand b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .uchip{flex:0 0 auto;margin-left:auto}
+    .umail{display:none}
     nav{max-height:0;overflow:hidden;opacity:0;order:3;flex:0 0 100%;width:100%;margin-top:var(--sp-1);flex-direction:column;gap:0}
     nav.nav-open{max-height:300px;opacity:1;padding-bottom:var(--sp-2)}
     nav button{width:100%;text-align:left;border-radius:0;padding:var(--sp-3) var(--sp-4)}
-    .uchip{margin-left:0}
-    .hwrap{gap:var(--sp-2)}
   }
 
   main{max-width:1180px;margin:0 auto;padding:var(--sp-5) var(--sp-5) 80px}

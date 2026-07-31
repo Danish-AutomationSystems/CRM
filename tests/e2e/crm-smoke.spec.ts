@@ -422,6 +422,23 @@ for (const bp of mobileNavBreakpoints) {
     await page.goto('/crm');
     await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'dash');
 
+    // Regression test: the toggle previously sat to the right of the brand
+    // title (after nav, before uchip in DOM order, no explicit `order`),
+    // easy to miss and confusable with the brand mark's own bar icon. It
+    // must lead the header row, left of the brand.
+    const toggleBox = await page.locator('#navToggle').boundingBox();
+    const brandBox = await page.locator('.brand').boundingBox();
+    const uchipBox = await page.locator('.uchip').boundingBox();
+    expect(toggleBox).not.toBeNull();
+    expect(brandBox).not.toBeNull();
+    expect(uchipBox).not.toBeNull();
+    expect(toggleBox!.x).toBeLessThan(brandBox!.x);
+    // Toggle, brand, and the user chip should all sit on the header's first
+    // row together (a generous tolerance since this only checks "same row",
+    // not pixel-perfect vertical centering).
+    expect(Math.abs(toggleBox!.y - brandBox!.y)).toBeLessThan(30);
+    expect(Math.abs(toggleBox!.y - uchipBox!.y)).toBeLessThan(30);
+
     await page.locator('#navToggle').click();
     await expect(page.locator('#nav')).toHaveClass(/nav-open/);
 

@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-07-31 (mobile nav drawer fix)
+Last updated: 2026-07-31 (mobile header redesign)
 
 ## Project Purpose
 
@@ -86,6 +86,11 @@ Completed:
   - Verified with real Playwright screenshots (not just DOM assertions) across 360-1440px viewport widths on both Dashboard and Cases, confirming no horizontal page overflow and the drawer spans the full header width when open.
   - Regression coverage added to `tests/e2e/crm-smoke.spec.ts`: `the collapsed nav drawer spans the full header width on ...` at phone (390x844) and tablet-portrait (768x1024) widths, asserting `#nav`'s bounding-box width against `.hwrap`'s and checking for zero horizontal document overflow.
   - No `ui-ux-pro-max`/`ui-styling` skill exists in the current tool environment despite being referenced by earlier CONTEXT.md UI-revamp entries; this fix was done via direct CSS diagnosis and Playwright visual verification.
+- Mobile Header Redesign (2026-07-31, follow-up to the nav drawer fix above):
+  - Second real-device report: even after the drawer fix, the hamburger toggle sat to the right of the "AS CRM" title (DOM order is brand, then the generator-injected `.nav-toggle`, then `nav`, then `.uchip`, none with an explicit `order` before this change) - not the conventional leading-left position - and the user-info chip (name + email + role badge) wrapped onto its own left-aligned row below, wasting vertical space before any content was visible.
+  - `src/app/crm/legacy-full-ui.css`, inside the `@media(max-width:900px)` block: `.nav-toggle{order:-1}` moves the toggle to lead the header row (left of the brand mark/title). `.brand small` (the "Automation Systems NG" tagline) and `.umail` (email) are hidden on mobile to shrink content so toggle + brand + a compact `uname`+`rolebadge` chip all fit on a single row, with `.uchip` kept at `margin-left:auto` (previously zeroed, which is what caused it to left-align on its own wrapped row) so it stays pinned to the right like the desktop layout.
+  - Verified via Playwright computed-style inspection that `.nav-toggle` truly has `background:transparent`/no border (confirming its icon is a plain, unstyled glyph, not an actual duplicate "box" next to the brand mark) and via screenshots at 360/390/412/480/768px that toggle, brand, and the compact user chip render on one row with no horizontal overflow.
+  - Regression coverage extended in the same `tests/e2e/crm-smoke.spec.ts` nav-drawer tests: asserts the toggle's bounding box sits left of and on the same row as `.brand` and `.uchip`, in addition to the existing full-width-drawer-when-open and zero-horizontal-overflow checks.
 
 ### Known issue: the legacy artifact and its generator have drifted - treat the artifact as frozen
 
