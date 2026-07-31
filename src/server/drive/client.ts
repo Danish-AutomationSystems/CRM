@@ -1,0 +1,67 @@
+import { Readable } from 'node:stream';
+
+import { google } from 'googleapis';
+
+export type DriveFileUpload = {
+  fileName: string;
+  mimeType: string;
+  body: Buffer;
+};
+
+export type DriveClient = {
+  uploadFile(input: DriveFileUpload, folderId: string): Promise<{ id: string; webViewLink: string }>;
+};
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not configured.`);
+  return value;
+}
+
+function createOAuth2Client() {
+  const clientId = requireEnv('GOOGLE_DRIVE_CLIENT_ID');
+  const clientSecret = requireEnv('GOOGLE_DRIVE_CLIENT_SECRET');
+  const refreshToken = requireEnv('GOOGLE_DRIVE_REFRESH_TOKEN');
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return oauth2Client;
+}
+
+export function createDriveClient(): DriveClient {
+  // Validate env vars at construction time
+  requireEnv('GOOGLE_DRIVE_CLIENT_ID');
+  requireEnv('GOOGLE_DRIVE_CLIENT_SECRET');
+  requireEnv('GOOGLE_DRIVE_REFRESH_TOKEN');
+
+  return {
+    async uploadFile(input: DriveFileUpload, folderId: string) {
+      const drive = google.drive({ version: 'v3', auth: createOAuth2Client() });
+
+      const response = await drive.files.create({
+        requestBody: { name: input.fileName, parents: [folderId] },
+        media: { mimeType: input.mimeType, body: Readable.from(input.body) },
+        fields: 'id, webViewLink'
+      });
+
+      const fileId = response.data.id;
+      if (!fileId) throw new Error('Drive did not return a file id.');
+
+      try {
+        await drive.permissions.create({
+          fileId,
+          requestBody: {
+            type: 'domain',
+            domain: process.env.CRM_ALLOWED_DOMAIN || 'automationsystems.org',
+            role: 'reader'
+          }
+        });
+      } catch {
+        // Some Workspace domains restrict link sharing - the file still
+        // exists and the upload still succeeds either way (mirrors the
+        // legacy Apps Script behavior at Code.gs:1722).
+      }
+
+      return { id: fileId, webViewLink: response.data.webViewLink ?? '' };
+    }
+  };
+}
