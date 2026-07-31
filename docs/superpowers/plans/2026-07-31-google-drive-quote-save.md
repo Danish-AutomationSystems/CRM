@@ -569,7 +569,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      driveClient: { uploadFile },
+      getDriveClient: () => ({ uploadFile }),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -593,7 +593,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      driveClient: { uploadFile: vi.fn() },
+      getDriveClient: () => ({ uploadFile: vi.fn() }),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -605,7 +605,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      driveClient: { uploadFile: vi.fn().mockRejectedValue(new Error('Drive quota exceeded.')) },
+      getDriveClient: () => ({ uploadFile: vi.fn().mockRejectedValue(new Error('Drive quota exceeded.')) }),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -634,7 +634,16 @@ import type { DriveClient } from './client';
 type DriveServiceDeps = {
   quoteService: QuoteService;
   quoteRepository: QuoteRepository;
-  driveClient: DriveClient;
+  // A factory, not a pre-built client: Task 3's createDriveClient() validates
+  // its required env vars eagerly (throws synchronously if missing). Task 5
+  // constructs the DriveService once at RPC-module load time - if that
+  // module held a pre-built DriveClient, importing the RPC module before
+  // Drive credentials exist (e.g. before the one-time OAuth setup has run,
+  // or in a test/CI environment) would throw at import time and break every
+  // RPC in the file, not just the Drive one. Calling this factory lazily,
+  // only inside saveQuotationToDrive, defers that failure to the moment
+  // someone actually tries to save to Drive.
+  getDriveClient: () => DriveClient;
   getFolderId: () => Promise<string>;
 };
 
@@ -657,7 +666,7 @@ export function createDriveService(deps: DriveServiceDeps) {
       const customer = await deps.quoteRepository.getCustomer(quote.customerId);
 
       const folderId = await deps.getFolderId();
-      const uploaded = await deps.driveClient.uploadFile(
+      const uploaded = await deps.getDriveClient().uploadFile(
         {
           fileName: driveFileName(quoteNo, rev, customer?.name ?? '', artifact.fileName),
           mimeType: artifact.mimeType,
@@ -704,16 +713,16 @@ git commit -m "feat(drive): add saveQuotationToDrive orchestration service"
 
 **Files:**
 - Modify: `src/server/quotes/rpc.ts`
-- Modify: `src/server/quotes/service.ts` (`getQuotation`'s return shape, around line 592-621)
+- `src/server/quotes/service.ts` (`getQuotation`'s return shape) — **already done as part of Task 4.** Task 4's implementer hit a real cross-task ordering gap (its own test asserts `result.quote.driveViewLink`, which only exists once this line lands) and was authorized by the controller to add `driveViewLink: quote.driveViewLink,` after `pdf: quote.pdf,` inside `getQuotation`'s return object. **Verify it's there before starting this task; do not re-add it.**
 - Modify: `src/server/rpc/api-parity.test.ts`
 
 **Interfaces:**
-- Consumes: `createDriveService` (Task 4), `createDriveClient` (Task 3), `getDriveFolderId` (Task 4), `quoteRepository` and `service` (already in `rpc.ts`).
-- Produces: RPC `api_saveQuotationToDrive(quoteNo, rev)`, and `api_getQuotation`'s response gains `quote.driveViewLink: string` — consumed by Task 7's UI button.
+- Consumes: `createDriveService` (Task 4), `createDriveClient` (Task 3), `getDriveFolderId` (Task 4), `quoteRepository` and `service` (already in `rpc.ts`), `quote.driveViewLink` (already added to `getQuotation`'s response by Task 4).
+- Produces: RPC `api_saveQuotationToDrive(quoteNo, rev)` — consumed by Task 7's UI button.
 
-- [ ] **Step 1: Add `driveViewLink` to `getQuotation`'s response**
+- [ ] **Step 1: Verify `driveViewLink` is already on `getQuotation`'s response**
 
-In `src/server/quotes/service.ts`, inside `getQuotation`'s returned object, after `pdf: quote.pdf,`:
+Run `grep -n "driveViewLink: quote.driveViewLink" src/server/quotes/service.ts` — expect exactly one match, added by Task 4. If it's missing, add it inside `getQuotation`'s returned object, after `pdf: quote.pdf,`:
 
 ```ts
           doc: quote.doc,
@@ -737,7 +746,7 @@ const service = createQuoteService(quoteRepository);
 const driveService = createDriveService({
   quoteService: service,
   quoteRepository,
-  driveClient: createDriveClient(),
+  getDriveClient: createDriveClient,
   getFolderId: getDriveFolderId
 });
 
@@ -750,7 +759,14 @@ registerRpc(
 );
 ```
 
-Note: `createDriveClient()` is called once at module load time, same lifecycle as `createQuoteService(quoteRepository)` on the line above it — it reads env vars lazily only when `uploadFile` is actually invoked (Task 3's `createOAuth2Client()` runs inside `uploadFile`, not at `createDriveClient()` construction time), so this does not throw at import time even before Drive credentials exist.
+Note: `getDriveClient: createDriveClient` passes the *function itself* as a
+lazy accessor, not its result — Task 3's `createDriveClient()` validates its
+required env vars eagerly (throws synchronously the moment it's called), so
+calling it here at module load time (as an earlier draft of this plan
+mistakenly specified) would throw on every `/api/rpc` import until Drive
+credentials exist, breaking every RPC in the file, not just the Drive one.
+`getDriveClient` defers that call to the moment `saveQuotationToDrive`
+actually runs (see Task 4's `DriveServiceDeps.getDriveClient`).
 
 - [ ] **Step 3: Update the API-parity test's allowlist**
 
