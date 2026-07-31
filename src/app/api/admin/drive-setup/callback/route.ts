@@ -70,14 +70,80 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Drive did not return a folder id.' }, { status: 502 });
   }
 
+  const templatesFolder = await drive.files.create({
+    requestBody: { name: 'AS CRM Templates Testing', mimeType: 'application/vnd.google-apps.folder' },
+    fields: 'id'
+  });
+  const templatesFolderId = templatesFolder.data.id;
+  if (!templatesFolderId) {
+    return NextResponse.json({ error: 'Drive did not return a templates folder id.' }, { status: 502 });
+  }
+
+  const starterFile = await drive.files.create({
+    requestBody: {
+      name: 'Quotation Template - Standard',
+      mimeType: 'application/vnd.google-apps.document',
+      parents: [templatesFolderId]
+    },
+    fields: 'id'
+  });
+  const starterId = starterFile.data.id;
+  if (!starterId) {
+    return NextResponse.json({ error: 'Drive did not return a starter template id.' }, { status: 502 });
+  }
+
+  // Body text mirrors the legacy createStarterTemplate_ (Code.gs:165),
+  // including every merge placeholder generateQuoteDoc fills in.
+  const starterBody = [
+    '{{COMPANY}}',
+    'Industrial Automation | Control & Distribution Panels | Energy Management',
+    '',
+    'QUOTATION',
+    'Quote No: {{QUOTE_NO}}    Rev: {{REV}}    Date: {{DATE}}',
+    '',
+    'To: {{CUSTOMER_NAME}}',
+    '{{CUSTOMER_ADDRESS}}',
+    'Kind Attn: {{CONTACT_NAME}}',
+    '',
+    'Subject: {{TITLE}}',
+    '',
+    'Dear Sir / Madam,',
+    'Thank you for your enquiry. We are pleased to submit our offer as per the details below.',
+    '',
+    '{{BOQ_TABLE}}',
+    '',
+    'Notes: {{NOTES}}',
+    '',
+    'Terms & Conditions',
+    'Prices: In {{CURRENCY}}, ex-works Ludhiana unless stated otherwise.',
+    'Taxes: GST @ {{TAX_PCT}}% included as shown above.',
+    'Validity: This offer is valid until {{VALID_UNTIL}}.',
+    'Delivery & payment: As mutually agreed at the time of order.',
+    '',
+    'We look forward to your valued order.',
+    '',
+    'For {{COMPANY}}',
+    '{{PREPARED_BY}}'
+  ].join('\n');
+
+  const docsApi = google.docs({ version: 'v1', auth: oauth2Client });
+  await docsApi.documents.batchUpdate({
+    documentId: starterId,
+    requestBody: { requests: [{ insertText: { text: starterBody, location: { index: 1 } } }] }
+  });
+
   await sql`
     insert into public.settings (key, value)
-    values ('GOOGLE_DRIVE_QUOTATIONS_FOLDER_ID', ${folderId})
+    values
+      ('GOOGLE_DRIVE_QUOTATIONS_FOLDER_ID', ${folderId}),
+      ('GOOGLE_DRIVE_TEMPLATES_FOLDER_ID', ${templatesFolderId})
     on conflict (key) do update set value = excluded.value
   `;
 
   return new NextResponse(
-    `<!doctype html><html><body style="font-family:monospace;padding:24px;white-space:pre-wrap">Drive folder "AS CRM Quotations Testing" created (id: ${folderId}) and saved to settings.
+    `<!doctype html><html><body style="font-family:monospace;padding:24px;white-space:pre-wrap">Drive folders created and saved to settings:
+  Quotations: AS CRM Quotations Testing (id: ${folderId})
+  Templates:  AS CRM Templates Testing (id: ${templatesFolderId}) - seeded with "Quotation Template - Standard"
 
 Add this ONE remaining env var to Vercel, then redeploy:
 

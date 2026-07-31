@@ -6,6 +6,7 @@ import { ensureAdmin } from '../../../../../server/auth/access';
 import { normalizeRpcError } from '../../../../../server/rpc/errors';
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DOCS_SCOPE = 'https://www.googleapis.com/auth/documents';
 
 export async function GET(request: Request): Promise<NextResponse> {
   if (process.env.GOOGLE_DRIVE_REFRESH_TOKEN) {
@@ -37,7 +38,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: [DRIVE_SCOPE]
+    scope: [DRIVE_SCOPE, DOCS_SCOPE]
   });
 
   return NextResponse.redirect(authUrl);
