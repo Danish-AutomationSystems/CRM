@@ -12,7 +12,8 @@ const USER_FACING_PATTERNS = [
   /already exists/i,
   /invalid/i,
   /required/i,
-  /denied/i
+  /denied/i,
+  /not configured/i
 ];
 
 export class RpcError extends Error {

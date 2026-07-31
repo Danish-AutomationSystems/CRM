@@ -1,4 +1,5 @@
 import type { CrmContext } from '../auth/context';
+import { normalizeEmail } from '../domain/lists';
 import type { QuoteRepository, QuoteService } from '../quotes/service';
 import type { DriveClient } from './client';
 
@@ -60,7 +61,16 @@ export function createDriveService(deps: DriveServiceDeps) {
         driveFileId: uploaded.id,
         driveViewLink: uploaded.webViewLink,
         driveSavedAt: new Date().toISOString(),
-        driveSavedBy: user.email
+        driveSavedBy: user.email,
+        updatedAt: new Date().toISOString()
+      });
+
+      await deps.quoteRepository.logActivity({
+        action: 'QUOTE_DRIVE_SAVE',
+        entity: `${quoteNo} R${rev}`,
+        customerId: quote.customerId,
+        details: fileName,
+        who: normalizeEmail(user.email)
       });
 
       return deps.quoteService.getQuotation(user, quoteNo, rev);

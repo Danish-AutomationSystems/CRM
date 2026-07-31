@@ -76,6 +76,7 @@ export function createRpcRegistry(): RpcRegistry {
           metadata: { bustClientCache: !registered.options.read }
         };
       } catch (error) {
+        console.error('RPC error:', name, error);
         throw normalizeRpcError(error);
       }
     },

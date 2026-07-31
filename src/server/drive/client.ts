@@ -1,7 +1,5 @@
 import { Readable } from 'node:stream';
 
-import { google } from 'googleapis';
-
 export type DriveFileUpload = {
   fileName: string;
   mimeType: string;
@@ -26,6 +24,13 @@ export function createDriveClient(): DriveClient {
 
   return {
     async uploadFile(input: DriveFileUpload, folderId: string) {
+      // Lazily load googleapis: this file is imported unconditionally on the
+      // hot /api/rpc path (via quotes/rpc.ts), and the root googleapis
+      // package eagerly wires up hundreds of Google API services. Deferring
+      // the import until a Drive upload actually happens keeps that cost off
+      // every other RPC call.
+      const { google } = await import('googleapis');
+
       // Use already-validated values from closure
       const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
       oauth2Client.setCredentials({ refresh_token: refreshToken });
