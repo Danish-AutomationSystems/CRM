@@ -1816,8 +1816,8 @@ function mQuoteViewer(quoteNo, rev){
 
     if(q.doc||q.pdf){
       html += '<div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">'+
-        (q.doc?'<a class="btn ghost sm" href="'+esc(q.doc)+'" target="_blank" rel="noopener">Open Google Doc</a>':'')+
-        (q.pdf?'<a class="btn ghost sm" href="'+esc(q.pdf)+'" target="_blank" rel="noopener">'+(ext?'Open uploaded file':'Open PDF')+'</a>':'')+'</div>';
+        (q.doc?'<a class="btn ghost sm" href="'+esc(q.doc)+'" target="_blank" rel="noopener">Download document</a>':'')+
+        (q.pdf?'<a class="btn ghost sm" href="'+esc(q.pdf)+'" target="_blank" rel="noopener">'+(ext?'Download uploaded file':'Download PDF')+'</a>':'')+'</div>';
     }
     html += '<div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">'+
       (q.driveViewLink
@@ -1836,7 +1836,7 @@ function mQuoteViewer(quoteNo, rev){
 
     var foot = '<button class="btn ghost" onclick="closeModal()">Close</button>';
     foot += '<button class="btn ghost" onclick="newRevision()">New revision</button>';
-    if(!ext && (q.status==='Draft'||q.status==='Sent')) foot += '<button class="btn ghost" id="genBtn" onclick="genDoc(\''+esc(quoteNo)+'\','+rev+')">'+(q.doc?'Re-generate Doc + PDF':'Generate Doc + PDF')+'</button>';
+    if(!ext && (q.status==='Draft'||q.status==='Sent')) foot += '<button class="btn ghost" id="genBtn" onclick="genDoc(\''+esc(quoteNo)+'\','+rev+')">'+(q.doc?'Re-generate download':'Generate download')+'</button>';
     if(q.status==='Draft') foot += '<button class="btn" onclick="setQStatus(\''+esc(quoteNo)+'\','+rev+',\'Sent\')">Mark Sent</button>';
     openModal(quoteNo+' · R'+rev, html, foot, true);
   }).catch(function(e){ closeModal(); oops(e); });
@@ -1861,8 +1861,8 @@ function saveQuoteToDrive(quoteNo, rev){
 }
 function genDoc(quoteNo, rev){
   el('genBtn').disabled = true; el('genBtn').textContent = 'Generating…';
-  gs('api_generateQuoteDoc', quoteNo, rev).then(function(r){ toast('Document and PDF created.'); mQuoteViewer(quoteNo, rev); })
-    .catch(function(e){ if(el('genBtn')){ el('genBtn').disabled=false; el('genBtn').textContent='Generate Doc + PDF'; } oops(e); });
+  gs('api_generateQuoteDoc', quoteNo, rev).then(function(r){ toast('Download links created.'); mQuoteViewer(quoteNo, rev); })
+    .catch(function(e){ if(el('genBtn')){ el('genBtn').disabled=false; el('genBtn').textContent='Generate download'; } oops(e); });
 }
 function setQStatus(quoteNo, rev, status){
   gs('api_setQuoteStatus', quoteNo, rev, status).then(function(){ toast('Marked '+status+'.'); refreshBehind(); mQuoteViewer(quoteNo, rev); }).catch(oops);
