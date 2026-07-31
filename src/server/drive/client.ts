@@ -18,24 +18,18 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function createOAuth2Client() {
+export function createDriveClient(): DriveClient {
+  // Validate env vars at construction time and capture in closure
   const clientId = requireEnv('GOOGLE_DRIVE_CLIENT_ID');
   const clientSecret = requireEnv('GOOGLE_DRIVE_CLIENT_SECRET');
   const refreshToken = requireEnv('GOOGLE_DRIVE_REFRESH_TOKEN');
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
-  oauth2Client.setCredentials({ refresh_token: refreshToken });
-  return oauth2Client;
-}
-
-export function createDriveClient(): DriveClient {
-  // Validate env vars at construction time
-  requireEnv('GOOGLE_DRIVE_CLIENT_ID');
-  requireEnv('GOOGLE_DRIVE_CLIENT_SECRET');
-  requireEnv('GOOGLE_DRIVE_REFRESH_TOKEN');
 
   return {
     async uploadFile(input: DriveFileUpload, folderId: string) {
-      const drive = google.drive({ version: 'v3', auth: createOAuth2Client() });
+      // Use already-validated values from closure
+      const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+      oauth2Client.setCredentials({ refresh_token: refreshToken });
+      const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
       const response = await drive.files.create({
         requestBody: { name: input.fileName, parents: [folderId] },
