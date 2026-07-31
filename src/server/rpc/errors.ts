@@ -13,7 +13,10 @@ const USER_FACING_PATTERNS = [
   /invalid/i,
   /required/i,
   /denied/i,
-  /not configured/i
+  /not configured/i,
+  /template/i,
+  /placeholder/i,
+  /external file/i
 ];
 
 export class RpcError extends Error {

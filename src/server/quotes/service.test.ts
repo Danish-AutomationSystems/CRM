@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createQuoteService, type QuoteRepository } from './service';
+import { createQuoteService, type QuoteRepository, type QuoteServiceDeps } from './service';
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -25,6 +25,7 @@ class FakeQuoteRepository implements QuoteRepository {
   users: UserRow[] = [];
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
+  contacts: Array<{ name: string; designation: string }> = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   lockedQuoteFamilies: string[] = [];
   quoteSeq = 1;
@@ -44,6 +45,10 @@ class FakeQuoteRepository implements QuoteRepository {
 
   async nextCaseId(): Promise<string> {
     return `CASE-2026-${String(this.caseSeq++).padStart(4, '0')}`;
+  }
+
+  async listContacts(): Promise<Array<{ name: string; designation: string }>> {
+    return this.contacts;
   }
 
   async getCustomer(id: string): Promise<CustomerRow | null> {
@@ -202,7 +207,7 @@ function makeQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
   };
 }
 
-function makeService() {
+function makeService(deps: QuoteServiceDeps = {}) {
   const repo = new FakeQuoteRepository();
   repo.customers = [customer()];
   repo.cases = [caseRow()];
@@ -212,7 +217,7 @@ function makeService() {
     user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L4', allowedTags: ['*'] }),
     user({ email: 'outsider@automationsystems.org', name: 'Outsider', allowedTags: ['NCR'] })
   ];
-  return { repo, service: createQuoteService(repo) };
+  return { repo, service: createQuoteService(repo, deps) };
 }
 
 describe('quote service template listing', () => {
@@ -496,34 +501,6 @@ describe('quote reads and direct download metadata', () => {
     ]);
   });
 
-  it('generates direct download metadata instead of Drive links and blocks external generation', async () => {
-    const { repo, service } = makeService();
-    repo.quotes = [makeQuote()];
-    repo.blocks = [{ quoteNo: 'QTN-2026-0001', rev: 0, block: 1, title: 'BOQ', headers: ['Item'], rows: [['Panel']] }];
-
-    const result = await service.generateQuoteDoc(sales, 'QTN-2026-0001', 0);
-
-    expect(result).toEqual({
-      doc: {
-        fileName: 'QTN-2026-0001-R0-Alpha Panels.html',
-        mimeType: 'text/html; charset=utf-8',
-        url: '/api/download/quote/QTN-2026-0001/0?format=html'
-      },
-      pdf: {
-        fileName: 'QTN-2026-0001-R0-Alpha Panels.html',
-        mimeType: 'text/html; charset=utf-8',
-        url: '/api/download/quote/QTN-2026-0001/0?format=html'
-      }
-    });
-    expect(repo.quotes[0]).toMatchObject({
-      doc: '/api/download/quote/QTN-2026-0001/0?format=html',
-      pdf: '/api/download/quote/QTN-2026-0001/0?format=html'
-    });
-
-    repo.quotes[0] = makeQuote({ source: 'External', fileName: 'external.pdf', templateId: '', pdf: '/api/download/quote/QTN-2026-0001/0' });
-    await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('external file');
-  });
-
   it('enforces full customer access before rendering a download artifact', async () => {
     const { repo, service } = makeService();
     repo.quotes = [makeQuote()];
@@ -557,5 +534,180 @@ describe('quote reads and direct download metadata', () => {
     expect(artifact.fileName).toBe('vendor-offer.pdf');
     expect(artifact.mimeType).toBe('application/pdf');
     expect(Buffer.from(artifact.body as Uint8Array).toString()).toBe('external quotation');
+  });
+});
+
+describe('generateQuoteDoc', () => {
+  const markerDoc = {
+    body: {
+      content: [
+        {
+          startIndex: 40,
+          paragraph: { elements: [{ startIndex: 40, textRun: { content: '{{BOQ_TABLE}}\n' } }] }
+        }
+      ]
+    }
+  };
+
+  // Two tables read back after insertion: the BOQ block (2x2) then totals (3x2).
+  const tablesDoc = {
+    body: {
+      content: [
+        {
+          startIndex: 41,
+          table: {
+            tableRows: [
+              { tableCells: [{ content: [{ startIndex: 43 }] }, { content: [{ startIndex: 46 }] }] },
+              { tableCells: [{ content: [{ startIndex: 49 }] }, { content: [{ startIndex: 52 }] }] }
+            ]
+          }
+        },
+        {
+          startIndex: 60,
+          table: {
+            tableRows: [
+              { tableCells: [{ content: [{ startIndex: 62 }] }, { content: [{ startIndex: 65 }] }] },
+              { tableCells: [{ content: [{ startIndex: 68 }] }, { content: [{ startIndex: 71 }] }] },
+              { tableCells: [{ content: [{ startIndex: 74 }] }, { content: [{ startIndex: 77 }] }] }
+            ]
+          }
+        }
+      ]
+    }
+  };
+
+  function makeClients(firstDoc: unknown = markerDoc) {
+    const driveClient = {
+      uploadFile: vi.fn().mockResolvedValue({ id: 'pdf-1', webViewLink: 'https://drive.google.com/file/d/pdf-1/view' }),
+      listDocsInFolder: vi.fn().mockResolvedValue([]),
+      copyFile: vi.fn().mockResolvedValue({ id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' }),
+      exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
+      shareDomainReadable: vi.fn().mockResolvedValue(undefined)
+    };
+    const docsClient = {
+      getDocument: vi.fn().mockResolvedValueOnce(firstDoc).mockResolvedValueOnce(tablesDoc),
+      batchUpdate: vi.fn().mockResolvedValue(undefined)
+    };
+    return {
+      driveClient,
+      docsClient,
+      deps: {
+        getDriveClient: () => driveClient,
+        getDocsClient: () => docsClient,
+        getQuotationsFolderId: async () => 'folder-out'
+      }
+    };
+  }
+
+  function seedGenerated(repo: FakeQuoteRepository) {
+    repo.quotes.push(makeQuote());
+    repo.contacts.push({ name: 'Rajesh Kumar', designation: 'Purchase Manager' });
+    repo.blocks.push({
+      quoteNo: 'QTN-2026-0001',
+      rev: 0,
+      block: 1,
+      title: 'Main panel BOQ',
+      headers: ['Item', 'Qty'],
+      rows: [['Contactor', '4']]
+    });
+  }
+
+  it('copies the template, merges fields, inserts BOQ tables, exports a PDF and records both links', async () => {
+    const { driveClient, docsClient, deps } = makeClients();
+    const { repo, service } = makeService(deps);
+    seedGenerated(repo);
+
+    const result = await service.generateQuoteDoc(sales, 'QTN-2026-0001', 0);
+
+    expect(driveClient.copyFile).toHaveBeenCalledWith('tpl-standard', 'QTN-2026-0001-R0 - Alpha Panels', 'folder-out');
+
+    // Merge pass carries every legacy placeholder, contact formatted as legacy did.
+    const mergeRequests = docsClient.batchUpdate.mock.calls[0][1];
+    const replaced = Object.fromEntries(
+      mergeRequests.map((r: { replaceAllText: { containsText: { text: string }; replaceText: string } }) => [
+        r.replaceAllText.containsText.text,
+        r.replaceAllText.replaceText
+      ])
+    );
+    expect(replaced['{{QUOTE_NO}}']).toBe('QTN-2026-0001');
+    expect(replaced['{{REV}}']).toBe('R0');
+    expect(replaced['{{CUSTOMER_NAME}}']).toBe('Alpha Panels');
+    expect(replaced['{{CUSTOMER_ADDRESS}}']).toBe('Industrial Area, Ludhiana');
+    expect(replaced['{{CONTACT_NAME}}']).toBe('Rajesh Kumar (Purchase Manager)');
+    expect(replaced['{{TOTAL}}']).toBe('1,180.00');
+    expect(replaced['{{CURRENCY}}']).toBe('INR');
+    // The structural marker is never merge-replaced - it is deleted in the
+    // structure pass so a table can take its place.
+    expect(replaced['{{BOQ_TABLE}}']).toBeUndefined();
+
+    // Structure pass deletes the marker first.
+    const structureRequests = docsClient.batchUpdate.mock.calls[1][1];
+    expect(structureRequests[0]).toEqual({ deleteContentRange: { range: { startIndex: 40, endIndex: 53 } } });
+
+    // Cell-fill pass writes highest index first so earlier indices stay valid.
+    const fillRequests = docsClient.batchUpdate.mock.calls[2][1];
+    const fillIndices = fillRequests.map((r: { insertText: { location: { index: number } } }) => r.insertText.location.index);
+    expect(fillIndices).toEqual([...fillIndices].sort((a, b) => b - a));
+    // BOQ headers/rows land in the first table, totals in the second.
+    const fillByIndex = Object.fromEntries(
+      fillRequests.map((r: { insertText: { text: string; location: { index: number } } }) => [
+        r.insertText.location.index,
+        r.insertText.text
+      ])
+    );
+    expect(fillByIndex[43]).toBe('Item');
+    expect(fillByIndex[52]).toBe('4');
+    expect(fillByIndex[62]).toBe('Subtotal');
+    expect(fillByIndex[77]).toBe('INR 1,180.00');
+
+    expect(driveClient.exportPdf).toHaveBeenCalledWith('copy-1');
+    expect(driveClient.uploadFile).toHaveBeenCalledWith(
+      expect.objectContaining({ fileName: 'QTN-2026-0001-R0 - Alpha Panels.pdf', mimeType: 'application/pdf' }),
+      'folder-out'
+    );
+    expect(driveClient.shareDomainReadable).toHaveBeenCalledWith('copy-1');
+
+    expect(result.doc.url).toBe('https://drive.google.com/file/d/copy-1/view');
+    expect(result.pdf.url).toBe('https://drive.google.com/file/d/pdf-1/view');
+
+    const stored = await repo.getQuote('QTN-2026-0001', 0);
+    expect(stored?.doc).toBe('https://drive.google.com/file/d/copy-1/view');
+    expect(stored?.pdf).toBe('https://drive.google.com/file/d/pdf-1/view');
+    expect(repo.logs.some((l) => l.action === 'QUOTE_PDF')).toBe(true);
+  });
+
+  it('refuses to generate for an external quotation', async () => {
+    const { repo, service } = makeService(makeClients().deps);
+    repo.quotes.push(makeQuote({ source: 'External', fileName: 'vendor-quote.pdf' }));
+
+    await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('uploaded as an external file');
+  });
+
+  it('refuses to generate when the quote has no template selected', async () => {
+    const { repo, service } = makeService(makeClients().deps);
+    repo.quotes.push(makeQuote({ templateId: '' }));
+
+    await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('no template selected');
+  });
+
+  it('fails clearly when the template has no BOQ placeholder', async () => {
+    const noMarkerDoc = {
+      body: {
+        content: [
+          { startIndex: 1, paragraph: { elements: [{ startIndex: 1, textRun: { content: 'No placeholder here\n' } }] } }
+        ]
+      }
+    };
+    const { repo, service } = makeService(makeClients(noMarkerDoc).deps);
+    seedGenerated(repo);
+
+    await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('{{BOQ_TABLE}}');
+  });
+
+  it('refuses to generate when Drive is not configured', async () => {
+    const { repo, service } = makeService();
+    seedGenerated(repo);
+
+    await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('not configured');
   });
 });

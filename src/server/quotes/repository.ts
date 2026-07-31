@@ -289,6 +289,17 @@ export class PostgresQuoteRepository implements QuoteRepository {
     return nextCrmId(this.db, format.key, format.prefix, format.width, new Date().getFullYear());
   }
 
+  async listContacts(customerId: string): Promise<Array<{ name: string; designation: string }>> {
+    const rows = (await this.db`
+      select name, designation
+      from public.contacts
+      where customer_id = ${customerId}
+      order by name asc
+    `) as Array<{ name: string; designation: string | null }>;
+
+    return rows.map((row) => ({ name: row.name, designation: row.designation ?? '' }));
+  }
+
   async getCustomer(id: string): Promise<QuoteCustomerRow | null> {
     const rows = (await this.db`
       select customer_id, name, tags, type, priority, area, address, gstin, website, notes,

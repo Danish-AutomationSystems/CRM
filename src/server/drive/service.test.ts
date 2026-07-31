@@ -3,6 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrmContext } from '../auth/context';
 import { createQuoteService, type QuoteRepository } from '../quotes/service';
 import { createDriveService } from './service';
+import type { DriveClient } from './client';
+
+function fakeDriveClient(overrides: Partial<DriveClient> = {}): DriveClient {
+  return {
+    uploadFile: vi.fn(),
+    listDocsInFolder: vi.fn(),
+    copyFile: vi.fn(),
+    exportPdf: vi.fn(),
+    shareDomainReadable: vi.fn(),
+    ...overrides
+  };
+}
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -30,6 +42,7 @@ class FakeQuoteRepository implements QuoteRepository {
   async nextQuoteNo(): Promise<string> { return 'QTN-2026-0001'; }
   async nextCaseId(): Promise<string> { return 'CASE-2026-0001'; }
   async listTemplates() { return []; }
+  async listContacts() { return []; }
   async getCustomer(id: string) { return this.customers.find((c) => c.id === id) ?? null; }
   async listUsers() { return this.users; }
   async listHandlers() { return this.handlers; }
@@ -119,7 +132,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      getDriveClient: () => ({ uploadFile }),
+      getDriveClient: () => fakeDriveClient({ uploadFile }),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -157,7 +170,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      getDriveClient: () => ({ uploadFile }),
+      getDriveClient: () => fakeDriveClient({ uploadFile }),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -175,7 +188,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      getDriveClient: () => ({ uploadFile: vi.fn() }),
+      getDriveClient: () => fakeDriveClient(),
       getFolderId: async () => 'folder-abc'
     });
 
@@ -187,7 +200,7 @@ describe('createDriveService', () => {
     const driveService = createDriveService({
       quoteService,
       quoteRepository: repo,
-      getDriveClient: () => ({ uploadFile: vi.fn().mockRejectedValue(new Error('Drive quota exceeded.')) }),
+      getDriveClient: () => fakeDriveClient({ uploadFile: vi.fn().mockRejectedValue(new Error('Drive quota exceeded.')) }),
       getFolderId: async () => 'folder-abc'
     });
 

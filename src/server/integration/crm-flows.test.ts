@@ -118,6 +118,12 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     return `QTN-2026-${String(this.quoteSeq++).padStart(4, '0')}`;
   }
 
+  async listContacts(customerId: string): Promise<Array<{ name: string; designation: string }>> {
+    return this.contacts
+      .filter((contact) => contact.customerId === customerId)
+      .map((contact) => ({ name: contact.name, designation: contact.designation }));
+  }
+
   async listCustomers(): Promise<CustomerRow[]> {
     return this.customers;
   }

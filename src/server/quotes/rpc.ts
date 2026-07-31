@@ -1,5 +1,6 @@
 import { registerRpc } from '../rpc/registry';
 import { createDriveClient } from '../drive/client';
+import { createDocsClient } from '../drive/docs';
 import { getDriveFolderId } from '../drive/folder';
 import { getDriveTemplatesFolderId } from '../drive/template-folder';
 import { createDriveService } from '../drive/service';
@@ -10,7 +11,10 @@ const service = createQuoteService(quoteRepository, {
   listTemplates: async () => {
     const folderId = await getDriveTemplatesFolderId();
     return createDriveClient().listDocsInFolder(folderId);
-  }
+  },
+  getDriveClient: createDriveClient,
+  getDocsClient: createDocsClient,
+  getQuotationsFolderId: getDriveFolderId
 });
 const driveService = createDriveService({
   quoteService: service,

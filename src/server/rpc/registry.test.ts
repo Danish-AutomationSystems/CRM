@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { RpcError, callRpc, createRpcRegistry } from './registry';
+import { normalizeRpcError } from './errors';
 import type { CrmContext } from '../auth/context';
 
 const request = new Request('https://crm.example.test/api/rpc', { method: 'POST' });
@@ -71,5 +72,17 @@ describe('RPC registry', () => {
       status: 409,
       message: 'Customer already exists.'
     });
+  });
+
+  it('surfaces quotation-generation guard messages instead of a generic 500', () => {
+    for (const message of [
+      'This quotation has no template selected. Create a revision and pick a template.',
+      'This template has no {{BOQ_TABLE}} placeholder - add one where the BOQ should appear.',
+      'This quotation was uploaded as an external file - there is no template to generate from.'
+    ]) {
+      const rpcError = normalizeRpcError(new Error(message));
+      expect(rpcError.status).toBe(400);
+      expect(rpcError.message).toBe(message);
+    }
   });
 });

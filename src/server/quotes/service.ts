@@ -4,6 +4,15 @@ import type { CrmRole } from '../db/schema';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
 import { normalizeEmail } from '../domain/lists';
 import { renderQuoteHtml, safeQuoteFileName, type QuoteDownloadArtifact } from './render';
+import type { DriveClient } from '../drive/client';
+import type { DocsClient } from '../drive/docs';
+import {
+  buildCellFillRequests,
+  buildMergeFieldRequests,
+  buildStructureRequests,
+  collectTables,
+  locateMarker
+} from '../drive/template-merge';
 
 export type QuoteCustomerRow = {
   id: string;
@@ -112,6 +121,7 @@ export type QuoteRepository = {
   lockQuoteFamily(quoteNo: string): Promise<void>;
   nextQuoteNo(): Promise<string>;
   nextCaseId(): Promise<string>;
+  listContacts(customerId: string): Promise<Array<{ name: string; designation: string }>>;
   getCustomer(id: string): Promise<QuoteCustomerRow | null>;
   listUsers(): Promise<QuoteUserRow[]>;
   listHandlers(): Promise<QuoteHandlerRow[]>;
@@ -171,6 +181,10 @@ function nowIso(): string {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function fmtMoney(value: number | ''): string {
+  return Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function roleLevel(user: Pick<CrmContext, 'role'>): number {
@@ -423,6 +437,9 @@ function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDow
 
 export type QuoteServiceDeps = {
   listTemplates?: () => Promise<Array<{ id: string; name: string }>>;
+  getDriveClient?: () => DriveClient;
+  getDocsClient?: () => DocsClient;
+  getQuotationsFolderId?: () => Promise<string>;
 };
 
 export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps = {}) {
@@ -669,21 +686,103 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         throw new Error('This quotation was uploaded as an external file - there is no template to generate from.');
       }
       if (!quote.templateId) throw new Error('This quotation has no template selected. Create a revision and pick a template.');
+      if (!deps.getDriveClient || !deps.getDocsClient || !deps.getQuotationsFolderId) {
+        throw new Error('Google Drive is not configured. Run the one-time Drive setup first.');
+      }
 
-      const fileName = safeQuoteFileName(quote.quoteNo, quote.rev, customer.name);
-      const url = quoteDownloadUrl(quote.quoteNo, quote.rev);
-      const metadata = { fileName, mimeType: 'text/html; charset=utf-8', url };
+      const [blocks, contacts, users] = await Promise.all([
+        repo.listBoqBlocks(quoteNo, rev),
+        repo.listContacts(quote.customerId),
+        repo.listUsers()
+      ]);
+      const idx = userIndex(users);
+      const contact = contacts[0];
+      const baseName = `${quoteNo}-R${rev} - ${customer.name}`;
 
-      await repo.updateQuote(quote.quoteNo, quote.rev, { doc: url, pdf: url, updatedAt: nowIso() });
+      const drive = deps.getDriveClient();
+      const docsClient = deps.getDocsClient();
+      const folderId = await deps.getQuotationsFolderId();
+
+      // 1. Copy the template into the quotations folder.
+      const copy = await drive.copyFile(quote.templateId, baseName, folderId);
+
+      // 2. Merge every scalar placeholder (matches legacy Code.gs:1808-1826).
+      await docsClient.batchUpdate(
+        copy.id,
+        buildMergeFieldRequests({
+          '{{QUOTE_NO}}': quote.quoteNo,
+          '{{REV}}': `R${quote.rev}`,
+          '{{DATE}}': today(),
+          '{{CUSTOMER_NAME}}': customer.name,
+          '{{CUSTOMER_ADDRESS}}': [customer.address, customer.area].filter((part) => part.trim()).join(', '),
+          '{{CONTACT_NAME}}': contact ? `${contact.name}${contact.designation ? ` (${contact.designation})` : ''}` : '-',
+          '{{TITLE}}': quote.title,
+          '{{VALID_UNTIL}}': quote.validUntil || '30 days from date of offer',
+          '{{NOTES}}': quote.notes || '-',
+          '{{TAX_PCT}}': String(quote.taxPct),
+          '{{SUBTOTAL}}': fmtMoney(quote.subtotal),
+          '{{TAX_AMOUNT}}': fmtMoney(quote.taxAmount),
+          '{{TOTAL}}': fmtMoney(quote.total),
+          '{{CURRENCY}}': quote.currency,
+          '{{COMPANY}}': DEFAULT_SETTINGS.COMPANY,
+          '{{PREPARED_BY}}': `${nameOf(idx, quote.createdBy)} (${normalizeEmail(quote.createdBy)})`
+        })
+      );
+
+      // 3. Locate the structural marker and insert the BOQ + totals tables.
+      const marker = locateMarker(await docsClient.getDocument(copy.id), '{{BOQ_TABLE}}');
+      if (!marker) {
+        throw new Error('This template has no {{BOQ_TABLE}} placeholder - add one where the BOQ should appear.');
+      }
+
+      const totals = {
+        currency: quote.currency,
+        subtotal: fmtMoney(quote.subtotal),
+        taxPct: String(quote.taxPct),
+        taxAmount: fmtMoney(quote.taxAmount),
+        total: fmtMoney(quote.total)
+      };
+      await docsClient.batchUpdate(copy.id, buildStructureRequests(marker, blocks, totals));
+
+      // 4. Re-read the document for the new tables' real cell indices, then
+      //    fill them. Table order matches insertion order: BOQ blocks, totals.
+      const tables = collectTables(await docsClient.getDocument(copy.id));
+      const tableValues = [
+        ...blocks.map((block) => [...block.headers, ...block.rows.flat()]),
+        [
+          'Subtotal',
+          `${totals.currency} ${totals.subtotal}`,
+          `GST @ ${totals.taxPct}%`,
+          `${totals.currency} ${totals.taxAmount}`,
+          'Total',
+          `${totals.currency} ${totals.total}`
+        ]
+      ];
+      await docsClient.batchUpdate(copy.id, buildCellFillRequests(tables, tableValues));
+
+      // 5. Export to PDF via Drive's native conversion and store it alongside.
+      const pdfBytes = await drive.exportPdf(copy.id);
+      const pdf = await drive.uploadFile(
+        { fileName: `${baseName}.pdf`, mimeType: 'application/pdf', body: pdfBytes },
+        folderId
+      );
+
+      await drive.shareDomainReadable(copy.id);
+
+      await repo.updateQuote(quote.quoteNo, quote.rev, {
+        doc: copy.webViewLink,
+        pdf: pdf.webViewLink,
+        updatedAt: nowIso()
+      });
       await repo.logActivity({
         action: 'QUOTE_PDF',
         entity: `${quoteNo} R${rev}`,
         customerId: quote.customerId,
-        details: fileName,
+        details: baseName,
         who: normalizeEmail(user.email)
       });
 
-      return { doc: metadata, pdf: metadata };
+      return { doc: { url: copy.webViewLink }, pdf: { url: pdf.webViewLink } };
     },
 
     async getDownloadArtifact(user: CrmContext, quoteNo: string, rev: number): Promise<QuoteDownloadArtifact> {
