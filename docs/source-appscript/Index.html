@@ -1822,7 +1822,7 @@ function mQuoteViewer(quoteNo, rev){
     html += '<div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">'+
       (q.driveViewLink
         ? '<a class="btn ghost sm" href="'+esc(q.driveViewLink)+'" target="_blank" rel="noopener">View in Drive</a>'
-        : '<button class="btn ghost sm" id="driveSaveBtn" onclick="saveQuoteToDrive(\''+esc(quoteNo)+'\','+rev+')">Save to Drive</button>')+
+        : (driveHosted(q) ? '' : '<button class="btn ghost sm" id="driveSaveBtn" onclick="saveQuoteToDrive(\''+esc(quoteNo)+'\','+rev+')">Save to Drive</button>'))+
       '</div>';
     if(d.revisions.length>1){
       html += '<div class="ovl" style="margin-top:16px">All revisions</div>';
@@ -1840,6 +1840,14 @@ function mQuoteViewer(quoteNo, rev){
     if(q.status==='Draft') foot += '<button class="btn" onclick="setQStatus(\''+esc(quoteNo)+'\','+rev+',\'Sent\')">Mark Sent</button>';
     openModal(quoteNo+' · R'+rev, html, foot, true);
   }).catch(function(e){ closeModal(); oops(e); });
+}
+function driveHosted(q){
+  // Generated quotes produced by the template pipeline already live in the
+  // Drive quotations folder - doc/pdf ARE Drive links, so a separate
+  // "Save to Drive" step would just duplicate the file. Older quotes whose
+  // doc/pdf still point at the local download endpoint keep the button.
+  var link = String((q && (q.doc || q.pdf)) || '');
+  return q && q.source === 'Generated' && link.indexOf('drive.google.com') > -1;
 }
 function saveQuoteToDrive(quoteNo, rev){
   var btn = el('driveSaveBtn');

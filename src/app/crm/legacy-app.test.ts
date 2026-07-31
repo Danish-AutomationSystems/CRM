@@ -251,6 +251,50 @@ describe('legacy CRM full client', () => {
     );
   });
 
+  test('hides Save to Drive for generated quotes already hosted in Drive', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_getQuotation') {
+        return {
+          quote: {
+            quoteNo: 'QTN-2026-0001',
+            rev: 0,
+            caseId: 'CASE-2026-0001',
+            title: 'Panel upgrade quote',
+            source: 'Generated',
+            fileName: '',
+            templateId: 'tpl-1',
+            templateName: 'Standard',
+            status: 'Draft',
+            subtotal: 100,
+            taxPct: 18,
+            taxAmount: 18,
+            total: 118,
+            currency: 'INR',
+            validUntil: '',
+            notes: '',
+            doc: 'https://drive.google.com/file/d/doc-1/view',
+            pdf: 'https://drive.google.com/file/d/pdf-1/view',
+            driveViewLink: '',
+            by: 'Admin User',
+            date: '2026-07-29'
+          },
+          customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+          blocks: [],
+          revisions: [{ rev: 0, status: 'Draft', date: '2026-07-29', total: 118 }]
+        };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('mQuoteViewer("QTN-2026-0001", 0)');
+
+    expect(await screen.findByRole('link', { name: 'Download document' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save to Drive' })).not.toBeInTheDocument();
+  });
+
   test('does not leave generated inline handlers with HTML-escaped JavaScript string arguments', () => {
     const unsafeHandlerArguments = [...legacyAppScript.matchAll(/\\''\+esc\([^)]+\)\+'\\'/g)];
 
