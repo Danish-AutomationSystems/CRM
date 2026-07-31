@@ -81,6 +81,10 @@ export type QuoteRow = {
   notes: string;
   doc: string;
   pdf: string;
+  driveFileId: string;
+  driveViewLink: string;
+  driveSavedAt: string;
+  driveSavedBy: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -477,6 +481,10 @@ export function createQuoteService(repo: QuoteRepository) {
           notes: String(input.notes ?? ''),
           doc: '',
           pdf: '',
+          driveFileId: '',
+          driveViewLink: '',
+          driveSavedAt: '',
+          driveSavedBy: '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,
           updatedAt: now
@@ -564,6 +572,10 @@ export function createQuoteService(repo: QuoteRepository) {
           notes: String(input.notes ?? ''),
           doc: '',
           pdf: downloadUrl,
+          driveFileId: '',
+          driveViewLink: '',
+          driveSavedAt: '',
+          driveSavedBy: '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,
           updatedAt: now

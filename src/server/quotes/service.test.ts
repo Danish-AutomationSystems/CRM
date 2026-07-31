@@ -198,6 +198,10 @@ function makeQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     notes: 'Standard terms',
     doc: '',
     pdf: '',
+    driveFileId: '',
+    driveViewLink: '',
+    driveSavedAt: '',
+    driveSavedBy: '',
     createdBy: sales.email,
     createdAt: '2026-07-29T00:00:00.000Z',
     updatedAt: '2026-07-29T00:00:00.000Z',
@@ -397,6 +401,54 @@ describe('quote service external uploads and status changes', () => {
     repo.cases[0] = caseRow({ stage: 'Opportunity', outcome: 'Won' });
     await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
     expect(repo.cases[0].stage).toBe('Opportunity');
+  });
+});
+
+describe('quote repository Drive save fields', () => {
+  it('updateQuote persists Drive save fields', async () => {
+    const repo = new FakeQuoteRepository();
+    repo.quotes.push({
+      quoteNo: 'QTN-2026-0001',
+      rev: 0,
+      caseId: '',
+      customerId: 'CUST-1',
+      title: 'Test quote',
+      source: 'Generated',
+      fileName: '',
+      uploadMimeType: '',
+      uploadDataB64: '',
+      templateId: '',
+      templateName: '',
+      status: 'Draft',
+      subtotal: 100,
+      taxPct: 18,
+      taxAmount: 18,
+      total: 118,
+      currency: 'INR',
+      validUntil: '',
+      notes: '',
+      doc: '',
+      pdf: '',
+      driveFileId: '',
+      driveViewLink: '',
+      driveSavedAt: '',
+      driveSavedBy: '',
+      createdBy: 'sales@automationsystems.org',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z'
+    });
+
+    await repo.updateQuote('QTN-2026-0001', 0, {
+      driveFileId: 'file-123',
+      driveViewLink: 'https://drive.google.com/file/d/file-123/view',
+      driveSavedAt: '2026-07-31T10:00:00.000Z',
+      driveSavedBy: 'sales@automationsystems.org'
+    });
+
+    const updated = await repo.getQuote('QTN-2026-0001', 0);
+    expect(updated?.driveFileId).toBe('file-123');
+    expect(updated?.driveViewLink).toBe('https://drive.google.com/file/d/file-123/view');
+    expect(updated?.driveSavedBy).toBe('sales@automationsystems.org');
   });
 });
 

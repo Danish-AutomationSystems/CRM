@@ -93,6 +93,10 @@ type QuoteDbRow = {
   notes: string | null;
   doc_link: string | null;
   pdf_link: string | null;
+  drive_file_id: string | null;
+  drive_view_link: string | null;
+  drive_saved_at: string | Date | null;
+  drive_saved_by: string | null;
   created_by: string | null;
   created_at: string | Date;
   updated_at: string | Date;
@@ -235,6 +239,10 @@ function toQuote(row: QuoteDbRow): QuoteRow {
     notes: row.notes ?? '',
     doc: row.doc_link ?? '',
     pdf: row.pdf_link ?? '',
+    driveFileId: row.drive_file_id ?? '',
+    driveViewLink: row.drive_view_link ?? '',
+    driveSavedAt: dateString(row.drive_saved_at),
+    driveSavedBy: normalizeEmail(row.drive_saved_by ?? ''),
     createdBy: normalizeEmail(row.created_by),
     createdAt: dateString(row.created_at),
     updatedAt: dateString(row.updated_at)
@@ -392,7 +400,8 @@ export class PostgresQuoteRepository implements QuoteRepository {
              upload_mime_type, coalesce(encode(upload_data, 'base64'), '') as upload_data_b64,
              template_id,
              template_name, status, subtotal, tax_pct, tax_amount, total, currency,
-             valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
+             valid_until, notes, doc_link, pdf_link, drive_file_id, drive_view_link,
+             drive_saved_at, drive_saved_by, created_by, created_at, updated_at
       from public.quotations
       where quote_no = ${quoteNo}
         and rev = ${rev}
@@ -408,7 +417,8 @@ export class PostgresQuoteRepository implements QuoteRepository {
              upload_mime_type, coalesce(encode(upload_data, 'base64'), '') as upload_data_b64,
              template_id,
              template_name, status, subtotal, tax_pct, tax_amount, total, currency,
-             valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
+             valid_until, notes, doc_link, pdf_link, drive_file_id, drive_view_link,
+             drive_saved_at, drive_saved_by, created_by, created_at, updated_at
       from public.quotations
       where quote_no = ${quoteNo}
     `) as QuoteDbRow[];
@@ -460,6 +470,10 @@ export class PostgresQuoteRepository implements QuoteRepository {
         notes = ${row.notes},
         doc_link = ${row.doc},
         pdf_link = ${row.pdf},
+        drive_file_id = ${row.driveFileId},
+        drive_view_link = ${row.driveViewLink},
+        drive_saved_at = ${row.driveSavedAt || null},
+        drive_saved_by = ${row.driveSavedBy ? normalizeEmail(row.driveSavedBy) : null},
         updated_at = ${row.updatedAt}
       where quote_no = ${quoteNo}
         and rev = ${rev}
