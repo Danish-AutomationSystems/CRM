@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const filesCreate = vi.fn();
+const filesList = vi.fn();
+const filesCopy = vi.fn();
+const filesExport = vi.fn();
 const permissionsCreate = vi.fn();
 
 vi.mock('googleapis', () => ({
@@ -9,7 +12,7 @@ vi.mock('googleapis', () => ({
       OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() }))
     },
     drive: vi.fn().mockImplementation(() => ({
-      files: { create: filesCreate },
+      files: { create: filesCreate, list: filesList, copy: filesCopy, export: filesExport },
       permissions: { create: permissionsCreate }
     }))
   }
@@ -18,6 +21,9 @@ vi.mock('googleapis', () => ({
 describe('createDriveClient', () => {
   beforeEach(() => {
     filesCreate.mockReset();
+    filesList.mockReset();
+    filesCopy.mockReset();
+    filesExport.mockReset();
     permissionsCreate.mockReset();
     process.env.GOOGLE_DRIVE_CLIENT_ID = 'test-client-id';
     process.env.GOOGLE_DRIVE_CLIENT_SECRET = 'test-client-secret';
@@ -65,5 +71,69 @@ describe('createDriveClient', () => {
     delete process.env.GOOGLE_DRIVE_CLIENT_ID;
     const { createDriveClient } = await import('./client');
     expect(() => createDriveClient()).toThrow('GOOGLE_DRIVE_CLIENT_ID is not configured.');
+  });
+
+  it('lists only Google Docs in the given folder, newest name order', async () => {
+    filesList.mockResolvedValue({ data: { files: [{ id: 'tpl-1', name: 'Standard' }] } });
+
+    const { createDriveClient } = await import('./client');
+    const result = await createDriveClient().listDocsInFolder('folder-tpl');
+
+    expect(result).toEqual([{ id: 'tpl-1', name: 'Standard' }]);
+    expect(filesList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        q: "'folder-tpl' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
+        fields: 'files(id, name)',
+        orderBy: 'name'
+      })
+    );
+  });
+
+  it('returns an empty list when the folder has no documents', async () => {
+    filesList.mockResolvedValue({ data: {} });
+    const { createDriveClient } = await import('./client');
+    expect(await createDriveClient().listDocsInFolder('folder-tpl')).toEqual([]);
+  });
+
+  it('copies a template into the target folder', async () => {
+    filesCopy.mockResolvedValue({ data: { id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' } });
+
+    const { createDriveClient } = await import('./client');
+    const result = await createDriveClient().copyFile('tpl-1', 'QTN-2026-0001-R0 - Acme', 'folder-out');
+
+    expect(result).toEqual({ id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' });
+    expect(filesCopy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileId: 'tpl-1',
+        requestBody: { name: 'QTN-2026-0001-R0 - Acme', parents: ['folder-out'] },
+        fields: 'id, webViewLink'
+      })
+    );
+  });
+
+  it('throws when a copy returns no file id', async () => {
+    filesCopy.mockResolvedValue({ data: {} });
+    const { createDriveClient } = await import('./client');
+    await expect(createDriveClient().copyFile('tpl-1', 'x', 'folder-out')).rejects.toThrow('Drive did not return a file id.');
+  });
+
+  it('exports a document to PDF bytes', async () => {
+    filesExport.mockResolvedValue({ data: new Uint8Array([37, 80, 68, 70]).buffer });
+
+    const { createDriveClient } = await import('./client');
+    const pdf = await createDriveClient().exportPdf('copy-1');
+
+    expect(Buffer.isBuffer(pdf)).toBe(true);
+    expect(pdf.subarray(0, 4).toString('latin1')).toBe('%PDF');
+    expect(filesExport).toHaveBeenCalledWith(
+      { fileId: 'copy-1', mimeType: 'application/pdf' },
+      { responseType: 'arraybuffer' }
+    );
+  });
+
+  it('tolerates a sharing failure on shareDomainReadable', async () => {
+    permissionsCreate.mockRejectedValue(new Error('Domain policy blocks link sharing.'));
+    const { createDriveClient } = await import('./client');
+    await expect(createDriveClient().shareDomainReadable('copy-1')).resolves.toBeUndefined();
   });
 });
