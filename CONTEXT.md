@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-07-31 (customer save cache fix + table overflow fix)
+Last updated: 2026-07-31 (Google Drive quotation save feature)
 
 ## Project Purpose
 
@@ -99,6 +99,15 @@ Completed:
   - Fix (CSS-only, no markup changes needed, fixes every table in the app at once): `src/app/crm/legacy-full-ui.css`'s base `table` rule now sets `display:block;overflow-x:auto;-webkit-overflow-scrolling:touch` in addition to its existing `width:100%`, so any table scrolls its own overflow internally instead of widening its ancestors.
   - Regression tests in `tests/e2e/crm-smoke.spec.ts`: `the customer detail page does not overflow the mobile viewport` and `the cases list table does not overflow the mobile viewport`, both asserting `document.documentElement.scrollWidth === clientWidth` at phone widths.
   - Not yet audited: forms/modals other than the customer edit modal (already spot-checked, no overflow) - if further "weird view" reports come in for a specific screen (bulk-add, quote builder/invoice, admin tables), reproduce with the same technique (real Playwright viewport + `document.documentElement.scrollWidth` vs `clientWidth`, walking `#main *` for the widest offending element) before guessing at a fix.
+- Google Drive Quotation Save (2026-07-31):
+  - New module `src/server/drive/`: `client.ts` (`createDriveClient()` - validates `GOOGLE_DRIVE_CLIENT_ID`/`GOOGLE_DRIVE_CLIENT_SECRET`/`GOOGLE_DRIVE_REFRESH_TOKEN` eagerly and synchronously, then returns an `uploadFile()` method using the `googleapis` Drive API v3, sets domain-shared read access, and tolerates permission-sharing failures), `folder.ts` (`getDriveFolderId()` - reads the target Drive folder ID from `public.settings` key `GOOGLE_DRIVE_QUOTATIONS_FOLDER_ID`), and `service.ts` (`createDriveService()` - orchestrates `saveQuotationToDrive`, reusing the existing `quoteService.getDownloadArtifact()` for artifact bytes). `service.ts` takes `getDriveClient: () => DriveClient` as a lazy factory specifically so RPC registration doesn't crash at import time in environments without Drive credentials configured yet - this was a real bug caught and fixed during implementation, not a stylistic choice.
+  - DB migration `supabase/migrations/0004_quotation_drive_link.sql` adds `quotations.drive_file_id`, `drive_view_link` (both `text not null default ''`), `drive_saved_at` (nullable `timestamptz`), and `drive_saved_by` (nullable `text`, FK to `public.users(email)`).
+  - New RPC `api_saveQuotationToDrive(quoteNo, rev)`, registered in `src/server/quotes/rpc.ts` with `{ read: false }`.
+  - Drive filename convention: for Generated-source quotes, the Drive filename is the artifact's own filename verbatim (`safeQuoteFileName` already embeds quote number/rev/customer name); for External/uploaded quotes, the filename is wrapped as `<quoteNo> R<rev> - <customerName> - <fileName>`, matching the legacy Apps Script convention. This branches on `quote.source` - added during implementation after a reviewer caught that a single naive wrapping approach double-duplicated quote metadata in Generated-quote filenames.
+  - New admin-only, self-disabling one-time setup routes: `src/app/api/admin/drive-setup/start/route.ts` (redirects to Google's OAuth consent screen, scope `drive.file`) and `src/app/api/admin/drive-setup/callback/route.ts` (exchanges the code for a refresh token, creates the `AS CRM Quotations Testing` Drive folder, stores its ID in `public.settings` under key `GOOGLE_DRIVE_QUOTATIONS_FOLDER_ID`, and displays the refresh token once in the admin's own browser to copy into Vercel - the app never stores or logs it). Both routes refuse to run if `GOOGLE_DRIVE_REFRESH_TOKEN` is already set, and require an authenticated L6 admin session (`getRequestContext` + `ensureAdmin`) before touching Google or the database. `src/middleware.ts`'s `PROTECTED_PREFIXES` now includes `/api/admin`.
+  - UI: the legacy quote-viewer modal (`docs/source-appscript/Index.html`'s `mQuoteViewer`, and the corresponding hand-patched `src/app/crm/legacy-full.generated.ts` - the generator remains frozen/unrun per the known-issue note above) shows a "Save to Drive" button that becomes a "View in Drive" link once `quote.driveViewLink` is set.
+  - Credentials: `GOOGLE_DRIVE_CLIENT_ID` and `GOOGLE_DRIVE_CLIENT_SECRET` are already set in both `.env.local` (local dev) and Vercel production env vars. The Google Cloud OAuth client `AS-CRM-DRIVE` was created with both `https://as-crm-ten.vercel.app/api/admin/drive-setup/callback` and `https://crm.automationsystems.info/api/admin/drive-setup/callback` registered as authorized redirect URIs. `GOOGLE_DRIVE_REFRESH_TOKEN` has NOT been set yet as of this entry - see Pending/manual below. Until it is set, the feature is fully built and deployed but the "Save to Drive" button will fail with a clear error if clicked (missing env var), which is expected/safe, not a bug.
+  - Deferred, not built: "full legacy revival" - real Google Doc templates, Docs API merge-fill, and Drive-native PDF export - is out of scope for this feature and already recorded as future work in the design spec: `docs/superpowers/specs/2026-07-31-google-drive-quote-save-design.md`.
 
 ### Known issue: the legacy artifact and its generator have drifted - treat the artifact as frozen
 
@@ -116,6 +125,7 @@ Pending/manual:
 - Real Google sign-in must be tested on `https://crm.automationsystems.info/login`.
 - If Google login redirects to `http://localhost:3000/?code=...`, Supabase Auth URL Configuration is still using localhost as Site URL or is missing the production callback URL.
 - Custom CRM subdomain DNS is verified in Vercel.
+- Google Drive quotation save one-time OAuth setup has not been run yet. To finish: sign in as an L6 admin at `https://crm.automationsystems.info/api/admin/drive-setup/start`, approve the consent screen as `testing@automationsystems.org`, then copy the printed `GOOGLE_DRIVE_REFRESH_TOKEN` into Vercel env vars and redeploy. Until this is done, clicking "Save to Drive" in the quote viewer will fail with a missing-env-var error (expected/safe).
 
 ## Architecture Overview
 
@@ -510,7 +520,7 @@ npx playwright test
 
 ## Known Product Decisions
 
-- Google Drive upload is intentionally not part of the current migrated version.
+- Google Drive upload was initially not part of the migrated version, but "save quotation to Google Drive" was added 2026-07-31 (see the Current Production Status entry above) as an additive feature alongside direct download - it does not replace direct download.
 - Invoice/quotation buttons should download files directly to the user's PC.
 - Apps Script latency was the motivation for moving to Vercel/Supabase.
 - Preserve feature parity first; fix existing product bugs later.
