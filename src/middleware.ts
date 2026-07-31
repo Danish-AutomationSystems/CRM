@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { createSupabaseMiddlewareClient } from './server/auth/supabase';
 
-const PROTECTED_PREFIXES = ['/crm', '/api/rpc'];
+const PROTECTED_PREFIXES = ['/crm', '/api/rpc', '/api/admin'];
 
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
