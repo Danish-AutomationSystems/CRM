@@ -34,8 +34,13 @@ describe('Apps Script API parity', () => {
     const uiApis = uiCalledApis(indexHtml);
     const registeredApis = listRegisteredRpcs();
 
+    // Capabilities added after the migration that never existed in the
+    // legacy Apps Script server - not expected to appear in Code.gs.
+    const intentionallyNew = ['api_saveQuotationToDrive'];
+    const legacyUiApis = uiApis.filter((api) => !intentionallyNew.includes(api));
+
     expect(uiApis.length).toBeGreaterThan(0);
-    expect(sourceApis).toEqual(expect.arrayContaining(uiApis));
+    expect(sourceApis).toEqual(expect.arrayContaining(legacyUiApis));
     expect(uiApis.filter((api) => !hasRpc(api))).toEqual([]);
     expect(registeredApis).toEqual(expect.arrayContaining(uiApis));
   });
