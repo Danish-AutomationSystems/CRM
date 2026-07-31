@@ -599,3 +599,70 @@ test('editing a customer reflects the change immediately, without a manual reloa
   await expect(page.getByRole('heading', { name: 'Acme Controls Renamed' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Acme Controls', exact: true })).not.toBeVisible();
 });
+
+test('saving a quotation to Drive shows a working View in Drive link', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  let driveSaved = false;
+  await setUpAuthenticatedSession(context, page);
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_saveQuotationToDrive') {
+      driveSaved = true;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { ok: true } }) });
+      return;
+    }
+    if (body.fn === 'api_getQuotation') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+            quote: {
+              quoteNo: 'QTN-2026-0001',
+              rev: 0,
+              caseId: 'CASE-2026-0001',
+              title: 'Panel upgrade quote',
+              source: 'Generated',
+              fileName: '',
+              templateId: '',
+              templateName: 'Standard',
+              status: 'Sent',
+              subtotal: 101695,
+              taxPct: 18,
+              taxAmount: 18305,
+              total: 120000,
+              currency: 'INR',
+              validUntil: '2026-08-29',
+              notes: '',
+              doc: '/api/download/quote/QTN-2026-0001/0?format=html',
+              pdf: '/api/download/quote/QTN-2026-0001/0?format=html',
+              driveViewLink: driveSaved ? 'https://drive.google.com/file/d/file-123/view' : '',
+              by: 'Playwright Admin',
+              date: '2026-07-29'
+            },
+            blocks: [{ title: 'Items', headers: ['Item', 'Amount'], rows: [['Panel upgrade', '120000']] }],
+            revisions: [{ rev: 0, status: 'Sent', date: '2026-07-29', total: 120000 }]
+          }
+        })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/cases');
+  await page.getByText('Panel upgrade').first().click();
+  await page.getByTestId('crm-route').getByRole('button', { name: 'Open' }).click();
+
+  await page.getByRole('button', { name: 'Save to Drive' }).click();
+  await expect(page.getByRole('link', { name: 'View in Drive' })).toHaveAttribute(
+    'href',
+    'https://drive.google.com/file/d/file-123/view'
+  );
+});
