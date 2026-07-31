@@ -105,6 +105,15 @@ up: explicit request from the project owner's manager/stakeholder.
   6. Returns the updated quote payload (same shape as `api_getQuotation`)
      so the client can re-render immediately.
 
+### New routes: `src/app/api/admin/drive-setup/`
+
+One-time, admin-gated, self-disabling routes used only during initial
+credential setup (see "One-time credential setup" below for the full
+flow) — `start/route.ts` (redirects to Google's OAuth consent screen) and
+`callback/route.ts` (exchanges the code for a refresh token, creates the
+Drive folder, and displays both once for the admin to copy into Vercel).
+Not part of the app's normal runtime request path.
+
 ### RPC
 
 `src/server/quotes/rpc.ts` gains:
@@ -151,23 +160,43 @@ generator is not run.
 
 ## One-time credential setup (manual, human-in-the-loop)
 
+Uses the live deployment rather than a local script — confirmed via
+`npx vercel alias ls` that both `https://as-crm-ten.vercel.app` and the
+custom domain `https://crm.automationsystems.info` currently alias to the
+same production deployment.
+
 1. Google Cloud Console, same project as `AS-WEBAPP`: enable the Google
    Drive API.
-2. Create a new OAuth client `AS-CRM-DRIVE` (Web application type),
-   redirect URI `http://localhost:53682/oauth/callback` (used only for
-   the one-time local token-capture script below; nothing public-facing
-   needs it afterward).
-3. Client ID/Secret go into `.env.local` (git-ignored) and Vercel
-   production env vars — never pasted into chat or committed, per the
-   project's existing security rules.
-4. A short-lived local script (`scripts/drive-oauth-setup.mjs`, deleted
-   or left inert after use — not part of the running app) starts a
-   throwaway local HTTP server on `localhost:53682`, opens/prints the
-   Google consent URL (scope `drive.file`) for `testing@automationsystems.org`
-   to approve, captures the resulting `code` via the local redirect,
-   exchanges it server-side for a refresh token, and creates the "AS CRM
-   Quotations Testing" Drive folder, printing its folder ID.
-5. The project owner adds `GOOGLE_DRIVE_REFRESH_TOKEN` to Vercel env vars
+2. Create a new OAuth client `AS-CRM-DRIVE` (Web application type), with
+   **both** authorized redirect URIs registered (Google allows multiple
+   per client, same as the existing `AS-WEBAPP`/Supabase setup already
+   registers both domains):
+   ```
+   https://as-crm-ten.vercel.app/api/admin/drive-setup/callback
+   https://crm.automationsystems.info/api/admin/drive-setup/callback
+   ```
+3. Client ID/Secret go into `.env.local` (git-ignored, for local dev) and
+   Vercel production env vars — never pasted into chat or committed, per
+   the project's existing security rules.
+4. New admin-only routes in the app itself (not a throwaway script):
+   `/api/admin/drive-setup/start` (redirects to Google's consent screen,
+   scope `drive.file`) and `/api/admin/drive-setup/callback` (exchanges
+   the `code` for a refresh token, creates the "AS CRM Quotations Testing"
+   Drive folder, and renders the refresh token + folder ID **once**,
+   directly in the admin's own browser, for them to copy into Vercel
+   themselves — the app never stores or logs the raw token).
+   - Gated behind the existing CRM auth middleware (added to
+     `PROTECTED_PREFIXES` in `src/middleware.ts`) and restricted to L6
+     admins, matching every other admin-only capability.
+   - Self-disabling: both routes 404/refuse if
+     `GOOGLE_DRIVE_REFRESH_TOKEN` is already set in the environment, so
+     the flow can't be accidentally re-triggered and silently rotate (and
+     break) the live credential.
+5. The project owner performs the actual one-time click-through via
+   `https://crm.automationsystems.info/api/admin/drive-setup/start`
+   (the domain the team actually uses day to day), signed in as an L6
+   admin, and approves the consent screen as `testing@automationsystems.org`.
+6. The project owner adds `GOOGLE_DRIVE_REFRESH_TOKEN` to Vercel env vars
    and the printed folder ID gets stored via
    `update public.settings set value = '<folder-id>' where key = 'GOOGLE_DRIVE_QUOTATIONS_FOLDER_ID'`
    (or an equivalent seed step) — not hardcoded, matching the
