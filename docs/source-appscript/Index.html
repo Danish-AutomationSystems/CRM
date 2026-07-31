@@ -1819,6 +1819,11 @@ function mQuoteViewer(quoteNo, rev){
         (q.doc?'<a class="btn ghost sm" href="'+esc(q.doc)+'" target="_blank" rel="noopener">Open Google Doc</a>':'')+
         (q.pdf?'<a class="btn ghost sm" href="'+esc(q.pdf)+'" target="_blank" rel="noopener">'+(ext?'Open uploaded file':'Open PDF')+'</a>':'')+'</div>';
     }
+    html += '<div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">'+
+      (q.driveViewLink
+        ? '<a class="btn ghost sm" href="'+esc(q.driveViewLink)+'" target="_blank" rel="noopener">View in Drive</a>'
+        : '<button class="btn ghost sm" id="driveSaveBtn" onclick="saveQuoteToDrive(\''+esc(quoteNo)+'\','+rev+')">Save to Drive</button>')+
+      '</div>';
     if(d.revisions.length>1){
       html += '<div class="ovl" style="margin-top:16px">All revisions</div>';
       d.revisions.forEach(function(r){
@@ -1835,6 +1840,16 @@ function mQuoteViewer(quoteNo, rev){
     if(q.status==='Draft') foot += '<button class="btn" onclick="setQStatus(\''+esc(quoteNo)+'\','+rev+',\'Sent\')">Mark Sent</button>';
     openModal(quoteNo+' · R'+rev, html, foot, true);
   }).catch(function(e){ closeModal(); oops(e); });
+}
+function saveQuoteToDrive(quoteNo, rev){
+  var btn = el('driveSaveBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  gs('api_saveQuotationToDrive', quoteNo, rev).then(function(){
+    mQuoteViewer(quoteNo, rev);
+  }).catch(function(e){
+    if(btn){ btn.disabled = false; btn.textContent = 'Save to Drive'; }
+    oops(e);
+  });
 }
 function genDoc(quoteNo, rev){
   el('genBtn').disabled = true; el('genBtn').textContent = 'Generating…';

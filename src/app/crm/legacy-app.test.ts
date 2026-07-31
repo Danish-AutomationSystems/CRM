@@ -196,6 +196,61 @@ describe('legacy CRM full client', () => {
     );
   });
 
+  test('saving a quotation to Drive replaces the button with a working link', async () => {
+    let saveCalls = 0;
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_listCases') return [];
+      if (fn === 'api_getQuotation') {
+        return {
+          quote: {
+            quoteNo: 'QTN-2026-0001',
+            rev: 0,
+            caseId: 'CASE-2026-0001',
+            title: 'Panel upgrade quote',
+            source: 'Generated',
+            fileName: '',
+            templateId: '',
+            templateName: 'Standard',
+            status: 'Draft',
+            subtotal: 100,
+            taxPct: 18,
+            taxAmount: 18,
+            total: 118,
+            currency: 'INR',
+            validUntil: '',
+            notes: '',
+            doc: '/api/download/quote/QTN-2026-0001/0?format=html',
+            pdf: '/api/download/quote/QTN-2026-0001/0?format=html',
+            driveViewLink: saveCalls > 0 ? 'https://drive.google.com/file/d/file-123/view' : '',
+            by: 'Admin User',
+            date: '2026-07-29'
+          },
+          customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+          blocks: [],
+          revisions: [{ rev: 0, status: 'Draft', date: '2026-07-29', total: 118 }]
+        };
+      }
+      if (fn === 'api_saveQuotationToDrive') {
+        saveCalls += 1;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('mQuoteViewer("QTN-2026-0001", 0)');
+
+    const saveButton = await screen.findByRole('button', { name: 'Save to Drive' });
+    window.eval(saveButton.getAttribute('onclick') ?? '');
+
+    expect(await screen.findByRole('link', { name: 'View in Drive' })).toHaveAttribute(
+      'href',
+      'https://drive.google.com/file/d/file-123/view'
+    );
+  });
+
   test('does not leave generated inline handlers with HTML-escaped JavaScript string arguments', () => {
     const unsafeHandlerArguments = [...legacyAppScript.matchAll(/\\''\+esc\([^)]+\)\+'\\'/g)];
 
