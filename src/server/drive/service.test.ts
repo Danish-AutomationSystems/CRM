@@ -113,7 +113,7 @@ describe('createDriveService', () => {
     repo.quotes.push(baseQuote());
   });
 
-  it('uploads the quote artifact to Drive and records the result', async () => {
+  it('uploads a Generated quote using its already-complete artifact fileName verbatim (not double-wrapped)', async () => {
     const quoteService = createQuoteService(repo);
     const uploadFile = vi.fn().mockResolvedValue({ id: 'file-123', webViewLink: 'https://drive.google.com/file/d/file-123/view' });
     const driveService = createDriveService({
@@ -123,18 +123,50 @@ describe('createDriveService', () => {
       getFolderId: async () => 'folder-abc'
     });
 
+    const artifact = await quoteService.getDownloadArtifact(sales, 'QTN-2026-0001', 0);
     const result = await driveService.saveQuotationToDrive(sales, 'QTN-2026-0001', 0);
 
+    // Generated quotes already bake quoteNo/rev/customerName into
+    // artifact.fileName (via safeQuoteFileName) - it must be used as-is,
+    // not wrapped again with the "<quoteNo> R<rev> - <customerName> - " prefix.
     expect(uploadFile).toHaveBeenCalledWith(
-      expect.objectContaining({ fileName: expect.stringContaining('QTN-2026-0001 R0 - Acme Controls') }),
+      expect.objectContaining({ fileName: artifact.fileName }),
       'folder-abc'
     );
+    expect(uploadFile.mock.calls[0][0].fileName).not.toContain('QTN-2026-0001 R0 - Acme Controls -');
     expect(result.quote.driveViewLink).toBe('https://drive.google.com/file/d/file-123/view');
 
     const stored = await repo.getQuote('QTN-2026-0001', 0);
     expect(stored?.driveFileId).toBe('file-123');
     expect(stored?.driveSavedBy).toBe('sales@automationsystems.org');
     expect(stored?.driveSavedAt).not.toBe('');
+  });
+
+  it('uploads an External quote with the wrapped "<quoteNo> R<rev> - <customerName> - <fileName>" name', async () => {
+    repo.quotes.push({
+      ...baseQuote(),
+      rev: 1,
+      source: 'External',
+      fileName: 'customer-quote.pdf',
+      uploadMimeType: 'application/pdf',
+      uploadDataB64: Buffer.from('pdf-bytes').toString('base64')
+    });
+
+    const quoteService = createQuoteService(repo);
+    const uploadFile = vi.fn().mockResolvedValue({ id: 'file-456', webViewLink: 'https://drive.google.com/file/d/file-456/view' });
+    const driveService = createDriveService({
+      quoteService,
+      quoteRepository: repo,
+      getDriveClient: () => ({ uploadFile }),
+      getFolderId: async () => 'folder-abc'
+    });
+
+    await driveService.saveQuotationToDrive(sales, 'QTN-2026-0001', 1);
+
+    expect(uploadFile).toHaveBeenCalledWith(
+      expect.objectContaining({ fileName: 'QTN-2026-0001 R1 - Acme Controls - customer-quote.pdf' }),
+      'folder-abc'
+    );
   });
 
   it('rejects a customer the user cannot access, same as getDownloadArtifact would', async () => {

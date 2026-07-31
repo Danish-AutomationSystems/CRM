@@ -36,10 +36,20 @@ export function createDriveService(deps: DriveServiceDeps) {
       if (!quote) throw new Error(`Quotation ${quoteNo} R${rev} was not found.`);
       const customer = await deps.quoteRepository.getCustomer(quote.customerId);
 
+      // Generated quotes already have quoteNo/rev/customerName baked into
+      // artifact.fileName (via safeQuoteFileName), so wrapping it again with
+      // driveFileName() would duplicate that metadata in the final name.
+      // External (uploaded) quotes carry only the user's original file name,
+      // with no CRM metadata, so those still need the wrapping prefix.
+      const fileName =
+        quote.source === 'Generated'
+          ? artifact.fileName
+          : driveFileName(quoteNo, rev, customer?.name ?? '', artifact.fileName);
+
       const folderId = await deps.getFolderId();
       const uploaded = await deps.getDriveClient().uploadFile(
         {
-          fileName: driveFileName(quoteNo, rev, customer?.name ?? '', artifact.fileName),
+          fileName,
           mimeType: artifact.mimeType,
           body: toBuffer(artifact.body)
         },
