@@ -112,7 +112,15 @@
   .stat .t{font:600 11px var(--body);letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-top:var(--sp-2)}
   .stat .x{font-size:11.5px;color:var(--muted);margin-top:var(--sp-1)}
 
-  table{width:100%;border-collapse:collapse;font-size:13px}
+  /* .table-scroll (below) was designed to wrap tables for horizontal
+     scrolling on narrow screens, but the legacy markup never actually
+     applies that wrapper to any <table> - so a wide table (long email
+     columns etc.) blew out its whole ancestor chain (card/main/body) to
+     its own intrinsic width instead of scrolling within itself, forcing
+     the whole page wider than the viewport on phones. Making every table
+     scroll internally, with no markup change required, fixes every
+     instance of this at once. */
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;width:100%;border-collapse:collapse;font-size:13px}
   th{font:600 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:var(--sp-2) var(--sp-3);border-bottom:1.5px solid var(--line);background:var(--paper)}
   td{padding:var(--sp-2) var(--sp-3);border-bottom:1px solid #ECF0ED;vertical-align:middle}
   tr:last-child td{border-bottom:0}

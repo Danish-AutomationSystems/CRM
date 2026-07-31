@@ -400,4 +400,46 @@ describe('legacy CRM full client', () => {
       expect(fetchMock.mock.calls.length).toBe(callCountAtUnmount);
     });
   });
+
+  describe('client-side cache invalidation after writes', () => {
+    test('saving a customer edit reflects instantly instead of showing the 90s-stale cached detail', async () => {
+      let getCustomerCalls = 0;
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_getCustomer') {
+          getCustomerCalls += 1;
+          return {
+            access: 'FULL',
+            customer: {
+              id: 'CUST-1',
+              name: getCustomerCalls === 1 ? 'Old Name' : 'New Name',
+              tags: [],
+              createdOn: '2026-07-01',
+              createdBy: 'admin@automationsystems.org'
+            },
+            handlers: [],
+            contacts: [],
+            cases: [],
+            quotes: []
+          };
+        }
+        if (fn === 'api_updateCustomer') return { ok: true };
+        throw new Error(`Unexpected RPC ${fn} ${JSON.stringify(args)}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Old Name' });
+
+      // Mirrors the real save-success handler at
+      // docs/source-appscript/Index.html:951 -
+      // `gs('api_updateCustomer', id, d).then(function(){ ...; vCustomer(id); })`.
+      window.eval('gs("api_updateCustomer", "CUST-1", {}).then(function(){ vCustomer("CUST-1"); })');
+
+      await screen.findByRole('heading', { name: 'New Name' });
+      expect(screen.queryByRole('heading', { name: 'Old Name' })).not.toBeInTheDocument();
+    });
+  });
 });

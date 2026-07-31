@@ -57,6 +57,16 @@ function cacheBustKey(fn) {
   }
 }
 
+// cacheBustKey() only purges this file's SWR_CACHE. The original legacy
+// client (docs/source-appscript/Index.html) has its OWN separate cache -
+// the global CACHE object (CACHE.customers/cases/cust/kase) used by
+// vCustomer/vCase/vDash for a 90s stale-while-revalidate render - and its
+// own gs() called cacheBust() (defined in that source file) on every write
+// to clear it. This generator fully replaces that gs(), so cacheBust()
+// must be called here too, or a save on a detail view the user is already
+// looking at (which is therefore "fresh" in CACHE) renders stale data
+// until CACHE.FRESH_MS (90s) elapses or the page is hard-refreshed.
+
 function gs(fn){
   var args = Array.prototype.slice.call(arguments,1);
   var ck = fn + ':' + JSON.stringify(args);
@@ -81,7 +91,7 @@ function gs(fn){
         busy(false);
         if(!payload || payload.ok===false){ rej(new Error((payload && payload.error) || 'Request failed.')); return; }
         if(QREADS[fn]) { SWR_CACHE[ck] = { ts: Date.now(), data: payload.data }; }
-        else { cacheBustKey(fn); }
+        else { cacheBustKey(fn); cacheBust(); }
         res(payload.data);
       })
       .catch(function(e){ if(done)return; done=true; clearTimeout(timer); busy(false); rej(e); });

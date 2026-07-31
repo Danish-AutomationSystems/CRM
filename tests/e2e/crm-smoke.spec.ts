@@ -87,6 +87,50 @@ const caseSummary = {
   updatedOn: '2026-07-29'
 };
 
+const customerSummary = {
+  id: 'CUST-2026-0001',
+  name: 'Acme Controls',
+  tags: ['Punjab'],
+  type: 'OEM',
+  priority: 'High',
+  area: 'Mohali',
+  sei: '',
+  remarks: '',
+  contacts: 1,
+  handlers: [{ name: 'Playwright Admin', email: 'playwright@automationsystems.org' }]
+};
+
+function customerDetailPayload() {
+  return {
+    access: 'FULL',
+    customer: {
+      id: customerSummary.id,
+      name: customerSummary.name,
+      tags: customerSummary.tags,
+      type: customerSummary.type,
+      priority: customerSummary.priority,
+      status: '',
+      area: customerSummary.area,
+      sei: '',
+      remarks: '',
+      address: '',
+      gstin: '',
+      website: '',
+      notes: '',
+      createdOn: '2026-07-01',
+      createdBy: 'playwright@automationsystems.org'
+    },
+    handlers: customerSummary.handlers,
+    contacts: [{ id: 'CT-1', name: 'Primary contact', phone: '9999999999', email: '', designation: '', notes: '' }],
+    // Deliberately reuses caseSummary, whose long owner/assignee email
+    // strings are exactly what previously blew the embedded Cases table
+    // wider than its card (see the "customer detail page does not
+    // overflow" test below).
+    cases: [{ ...caseSummary, orderValue: 0, quotes: 0 }],
+    quotes: []
+  };
+}
+
 function rpcData(fn: string) {
   const boot = bootPayload();
   switch (fn) {
@@ -103,7 +147,21 @@ function rpcData(fn: string) {
     case 'api_myCustomers':
       return { scope: 'mine', total: 0, customers: [] };
     case 'api_allCustomers':
-      return { scope: 'all', total: 0, customers: [] };
+      return {
+        scope: 'all',
+        total: 1,
+        customers: [customerSummary],
+        canEditPriority: true,
+        canEditClass: true,
+        canDelete: true,
+        tags: ['Punjab', 'Chandigarh', 'NCR'],
+        types: ['OEM', 'End User'],
+        priorities: ['High', 'Medium', 'Low']
+      };
+    case 'api_getCustomer':
+      return customerDetailPayload();
+    case 'api_updateCustomer':
+      return { ok: true };
     case 'api_getCase':
       return {
         customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
@@ -263,7 +321,7 @@ test('mocked authenticated session renders critical CRM route containers', async
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
   await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
   await expect(page.getByPlaceholder('Search customers by name, tag, type or area…')).toBeVisible();
-  await expect(page.getByText('No customers in the database yet.')).toBeVisible();
+  await expect(page.locator('table.grid input.ce').first()).toHaveValue(customerSummary.name);
 
   await page.getByRole('button', { name: 'Cases' }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
@@ -454,3 +512,90 @@ for (const bp of mobileNavBreakpoints) {
     expect(hasHorizontalOverflow).toBe(false);
   });
 }
+
+test('the customer detail page does not overflow the mobile viewport', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  // Regression test: the embedded Cases table's long owner/assignee email
+  // columns forced <table> past its card's width with nowhere to go,
+  // widening #main/body/<html> along with it - the whole page became wider
+  // than the viewport, matching the "have to pinch-zoom out to see it"
+  // report. Fixed by making every <table> scroll its own overflow
+  // internally (src/app/crm/legacy-full-ui.css).
+  await page.setViewportSize({ width: 412, height: 915 });
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/customer/CUST-2026-0001');
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customer');
+  await expect(page.getByRole('heading', { name: 'Acme Controls' })).toBeVisible();
+
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth
+  }));
+  expect(overflow.scrollWidth).toBe(overflow.clientWidth);
+});
+
+test('the cases list table does not overflow the mobile viewport', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/cases');
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
+  await expect(page.getByText('Panel upgrade').first()).toBeVisible();
+
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth
+  }));
+  expect(overflow.scrollWidth).toBe(overflow.clientWidth);
+});
+
+test('editing a customer reflects the change immediately, without a manual reload', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  // Regression test: the SWR-caching work replaced the legacy client's
+  // gs() (whose success handler called cacheBust() on every write) with a
+  // version that only purged the newer SWR_CACHE, never the older
+  // CACHE.cust/CACHE.kase store vCustomer()/vCase() use for their own 90s
+  // stale-while-revalidate render. A save on a detail view the user is
+  // already looking at rendered stale data until a hard refresh.
+  let updateCustomerCalls = 0;
+  await setUpAuthenticatedSession(context, page);
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_updateCustomer') {
+      updateCustomerCalls += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { ok: true } }) });
+      return;
+    }
+    if (body.fn === 'api_getCustomer') {
+      const payload = customerDetailPayload();
+      if (updateCustomerCalls > 0) payload.customer.name = 'Acme Controls Renamed';
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: payload }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/customer/CUST-2026-0001');
+  await expect(page.getByRole('heading', { name: 'Acme Controls' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.locator('#f_name').fill('Acme Controls Renamed');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Acme Controls Renamed' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Acme Controls', exact: true })).not.toBeVisible();
+});
