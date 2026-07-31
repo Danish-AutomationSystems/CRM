@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import { createQuoteService, type QuoteRepository } from './service';
@@ -44,13 +44,6 @@ class FakeQuoteRepository implements QuoteRepository {
 
   async nextCaseId(): Promise<string> {
     return `CASE-2026-${String(this.caseSeq++).padStart(4, '0')}`;
-  }
-
-  async listTemplates(): Promise<Array<{ id: string; name: string }>> {
-    return [
-      { id: 'tpl-standard', name: 'Standard Quote' },
-      { id: 'tpl-project', name: 'Project Quote' }
-    ];
   }
 
   async getCustomer(id: string): Promise<CustomerRow | null> {
@@ -221,6 +214,25 @@ function makeService() {
   ];
   return { repo, service: createQuoteService(repo) };
 }
+
+describe('quote service template listing', () => {
+  it('lists templates from the injected Drive-backed source, sorted by name', async () => {
+    const repo = new FakeQuoteRepository();
+    const listTemplates = vi.fn().mockResolvedValue([
+      { id: 'tpl-b', name: 'Project Quote' },
+      { id: 'tpl-a', name: 'Annual Contract' }
+    ]);
+    const service = createQuoteService(repo, { listTemplates });
+
+    const result = await service.listTemplates(sales);
+
+    expect(result).toEqual([
+      { id: 'tpl-a', name: 'Annual Contract' },
+      { id: 'tpl-b', name: 'Project Quote' }
+    ]);
+    expect(listTemplates).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('quote service generated quotations', () => {
   it('allocates QTN number, starts at R0, stores BOQ JSON blocks, and keeps Draft case at Opportunity', async () => {

@@ -112,7 +112,6 @@ export type QuoteRepository = {
   lockQuoteFamily(quoteNo: string): Promise<void>;
   nextQuoteNo(): Promise<string>;
   nextCaseId(): Promise<string>;
-  listTemplates(): Promise<Array<{ id: string; name: string }>>;
   getCustomer(id: string): Promise<QuoteCustomerRow | null>;
   listUsers(): Promise<QuoteUserRow[]>;
   listHandlers(): Promise<QuoteHandlerRow[]>;
@@ -422,10 +421,19 @@ function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDow
   };
 }
 
-export function createQuoteService(repo: QuoteRepository) {
+export type QuoteServiceDeps = {
+  listTemplates?: () => Promise<Array<{ id: string; name: string }>>;
+};
+
+export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps = {}) {
+  async function loadTemplates(): Promise<Array<{ id: string; name: string }>> {
+    if (!deps.listTemplates) return [];
+    return deps.listTemplates();
+  }
+
   return {
     async listTemplates(_user: CrmContext) {
-      return (await repo.listTemplates()).sort((a, b) => a.name.localeCompare(b.name));
+      return (await loadTemplates()).sort((a, b) => a.name.localeCompare(b.name));
     },
 
     async createQuotation(user: CrmContext, input: CreateQuotationInput) {
@@ -439,7 +447,7 @@ export function createQuoteService(repo: QuoteRepository) {
       const total = roundedMoney(subtotal + taxAmount);
       const currency = asText(input.currency) || DEFAULT_SETTINGS.CURRENCY;
       const title = asText(input.title) || `Quotation for ${customer.name}`;
-      const templates = await repo.listTemplates();
+      const templates = await loadTemplates();
       const templateId = asText(input.templateId);
       const templateName = templates.find((template) => template.id === templateId)?.name ?? '';
 

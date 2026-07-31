@@ -289,27 +289,6 @@ export class PostgresQuoteRepository implements QuoteRepository {
     return nextCrmId(this.db, format.key, format.prefix, format.width, new Date().getFullYear());
   }
 
-  async listTemplates(): Promise<Array<{ id: string; name: string }>> {
-    const rows = (await this.db`
-      select value
-      from public.settings
-      where key = 'QUOTE_TEMPLATES'
-      limit 1
-    `) as Array<{ value: string | null }>;
-
-    if (!rows[0]?.value) return [];
-    try {
-      const parsed = JSON.parse(rows[0].value) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item) => item as { id?: unknown; name?: unknown })
-        .map((item) => ({ id: String(item.id ?? '').trim(), name: String(item.name ?? '').trim() }))
-        .filter((item) => item.id && item.name);
-    } catch {
-      return [];
-    }
-  }
-
   async getCustomer(id: string): Promise<QuoteCustomerRow | null> {
     const rows = (await this.db`
       select customer_id, name, tags, type, priority, area, address, gstin, website, notes,
