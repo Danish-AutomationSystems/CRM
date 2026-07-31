@@ -666,3 +666,69 @@ test('saving a quotation to Drive shows a working View in Drive link', async ({ 
     'https://drive.google.com/file/d/file-123/view'
   );
 });
+
+test('generating a quotation surfaces real Drive document links and hides Save to Drive', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  let generated = false;
+  await setUpAuthenticatedSession(context, page);
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string };
+    if (body.fn === 'api_generateQuoteDoc') {
+      generated = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            doc: { url: 'https://drive.google.com/file/d/doc-1/view' },
+            pdf: { url: 'https://drive.google.com/file/d/pdf-1/view' }
+          }
+        })
+      });
+      return;
+    }
+    if (body.fn === 'api_getQuotation') {
+      const base = rpcData('api_getQuotation') as { quote: Record<string, unknown> };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            ...base,
+            quote: {
+              ...base.quote,
+              status: 'Draft',
+              driveViewLink: '',
+              doc: generated ? 'https://drive.google.com/file/d/doc-1/view' : '',
+              pdf: generated ? 'https://drive.google.com/file/d/pdf-1/view' : ''
+            }
+          }
+        })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/cases');
+  await page.getByText('Panel upgrade').first().click();
+  await page.getByTestId('crm-route').getByRole('button', { name: 'Open' }).click();
+
+  await page.getByRole('button', { name: /Generate download/ }).click();
+
+  await expect(page.getByRole('link', { name: 'Download document' })).toHaveAttribute(
+    'href',
+    'https://drive.google.com/file/d/doc-1/view'
+  );
+  await expect(page.getByRole('link', { name: 'Download PDF' })).toHaveAttribute(
+    'href',
+    'https://drive.google.com/file/d/pdf-1/view'
+  );
+  await expect(page.getByRole('button', { name: 'Save to Drive' })).toHaveCount(0);
+});
