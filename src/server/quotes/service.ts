@@ -621,6 +621,7 @@ export function createQuoteService(repo: QuoteRepository) {
           notes: quote.notes,
           doc: quote.doc,
           pdf: quote.pdf,
+          driveViewLink: quote.driveViewLink,
           by: nameOf(idx, quote.createdBy),
           date: quote.createdAt
         },
