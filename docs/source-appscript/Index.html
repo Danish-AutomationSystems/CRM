@@ -544,9 +544,11 @@ function renderBackendDash(d){
     html += '<div><label>View a user\u2019s dashboard</label><select id="dashWho" onchange="switchDash()"><option value="">\u2014 select a user \u2014</option>'+
       S.peers.map(function(p){ return '<option value="'+esc(p.email)+'">'+esc(peerLabel(p))+'</option>'; }).join('')+'</select></div>';
   }
-  /* P5: the Customers and Cases buttons that used to sit here duplicated the
-     top nav and were removed. */
-  html += (isAdmin()?'<button class="btn" onclick="nav(\'admin\')">Admin</button>':'')+'</div>';
+  /* P5: the Customers, Cases and Admin buttons that used to sit here all
+     duplicated the top nav and were removed. Admin went in a second pass -
+     the manager's note named only the first two, but it routes to the same
+     tab as #navAdmin, so it was the same duplication. */
+  html += '</div>';
   html += '<div id="dashBlocks">'+backendPrompt()+'</div>';
   html += '<div class="card"><div class="ovl">Recent activity</div>'+ recentHTML(d.recent) +'</div>';
   el('main').innerHTML = html;

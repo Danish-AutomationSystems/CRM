@@ -686,11 +686,14 @@ describe('legacy CRM full client', () => {
       const labels = [...main.querySelectorAll('button')].map((b) => b.textContent);
       expect(labels).not.toContain('Customers');
       expect(labels).not.toContain('Cases');
-      // The Admin shortcut is not a nav duplicate for the manager's purposes
-      // (it is the same tab, but it was not one of the three called out) -
-      // keep it, and keep the real nav working.
+      // The Admin shortcut was kept in the first pass because the manager named
+      // only three buttons. The project owner then confirmed it should go too,
+      // on the same reasoning: it routes to the same tab as the top nav.
+      expect(labels).not.toContain('Admin');
+      // The real nav must still carry all three.
       expect(document.querySelector('#navCust')).toBeTruthy();
       expect(document.querySelector('#navCases')).toBeTruthy();
+      expect(document.querySelector('#navAdmin')).toBeTruthy();
     });
   });
 
