@@ -989,9 +989,98 @@ labelled(
 
 labelled(
     "Current behaviour.",
-    "The recent-activity panel issues one query instead of up to 250. There is a second, quieter "
-    "improvement: the old code also returned an empty activity list in some cases where it should "
-    "have returned entries, so some users were seeing a blank panel that now populates correctly.",
+    "The recent-activity panel issues one query instead of up to 250. To be precise about what "
+    "this did and did not change: it is purely a speed fix. The old code showed the correct "
+    "entries to the correct people — it just took a very long time to work them out. Nobody sees "
+    "anything now that they could not see before, and nobody has lost anything they could see. "
+    "A test asserts the number of queries, so if this is ever reintroduced it fails outright "
+    "rather than quietly becoming slow again.",
+)
+
+# ======================================================================================
+# Supabase free tier
+# ======================================================================================
+h1("The Supabase free tier: how much room is actually left")
+
+para(
+    "The system currently runs on Supabase's free plan. These are the published limits, checked "
+    "against Supabase's pricing page, alongside what the P4 analysis projects for this system."
+)
+
+table(
+    ["Free plan limit", "Value", "What it means here"],
+    [
+        ["Database size", "500 MB",
+         "The binding limit on storage. See the projection below."],
+        ["File storage", "1 GB",
+         "Separate bucket storage, effectively unused today because uploaded quotations are "
+         "stored inside the database instead."],
+        ["Egress (data transferred out)", "5 GB / month",
+         "Plausibly the first limit reached. See below."],
+        ["Monthly active users", "50,000",
+         "Irrelevant at this size. Not a concern at any realistic headcount."],
+        ["Automated backups", "Not included",
+         "There is no automatic backup on the free plan. This matters immediately - see "
+         "Deployment."],
+        ["Inactivity", "Paused after 1 week",
+         "A free project is paused if unused for a week. Not a risk for daily use; a real one "
+         "over an extended shutdown."],
+    ],
+)
+
+h2("Storage: roughly three years at the current team size")
+para(
+    "P4 projects about 147 MB per year of database growth for 20 users. Against a 500 MB cap, "
+    "that is approximately three to three and a half years before the free plan runs out. At 50 "
+    "users it is closer to sixteen months, and at 100 users about eight."
+)
+para(
+    "One thing dominates that number. Uploaded quotation files are stored as binary data inside "
+    "the database row itself, which P4 measured as roughly thirty-five times larger than "
+    "everything else combined. If those files were held outside the database instead, the "
+    "remaining CRM data is small enough that 500 MB would last many years at this team size."
+)
+para(
+    "The useful part is that the mechanism for this already exists. The system already saves "
+    "quotations to Google Drive. Storing uploads there, or in Supabase's separate 1 GB file "
+    "storage, and keeping only the link in the database, would remove the single largest source "
+    "of growth without buying anything. That is a focused piece of work rather than a rewrite, "
+    "and it is the highest-value thing that could be done next."
+)
+
+h2("Egress may become the constraint before storage does")
+para(
+    "This deserves a flag because it is easy to miss. P4 found that the customer and case lists "
+    "still read entire tables from the database and filter the results in the application "
+    "afterwards. That means each load transfers every customer record, not just the ones shown."
+)
+para(
+    "The arithmetic depends heavily on how many customers exist, so treat this as a shape rather "
+    "than a forecast. At a few hundred customers, monthly transfer stays within the 5 GB "
+    "allowance. At around a thousand or more, with twenty people loading the app repeatedly "
+    "through the day, it can plausibly exceed it - and it would do so while the database itself "
+    "is still comfortably under 500 MB. Egress is worth watching on the Supabase dashboard "
+    "before storage is."
+)
+para(
+    "Fixing the query patterns P4 identified addresses both problems at once: less data "
+    "transferred and a faster application."
+)
+
+h2("What upgrading costs, if it comes to that")
+para(
+    "The Pro plan is from $25 per month and raises the database limit to 8 GB, egress to 250 GB, "
+    "and file storage to 100 GB. It also adds daily backups retained for seven days, and "
+    "projects never pause. On the projections above, Pro would comfortably cover 100 users for "
+    "well beyond five years."
+)
+para(
+    "Our recommendation is not to upgrade reflexively. Moving quotation files out of the database "
+    "and fixing the two query patterns would keep this system inside the free plan for years at "
+    "the current team size. The one argument for upgrading sooner is unrelated to capacity: the "
+    "free plan has no automated backups, and for a system that now holds the company's live "
+    "customer and order history, $25 a month for daily backups is reasonable insurance on its "
+    "own merits."
 )
 
 # ======================================================================================
@@ -1116,8 +1205,27 @@ para(
     "is done in the wrong order, which is why it is stated this plainly."
 )
 
+h2("Before anything else: there is no automatic backup to fall back on")
+para(
+    "The project is on Supabase's free plan, which does not include automated backups. That is "
+    "worth stating on its own line, because the advice below to \"take a backup first\" is not a "
+    "formality here - if these migrations were applied without one and something went wrong, "
+    "there would be no restore point to go back to."
+)
+para(
+    "The backup has to be taken manually, with pg_dump against the production connection string, "
+    "and the resulting file kept somewhere off the machine that produced it. Alternatively, "
+    "upgrading to Pro before the deployment turns on daily backups immediately, which is a "
+    "reasonable thing to do purely for the deployment itself even if the plan is downgraded "
+    "afterwards."
+)
+
 h2("Recommended deployment sequence")
-numbered("Take a full database backup and confirm you can actually restore it. Do this first.")
+numbered(
+    "Take a full manual database backup with pg_dump and confirm you can actually restore it "
+    "into a scratch database. Do this first. There is no automated backup on the free plan to "
+    "rely on instead."
+)
 numbered(
     "Apply 0005, 0006, 0007, 0008 in that order to a staging or branch database that has real "
     "production data in it, not an empty one. The self-checks in these migrations only prove "
