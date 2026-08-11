@@ -226,6 +226,13 @@ function rpcData(fn: string) {
         blocks: [{ title: 'Items', headers: ['Item', 'Amount'], rows: [['Panel upgrade', '120000']] }],
         revisions: [{ quoteNo: 'QTN-2026-0001', rev: 0, status: 'Sent', date: '2026-07-29', total: 120000 }]
       };
+    // The Case-owners modal builds its "add another owner" picker from this, so
+    // the modal renders empty without it - which is what made the P10 test fail.
+    case 'api_listAssignableUsers':
+      return [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', role: 'L6' },
+        { email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2' }
+      ];
     case 'api_admin_listUsers':
       return [boot.user];
     case 'api_admin_links':
