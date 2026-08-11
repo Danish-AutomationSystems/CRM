@@ -1,8 +1,11 @@
 import type { CrmContext } from '../auth/context';
 import { accessLevel, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
-import { DEFAULT_SETTINGS } from '../settings/defaults';
-import { normalizeEmail, parseList } from '../domain/lists';
+import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
+import { DIRECT_EMAIL, isDirect } from '../domain/direct';
+import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
+import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';
+import { validSei } from './sei';
 
 export type CustomerRow = {
   id: string;
@@ -15,7 +18,7 @@ export type CustomerRow = {
   gstin: string;
   website: string;
   notes: string;
-  sei: string;
+  sei: string[];
   remarks: string;
   status: 'Active' | 'Archived';
   createdBy: string;
@@ -51,6 +54,17 @@ export type CustomerUserRow = {
   role: CrmRole;
   allowedTags: string[];
   active: boolean;
+};
+
+/**
+ * Minimal projection of a case, used only to materialise ownership when a handler is added
+ * (P11). `outcome` empty means the case is still active.
+ */
+export type CaseOwnerRow = {
+  id: string;
+  customerId: string;
+  outcome: string;
+  extraOwners: string[];
 };
 
 export type ActivityLogEntry = {
@@ -114,6 +128,9 @@ export type CustomerRepository = {
   addHandler(handler: HandlerRow): Promise<void>;
   removeHandler(customerId: string, email: string): Promise<void>;
   removeDirectHandlers(customerId: string): Promise<void>;
+  listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]>;
+  setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void>;
+  getSetting(key: string): Promise<string | null>;
   listUsers(): Promise<CustomerUserRow[]>;
   hasCases(customerId: string): Promise<boolean>;
   hasQuotations(customerId: string): Promise<boolean>;
@@ -185,6 +202,19 @@ function roleLevel(user: Pick<CrmContext, 'role'>): number {
   return Number(user.role.slice(1));
 }
 
+/** P1: L5/L6 are backend/admin roles and may never hold an account-handler row. */
+export function isBackendRole(role: string): boolean {
+  return role === 'L5' || role === 'L6';
+}
+
+/**
+ * P1 + P9: the handler row a newly created customer gets. Backend/admin creators never become
+ * handlers themselves; the account is marked Direct until a real handler is added.
+ */
+export function creatorHandlerEmail(user: Pick<CrmContext, 'role' | 'email'>): string {
+  return isBackendRole(user.role) ? DIRECT_EMAIL : normalizeEmail(user.email);
+}
+
 function requireLevel(user: CrmContext, minimum: number): void {
   const level = roleLevel(user);
   if (level < minimum) {
@@ -209,6 +239,20 @@ function validTags(value: unknown): string[] {
   return parseList(Array.isArray(value) ? value.map(String) : String(value ?? '')).filter((tag) =>
     (DEFAULT_SETTINGS.TAGS as readonly string[]).includes(tag)
   );
+}
+
+/** P8: the admin-managed SEI list, read LIVE from public.settings on every save. */
+async function allowedSeiNames(repo: CustomerRepository): Promise<string[]> {
+  return parsePipe(await repo.getSetting(SEI_NAMES_SETTING_KEY));
+}
+
+/** P7: a customer must always carry at least one recognised location. */
+function requiredTags(value: unknown): string[] {
+  const tags = validTags(value);
+  if (!tags.length) {
+    throw new Error('Pick at least one location for this customer.');
+  }
+  return tags;
 }
 
 function activeRows(customers: readonly CustomerRow[]): CustomerRow[] {
@@ -284,12 +328,15 @@ function gridRow(
   };
 }
 
-function customerMeta(user: CrmContext) {
+async function customerMeta(user: CrmContext, repo: CustomerRepository) {
   return {
+    // P8: read LIVE from public.settings so an admin edit takes effect without a redeploy.
+    seiNames: await allowedSeiNames(repo),
     canEditPriority: roleLevel(user) >= 2,
     canEditClass: roleLevel(user) >= 3,
     canDelete: roleLevel(user) >= 3,
-    tags: [...DEFAULT_SETTINGS.TAGS],
+    // P7: the backfill placeholder is a recognised value but is never offered as a choice.
+    tags: [...SELECTABLE_TAGS],
     types: [...DEFAULT_SETTINGS.TYPES],
     priorities: [...DEFAULT_SETTINGS.PRIORITIES]
   };
@@ -311,7 +358,11 @@ function normalizeContact(input: ContactInput, fallback: ContactRow | null = nul
   };
 }
 
-function customerUpdateFields(user: CrmContext, input: CustomerInput): Partial<CustomerRow> {
+function customerUpdateFields(
+  user: CrmContext,
+  input: CustomerInput,
+  allowedSei: readonly string[]
+): Partial<CustomerRow> {
   const fields: Partial<CustomerRow> = {
     updatedAt: nowIso()
   };
@@ -321,7 +372,7 @@ function customerUpdateFields(user: CrmContext, input: CustomerInput): Partial<C
   if (input.gstin !== undefined) fields.gstin = asText(input.gstin);
   if (input.website !== undefined) fields.website = asText(input.website);
   if (input.notes !== undefined) fields.notes = asText(input.notes);
-  if (input.sei !== undefined) fields.sei = asText(input.sei);
+  if (input.sei !== undefined) fields.sei = validSei(input.sei, allowedSei);
   if (input.remarks !== undefined) fields.remarks = asText(input.remarks);
 
   if (input.name !== undefined) {
@@ -340,7 +391,8 @@ function customerUpdateFields(user: CrmContext, input: CustomerInput): Partial<C
     if (roleLevel(user) < 3) {
       throw new Error('Tags, type and archive status can only be changed at L3 or higher.');
     }
-    if (input.tags !== undefined) fields.tags = validTags(input.tags);
+    // P7: an update may change the location, but must never leave the customer with none.
+    if (input.tags !== undefined) fields.tags = requiredTags(input.tags);
     if (input.type !== undefined) fields.type = validOne(input.type, DEFAULT_SETTINGS.TYPES);
     if (input.status !== undefined) fields.status = asText(input.status) === 'Archived' ? 'Archived' : 'Active';
   }
@@ -423,7 +475,7 @@ export function createCustomerService(repo: CustomerRepository) {
         .sort((a, b) => lower(a.name).localeCompare(lower(b.name)));
 
       return {
-        ...customerMeta(user),
+        ...(await customerMeta(user, repo)),
         customers: mine.slice(0, 400).map((customer) => gridRow(customer, contactCounts, ownership, idx)),
         total: mine.length,
         scope: 'mine' as const
@@ -443,7 +495,7 @@ export function createCustomerService(repo: CustomerRepository) {
       const active = activeRows(customers).sort((a, b) => lower(a.name).localeCompare(lower(b.name)));
 
       return {
-        ...customerMeta(user),
+        ...(await customerMeta(user, repo)),
         customers: active.map((customer) => gridRow(customer, contactCounts, ownership, idx)),
         total: active.length,
         scope: 'all' as const
@@ -499,6 +551,10 @@ export function createCustomerService(repo: CustomerRepository) {
       requireLevel(user, 2);
       const name = asText(input?.name);
       if (!name) throw new Error('Customer name is required.');
+      // P7: location is mandatory at creation.
+      const tags = requiredTags(input.tags ?? input.tag);
+      // P8: validated against the live admin-managed list, not a hardcoded constant.
+      const sei = validSei(input.sei, await allowedSeiNames(repo));
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
@@ -517,7 +573,7 @@ export function createCustomerService(repo: CustomerRepository) {
         await trx.createCustomer({
           id,
           name,
-          tags: validTags(input.tags ?? input.tag),
+          tags,
           type: validOne(input.type, DEFAULT_SETTINGS.TYPES),
           priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
           area: asText(input.area),
@@ -525,7 +581,7 @@ export function createCustomerService(repo: CustomerRepository) {
           gstin: asText(input.gstin),
           website: asText(input.website),
           notes: asText(input.notes),
-          sei: asText(input.sei),
+          sei,
           remarks: asText(input.remarks),
           status: 'Active',
           createdBy: normalizeEmail(user.email),
@@ -535,7 +591,7 @@ export function createCustomerService(repo: CustomerRepository) {
 
         await trx.addHandler({
           customerId: id,
-          email: roleLevel(user) >= 5 ? 'direct' : normalizeEmail(user.email),
+          email: creatorHandlerEmail(user),
           assignedBy: normalizeEmail(user.email),
           assignedAt: now
         });
@@ -571,7 +627,7 @@ export function createCustomerService(repo: CustomerRepository) {
 
     async updateCustomer(user: CrmContext, id: string, input: CustomerInput) {
       await ensureFullCustomer(repo, user, id);
-      const fields = customerUpdateFields(user, input);
+      const fields = customerUpdateFields(user, input, await allowedSeiNames(repo));
       await repo.updateCustomer(id, fields);
       await repo.logActivity({
         action: 'CUSTOMER_EDIT',
@@ -635,7 +691,7 @@ export function createCustomerService(repo: CustomerRepository) {
             gstin: asText(row.gstin),
             website: '',
             notes: '',
-            sei: '',
+            sei: [],
             remarks: '',
             status: 'Active',
             createdBy: normalizeEmail(user.email),
@@ -644,7 +700,8 @@ export function createCustomerService(repo: CustomerRepository) {
           });
           await trx.addHandler({
             customerId: id,
-            email: normalizeEmail(user.email),
+            // P1: an L5/L6 bulk-importer does not become a handler.
+            email: creatorHandlerEmail(user),
             assignedBy: normalizeEmail(user.email),
             assignedAt: now
           });
@@ -781,6 +838,13 @@ export function createCustomerService(repo: CustomerRepository) {
       if (!email || !idx[email]?.active) {
         throw new Error('That email is not an active CRM user. Add them under Admin > Users first.');
       }
+      // P1: backend/admin users manage the whole book and are never account handlers. They
+      // remain fully eligible as case owners and as ticket assignees.
+      if (isBackendRole(idx[email].role)) {
+        throw new Error(
+          `L5 and L6 users cannot be account handlers. ${nameOf(idx, email)} can still be added as a case owner or a ticket assignee.`
+        );
+      }
       if (currentHandlers.includes(email)) {
         throw new Error(`${nameOf(idx, email)} is already a handler for this customer.`);
       }
@@ -794,6 +858,14 @@ export function createCustomerService(repo: CustomerRepository) {
           assignedBy: normalizeEmail(user.email),
           assignedAt: nowIso()
         });
+        // P11: a new handler becomes an owner of this customer's ACTIVE cases only.
+        // Closed cases (any outcome, including Hold) are left byte-identical.
+        for (const caseRow of await trx.listCaseOwnerRows(customerId)) {
+          if (asText(caseRow.outcome)) continue;
+          const owners = uniqueEmails([...caseRow.extraOwners, email]);
+          if (owners.length === uniqueEmails(caseRow.extraOwners).length) continue;
+          await trx.setCaseExtraOwners(caseRow.id, owners);
+        }
         await trx.logActivity({
           action: 'HANDLER_ADD',
           entity: customerId,

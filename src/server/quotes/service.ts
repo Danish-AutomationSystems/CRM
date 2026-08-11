@@ -25,7 +25,7 @@ export type QuoteCustomerRow = {
   gstin: string;
   website: string;
   notes: string;
-  sei: string;
+  sei: string[];
   remarks: string;
   status: 'Active' | 'Archived';
   createdBy: string;

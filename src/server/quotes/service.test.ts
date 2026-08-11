@@ -129,7 +129,7 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
     gstin: '03AAAAA0000A1Z5',
     website: '',
     notes: '',
-    sei: '',
+    sei: [],
     remarks: '',
     status: 'Active',
     createdBy: sales.email,

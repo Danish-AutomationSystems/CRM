@@ -115,7 +115,7 @@ describe('createDriveService', () => {
       gstin: '',
       website: '',
       notes: '',
-      sei: '',
+      sei: [],
       remarks: '',
       status: 'Active',
       createdBy: 'sales@automationsystems.org',

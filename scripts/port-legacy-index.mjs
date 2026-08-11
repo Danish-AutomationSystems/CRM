@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { rewriteDomAssignments } from './lib/dom-assignment-transform.mjs';
+
 const root = process.cwd();
 const sourcePath = path.join(root, 'docs', 'source-appscript', 'Index.html');
 const outDir = path.join(root, 'src', 'app', 'crm');
@@ -108,9 +110,15 @@ function setText(id, txt){ var n = typeof id === 'string' ? el(id) : id; if(n) n
 function setRouteAttr(name){ var m=el('main'); if(m) m.setAttribute('data-route', name); }`
 );
 
-// Safe DOM element property assignments to prevent null dereference errors when unmounted during route changes
-script = script.replace(/el\(([^)]+)\)\.innerHTML\s*=\s*/g, 'setHtml($1, ');
-script = script.replace(/el\(([^)]+)\)\.textContent\s*=\s*/g, 'setText($1, ');
+// NOTE: the setHtml(...)/setText(...) DOM-assignment rewrite (rewriteDomAssignments,
+// see scripts/lib/dom-assignment-transform.mjs) runs LATER, after every literal
+// full-statement substitution below - several of those substitutions match a
+// complete `el('main').innerHTML = '...';` statement verbatim (e.g. the boot-failure
+// handler just below), and rewriteDomAssignments would already have rewritten that
+// exact text to `setHtml('main', '...')` by the time they ran, silently no-op'ing
+// the substitution (String.replace on a non-matching literal just returns the
+// input unchanged - it does not throw). Running the generic rewrite last keeps
+// every specific substitution's search pattern matching the untouched source text.
 script = script.replace(
   'function oops(e){ toast(errMsg(e), true); }',
   `function oops(e){
@@ -217,6 +225,17 @@ script = script
   );
 
 script = script.replace(/\\''\+esc\(([^)]+)\)\+'\\'/g, "'+jsArg($1)+'");
+
+// Safe DOM element property assignments to prevent null dereference errors when
+// unmounted during route changes. rewriteDomAssignments finds each statement's
+// true terminating ';' (tracking strings/template literals/regex literals/
+// comments/bracket depth) so it correctly closes the setHtml(...)/setText(...)
+// call even when the assigned expression itself contains ';' inside a string,
+// a nested callback body, etc. See scripts/lib/dom-assignment-transform.mjs.
+// This must run LAST (see the note above the boot-failure substitution) so
+// every earlier literal full-statement substitution still matches untouched
+// `el(x).innerHTML = ...;` / `el(x).textContent = ...;` source text.
+script = rewriteDomAssignments(script);
 
 if (/google\.script\.run|<\?|\?>/.test(script + body)) {
   throw new Error('Generated CRM client still contains Apps Script-only runtime markers.');

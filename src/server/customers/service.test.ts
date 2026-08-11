@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCustomerService, type CustomerRepository } from './service';
+import { createCustomerService, type CaseOwnerRow, type CustomerRepository } from './service';
 
 const baseUser: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -26,6 +26,9 @@ class FakeCustomerRepository implements CustomerRepository {
   cases: Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>> = [];
   quotes: Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>> = [];
   lockedNames: string[] = [];
+  caseOwnerRows: CaseOwnerRow[] = [];
+  caseWrites: Array<{ caseId: string; extraOwners: string[] }> = [];
+  settings: Record<string, string> = {};
   recycleBin: CustomerRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   nextCustomer = 1;
@@ -137,6 +140,21 @@ class FakeCustomerRepository implements CustomerRepository {
     );
   }
 
+  async listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]> {
+    return this.caseOwnerRows.filter((row) => row.customerId === customerId);
+  }
+
+  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
+    const row = this.caseOwnerRows.find((item) => item.id === caseId);
+    if (!row) throw new Error('missing test case');
+    row.extraOwners = extraOwners;
+    this.caseWrites.push({ caseId, extraOwners });
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    return this.settings[key] ?? null;
+  }
+
   async listUsers(): Promise<UserRow[]> {
     return this.users;
   }
@@ -172,7 +190,7 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
     gstin: '',
     website: '',
     notes: '',
-    sei: '',
+    sei: [],
     remarks: '',
     status: 'Active',
     createdBy: 'sales@automationsystems.org',
@@ -304,15 +322,126 @@ describe('customer service mutations', () => {
     });
   });
 
+  it('P7: requires at least one location on create and refuses to empty it on update', async () => {
+    const { repo, service } = makeService();
+
+    await expect(service.createCustomer(baseUser, { name: 'No Location Co' })).rejects.toThrow(
+      'at least one location'
+    );
+    await expect(service.createCustomer(baseUser, { name: 'Bad Location Co', tags: ['Nowhere'] })).rejects.toThrow(
+      'at least one location'
+    );
+    await expect(service.createCustomer(baseUser, { name: 'Good Co', tags: ['Punjab'] })).resolves.toEqual({
+      id: 'CUST-0001'
+    });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'] });
+
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers.push({ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' });
+
+    await expect(service.updateCustomer(l3, 'CUST-0001', { tags: [] })).rejects.toThrow('at least one location');
+    await expect(service.updateCustomer(l3, 'CUST-0001', { tags: ['Nowhere'] })).rejects.toThrow(
+      'at least one location'
+    );
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'] });
+
+    await service.updateCustomer(l3, 'CUST-0001', { tags: ['NCR'] });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['NCR'] });
+  });
+
+  it('P7: TO BE FILLED survives a save round-trip but is never offered as a choice', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ tags: ['TO BE FILLED'] })];
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    // A backfilled row can be edited without silently losing its location.
+    await service.updateCustomer(l3, 'CUST-0001', { area: 'Mohali' });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['TO BE FILLED'], area: 'Mohali' });
+    await service.updateCustomer(l3, 'CUST-0001', { tags: ['TO BE FILLED'] });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['TO BE FILLED'] });
+
+    // ...but the picker never offers it.
+    const grid = await service.myCustomers(l3);
+    expect(grid.tags).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other']);
+    expect(grid.tags).not.toContain('TO BE FILLED');
+  });
+
+  it('P8: saves zero, one or many SEI values from the live settings list and rejects unknown names', async () => {
+    const { repo, service } = makeService();
+    // SEI_NAMES is read LIVE from public.settings, not from the hardcoded DEFAULT_SETTINGS.
+    repo.settings.SEI_NAMES = 'Ravi Kumar | Sunil Mehta | Anita Rao';
+
+    // Zero values is valid - SEI stays optional.
+    const none = await service.createCustomer(baseUser, { name: 'No SEI Co', tags: ['Punjab'] });
+    expect(await repo.getCustomer(none.id)).toMatchObject({ sei: [] });
+
+    const one = await service.createCustomer(baseUser, { name: 'One SEI Co', tags: ['Punjab'], sei: ['Ravi Kumar'] });
+    expect(await repo.getCustomer(one.id)).toMatchObject({ sei: ['Ravi Kumar'] });
+
+    const many = await service.createCustomer(baseUser, {
+      name: 'Many SEI Co',
+      tags: ['Punjab'],
+      sei: ['Ravi Kumar', 'Anita Rao']
+    });
+    expect(await repo.getCustomer(many.id)).toMatchObject({ sei: ['Ravi Kumar', 'Anita Rao'] });
+
+    await expect(
+      service.createCustomer(baseUser, { name: 'Bad SEI Co', tags: ['Punjab'], sei: ['Nobody At All'] })
+    ).rejects.toThrow('Nobody At All');
+
+    // Editing an existing customer follows the same live list.
+    repo.handlers.push({ customerId: one.id, email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' });
+    await service.updateCustomer(baseUser, one.id, { sei: ['Sunil Mehta'] });
+    expect(await repo.getCustomer(one.id)).toMatchObject({ sei: ['Sunil Mehta'] });
+    await expect(service.updateCustomer(baseUser, one.id, { sei: ['Ghost'] })).rejects.toThrow('Ghost');
+    await service.updateCustomer(baseUser, one.id, { sei: [] });
+    expect(await repo.getCustomer(one.id)).toMatchObject({ sei: [] });
+  });
+
+  it('P8: publishes the live SEI name list to clients alongside the other pick lists', async () => {
+    const { repo, service } = makeService();
+    repo.settings.SEI_NAMES = 'Ravi Kumar | Anita Rao';
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+
+    expect((await service.myCustomers(baseUser)).seiNames).toEqual(['Ravi Kumar', 'Anita Rao']);
+
+    // Ships empty until an L6 populates it.
+    repo.settings.SEI_NAMES = '';
+    expect((await service.myCustomers(baseUser)).seiNames).toEqual([]);
+  });
+
+  it('P8: an admin edit to SEI_NAMES takes effect immediately, with no redeploy', async () => {
+    const { repo, service } = makeService();
+    repo.settings.SEI_NAMES = '';
+
+    // Ships empty: nothing is selectable yet.
+    await expect(
+      service.createCustomer(baseUser, { name: 'Early Co', tags: ['Punjab'], sei: ['Ravi Kumar'] })
+    ).rejects.toThrow('Ravi Kumar');
+
+    // An L6 populates the list in Admin...
+    repo.settings.SEI_NAMES = 'Ravi Kumar';
+
+    // ...and the very next save accepts it.
+    const created = await service.createCustomer(baseUser, {
+      name: 'Later Co',
+      tags: ['Punjab'],
+      sei: ['Ravi Kumar']
+    });
+    expect(await repo.getCustomer(created.id)).toMatchObject({ sei: ['Ravi Kumar'] });
+  });
+
   it('requires force to create a duplicate customer name', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
 
-    await expect(service.createCustomer(baseUser, { name: ' alpha panels ' })).rejects.toThrow(
+    await expect(service.createCustomer(baseUser, { name: ' alpha panels ', tags: ['Punjab'] })).rejects.toThrow(
       'DUPLICATE'
     );
 
-    await expect(service.createCustomer(baseUser, { name: ' alpha panels ', force: true })).resolves.toEqual({
+    await expect(service.createCustomer(baseUser, { name: ' alpha panels ', tags: ['Punjab'], force: true })).resolves.toEqual({
       id: 'CUST-0001'
     });
     expect(repo.lockedNames).toEqual(['alpha panels']);
@@ -321,8 +450,8 @@ describe('customer service mutations', () => {
   it('creates Direct placeholder handlers for L5/L6 creators and real self handlers for sales creators', async () => {
     const { repo, service } = makeService();
 
-    await service.createCustomer({ ...baseUser, role: 'L5', email: 'backend@automationsystems.org' }, { name: 'Direct Co' });
-    await service.createCustomer(baseUser, { name: 'Sales Co' });
+    await service.createCustomer({ ...baseUser, role: 'L5', email: 'backend@automationsystems.org' }, { name: 'Direct Co', tags: ['Punjab'] });
+    await service.createCustomer(baseUser, { name: 'Sales Co', tags: ['Punjab'] });
 
     expect(repo.handlers).toEqual([
       expect.objectContaining({ customerId: 'CUST-0001', email: 'direct' }),
@@ -335,6 +464,7 @@ describe('customer service mutations', () => {
 
     await service.createCustomer(baseUser, {
       name: 'Contact Co',
+      tags: ['Punjab'],
       contact: { name: 'Buyer', phone: 12345, email: 'buyer@example.com' }
     });
 
@@ -463,6 +593,105 @@ describe('contact and handler service APIs', () => {
     await expect(
       service.addHandler({ ...baseUser, role: 'L3', email: 'manager@automationsystems.org' }, 'CUST-0001', 'inactive')
     ).rejects.toThrow('not an active CRM user');
+  });
+
+  it('P1: refuses to make an L5 or L6 an account handler, and allows L1-L4', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.users = [
+      user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L3' }),
+      user({ email: 'l1@automationsystems.org', name: 'L1 User', role: 'L1' }),
+      user({ email: 'l2@automationsystems.org', name: 'L2 User', role: 'L2' }),
+      user({ email: 'l3@automationsystems.org', name: 'L3 User', role: 'L3' }),
+      user({ email: 'l4@automationsystems.org', name: 'L4 User', role: 'L4' }),
+      user({ email: 'l5@automationsystems.org', name: 'L5 User', role: 'L5' }),
+      user({ email: 'l6@automationsystems.org', name: 'L6 User', role: 'L6' })
+    ];
+    const actor: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+
+    for (const role of ['l1', 'l2', 'l3', 'l4']) {
+      await expect(service.addHandler(actor, 'CUST-0001', role)).resolves.toEqual({ ok: true });
+    }
+    await expect(service.addHandler(actor, 'CUST-0001', 'l5')).rejects.toThrow(
+      'L5 and L6 users cannot be account handlers'
+    );
+    await expect(service.addHandler(actor, 'CUST-0001', 'l6')).rejects.toThrow(
+      'L5 and L6 users cannot be account handlers'
+    );
+
+    expect(repo.handlers.map((row) => row.email)).toEqual([
+      'l1@automationsystems.org',
+      'l2@automationsystems.org',
+      'l3@automationsystems.org',
+      'l4@automationsystems.org'
+    ]);
+  });
+
+  it('P11: adding a handler makes them an owner of the customer active cases only', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.caseOwnerRows = [
+      { id: 'CASE-2026-0001', customerId: 'CUST-0001', outcome: '', extraOwners: [baseUser.email] },
+      { id: 'CASE-2026-0002', customerId: 'CUST-0001', outcome: 'Won', extraOwners: [baseUser.email] },
+      { id: 'CASE-2026-0003', customerId: 'CUST-0001', outcome: 'Hold', extraOwners: [baseUser.email] },
+      { id: 'CASE-2026-0004', customerId: 'CUST-0002', outcome: '', extraOwners: [baseUser.email] }
+    ];
+    const closedBefore = { ...repo.caseOwnerRows[1], extraOwners: [...repo.caseOwnerRows[1].extraOwners] };
+
+    await service.addHandler(baseUser, 'CUST-0001', 'target');
+
+    // Active case on this customer gains the new handler.
+    expect(repo.caseOwnerRows[0].extraOwners).toEqual([baseUser.email, 'target@automationsystems.org']);
+    // Closed case is byte-identical.
+    expect(repo.caseOwnerRows[1]).toEqual(closedBefore);
+    // Hold counts as closed (outcome is set).
+    expect(repo.caseOwnerRows[2].extraOwners).toEqual([baseUser.email]);
+    // Another customer's case is untouched.
+    expect(repo.caseOwnerRows[3].extraOwners).toEqual([baseUser.email]);
+  });
+
+  it('P11: removing a handler does not touch any case', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [
+      { customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' },
+      { customerId: 'CUST-0001', email: 'target@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' }
+    ];
+    repo.caseOwnerRows = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        outcome: '',
+        extraOwners: [baseUser.email, 'target@automationsystems.org']
+      },
+      { id: 'CASE-2026-0002', customerId: 'CUST-0001', outcome: 'Won', extraOwners: ['target@automationsystems.org'] }
+    ];
+    const before = JSON.parse(JSON.stringify(repo.caseOwnerRows));
+
+    await service.removeHandler(baseUser, 'CUST-0001', 'target@automationsystems.org');
+
+    expect(repo.caseOwnerRows).toEqual(before);
+    expect(repo.caseWrites).toEqual([]);
+  });
+
+  it('P11: a handler already stored on an active case is not duplicated', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.caseOwnerRows = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        outcome: '',
+        extraOwners: [baseUser.email, 'target@automationsystems.org']
+      }
+    ];
+
+    await service.addHandler(baseUser, 'CUST-0001', 'target');
+
+    expect(repo.caseOwnerRows[0].extraOwners).toEqual([baseUser.email, 'target@automationsystems.org']);
+    expect(repo.caseWrites).toEqual([]);
   });
 
   it('lets an existing handler remove handlers and rejects absent handlers', async () => {

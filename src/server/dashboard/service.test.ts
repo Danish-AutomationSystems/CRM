@@ -32,6 +32,8 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   nextCustomer = 10;
   nextCase = 10;
   nextContact = 1;
+  getCustomerCallCount = 0;
+  getCustomersByIdsCalls: string[][] = [];
 
   async withTransaction<T>(fn: (repo?: DashboardRepository & CaseRepository & CustomerRepository) => Promise<T>): Promise<T> {
     return fn(this);
@@ -57,7 +59,13 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   }
 
   async getCustomer(id: string): Promise<CustomerRow | null> {
+    this.getCustomerCallCount++;
     return this.customers.find((customer) => customer.id === id) ?? null;
+  }
+
+  async getCustomersByIds(ids: string[]): Promise<CustomerRow[]> {
+    this.getCustomersByIdsCalls.push(ids);
+    return this.customers.filter((customer) => ids.includes(customer.id));
   }
 
   async findCustomerByName(name: string): Promise<CustomerRow | null> {
@@ -134,6 +142,24 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
 
   async removeDirectHandlers(customerId: string): Promise<void> {
     this.handlers = this.handlers.filter((handler) => !(handler.customerId === customerId && handler.email === 'direct'));
+  }
+
+  settingRows: Record<string, string> = {};
+
+  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
+    return this.cases
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
+  }
+
+  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
+    const row = this.cases.find((item) => item.id === caseId);
+    if (!row) throw new Error('missing test case');
+    row.extraOwners = extraOwners;
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    return this.settingRows[key] ?? null;
   }
 
   async listUsers(): Promise<UserRow[]> {
@@ -218,7 +244,7 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
     gstin: '',
     website: '',
     notes: '',
-    sei: '',
+    sei: [],
     remarks: '',
     status: 'Active',
     createdBy: sales.email,
@@ -226,6 +252,12 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
     updatedAt: '2026-07-01T00:00:00.000Z',
     ...overrides
   };
+}
+
+/** A timestamp inside the current calendar month, so month-to-date assertions are not date-dependent. */
+function closedThisMonth(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 12)).toISOString();
 }
 
 function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
@@ -241,7 +273,7 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     wonCategories: [],
     outcomeNote: '',
     owner: sales.email,
-    extraOwners: [],
+    extraOwners: [sales.email, 'peer@automationsystems.org'],
     assignee: sales.email,
     closedOn: '',
     createdBy: sales.email,
@@ -272,8 +304,15 @@ function makeService() {
   repo.cases = [
     caseRow(),
     caseRow({ id: 'CASE-2026-0002', title: 'Held case', outcome: 'Hold', assignee: sales.email }),
-    caseRow({ id: 'CASE-2026-0003', title: 'Won case', outcome: 'Won', orderValue: 5000, closedOn: '2026-07-29T00:00:00.000Z', assignee: '' }),
-    caseRow({ id: 'CASE-2026-0004', customerId: 'CUST-0002', title: 'NCR case', assignee: 'ncr@automationsystems.org' })
+    caseRow({ id: 'CASE-2026-0003', title: 'Won case', outcome: 'Won', orderValue: 5000, closedOn: closedThisMonth(), assignee: '' }),
+    caseRow({
+      id: 'CASE-2026-0004',
+      customerId: 'CUST-0002',
+      title: 'NCR case',
+      owner: 'ncr@automationsystems.org',
+      extraOwners: ['ncr@automationsystems.org'],
+      assignee: 'ncr@automationsystems.org'
+    })
   ];
   return {
     repo,
@@ -313,7 +352,7 @@ describe('dashboard service', () => {
         assignee: sales.email
       })
     );
-    repo.cases.push(caseRow({ id: 'CASE-2026-0900', title: 'Won together', outcome: 'Won', orderValue: 7000, closedOn: '2026-07-29T00:00:00.000Z', assignee: '' }));
+    repo.cases.push(caseRow({ id: 'CASE-2026-0900', title: 'Won together', outcome: 'Won', orderValue: 7000, closedOn: closedThisMonth(), assignee: '' }));
 
     const result = await dashboard.dashboard(sales, sales.email);
 
@@ -348,6 +387,45 @@ describe('dashboard service', () => {
     expect(partial.cases).toBeNull();
   });
 
+  it('P7: does not advertise the TO BE FILLED placeholder in the client settings block', async () => {
+    const { dashboard } = makeService();
+
+    const boot = await dashboard.bootstrap(sales);
+
+    expect(boot.settings.tags).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other']);
+    expect(boot.settings.tags).not.toContain('TO BE FILLED');
+  });
+
+  it('P9: offers Direct in the dashboard picker for L4+ only, flagged as having no login', async () => {
+    const { dashboard } = makeService();
+
+    const manager = await dashboard.bootstrap({ ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] });
+    expect(manager.peers).toContainEqual({ email: 'direct', name: 'Direct', role: 'L2', hasLogin: false });
+    expect(manager.peers.filter((peer) => peer.hasLogin === false)).toHaveLength(1);
+
+    const supervisor = await dashboard.bootstrap({ ...sales, email: 'supervisor@automationsystems.org', role: 'L3', allowedTags: ['Punjab'] });
+    expect(supervisor.peers.map((peer) => peer.email)).not.toContain('direct');
+
+    const l2 = await dashboard.bootstrap(sales);
+    expect(l2.peers.map((peer) => peer.email)).not.toContain('direct');
+  });
+
+  it('P9: api_dashboard("direct") reports Direct-handled customers and cases, L4+ only', async () => {
+    const { repo, dashboard } = makeService();
+    repo.handlers.push({ customerId: 'CUST-0002', email: 'direct', assignedBy: 'admin@automationsystems.org', assignedAt: 'now' });
+
+    const manager: CrmContext = { ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] };
+    const result = await dashboard.dashboard(manager, 'direct');
+
+    expect(result.subject).toEqual({ email: 'direct', name: 'Direct', role: '' });
+    expect(result.dash.stats.myCustomers).toBe(1);
+    // CASE-2026-0004 is the open case on the Direct-handled customer.
+    expect(result.dash.cases.map((row) => row.id)).toEqual(['CASE-2026-0004']);
+
+    await expect(dashboard.dashboard({ ...sales, role: 'L3' }, 'direct')).rejects.toThrow('L4');
+    await expect(dashboard.dashboard(sales, 'direct')).rejects.toThrow();
+  });
+
   it('filters recent activity to self, full-access customers, and L4+ visibility', async () => {
     const { repo, dashboard } = makeService();
     repo.logs = [
@@ -361,5 +439,38 @@ describe('dashboard service', () => {
 
     const manager = await dashboard.bootstrap({ ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] });
     expect(manager.recent.map((row) => row.details)).toEqual(['Visible customer', 'Own log', 'Hidden']);
+  });
+
+  it('batches customer lookups for recent activity into one call instead of per-row sequential awaits', async () => {
+    const { repo, dashboard } = makeService();
+    // computeDash() (invoked by bootstrap() for self stats) also calls getCustomer per case -
+    // that's a separate code path from recentActivity, so clear cases to isolate the assertion.
+    repo.cases = [];
+    // Distinct customer ids, repeated, none owned by `sales` and not otherwise visible -
+    // this is the worst case: `ok` is false for every row, so the old code never breaks early
+    // and re-fetches the same customer repeatedly.
+    repo.logs = [
+      { who: 'ncr@automationsystems.org', action: 'CASE_EDIT', entity: 'CASE-1', customerId: 'CUST-0002', details: 'a', when: '2026-07-28T00:00:00.000Z' },
+      { who: 'ncr@automationsystems.org', action: 'CASE_EDIT', entity: 'CASE-2', customerId: 'CUST-0002', details: 'b', when: '2026-07-28T00:00:01.000Z' },
+      { who: 'ncr@automationsystems.org', action: 'CASE_EDIT', entity: 'CASE-3', customerId: 'CUST-0001', details: 'c', when: '2026-07-28T00:00:02.000Z' }
+    ];
+
+    await dashboard.bootstrap(sales);
+
+    expect(repo.getCustomerCallCount).toBe(0);
+    expect(repo.getCustomersByIdsCalls).toHaveLength(1);
+    expect(repo.getCustomersByIdsCalls[0].sort()).toEqual(['CUST-0001', 'CUST-0002']);
+  });
+
+  it('does not call getCustomersByIds when no activity rows need an access lookup', async () => {
+    const { repo, dashboard } = makeService();
+    repo.logs = [
+      { who: sales.email, action: 'CASE_EDIT', entity: 'CASE-1', customerId: 'CUST-0002', details: 'own row', when: '2026-07-28T00:00:00.000Z' }
+    ];
+
+    const boot = await dashboard.bootstrap(sales);
+
+    expect(boot.recent.map((row) => row.details)).toEqual(['own row']);
+    expect(repo.getCustomersByIdsCalls).toHaveLength(0);
   });
 });

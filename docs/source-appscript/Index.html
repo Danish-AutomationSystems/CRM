@@ -247,13 +247,19 @@ function sameData(a,b){ try{ return JSON.stringify(a)===JSON.stringify(b); }catc
 function cacheBust(){ CACHE.customers=null; CACHE.cases=null; CACHE.cust={}; CACHE.kase={}; S.boot=null; }
 var S = {
   user:null, settings:null, route:'dash', routeArg:null, boot:null, bootAt:0,
-  custQ:'', caseF:{mine:false, stage:'', outcome:'Open', q:''},
+  /* P6: `mine` became two independent server flags, OR-combined. Neither set
+     means "every case I can see". */
+  custQ:'', caseF:{owned:false, assigned:false, stage:'', outcome:'Open', q:''},
   users:null, peers:[]
 };
 
 /* ---------------- tiny helpers ---------------- */
 function el(id){ return document.getElementById(id); }
 function low(s){ return String(s===null||s===undefined?'':s).toLowerCase().trim(); }
+/* P9: "Direct" is a virtual account, never a real user row - it has no email
+   address and can never sign in. */
+function isDirectAccount(email){ return low(email)==='direct'; }
+function peerLabel(p){ return p.name + (p.hasLogin===false ? ' (no login)' : ''); }
 function esc(v){
   return String(v===null||v===undefined?'':v)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -360,6 +366,46 @@ function pickerVal(id){
   n.querySelectorAll('button.on').forEach(function(b){ out.push(b.getAttribute('data-t')); });
   return out;
 }
+/* ---------------- SEI (P8) ----------------
+   customers.sei is a string[] chosen from an admin-managed list. The manager
+   asked specifically for a DROPDOWN multi-select here, not the pill/tagpick
+   style used by locations, so this is a real <select multiple>. Zero
+   selections is valid - the field is optional.
+   The selectable names only ride along on the customer-grid metadata, so they
+   are cached globally the first time any grid payload arrives. */
+var SEINAMES = [];
+function noteSeiNames(d){ if(d && d.seiNames) SEINAMES = d.seiNames; }
+/* Tolerates the pre-migration free-text shape as well as the array. */
+function seiList(val){
+  if(!val) return [];
+  if(typeof val === 'string') return val ? [val] : [];
+  return val;
+}
+function seiOptions(sel){
+  var out = (SEINAMES||[]).slice();
+  seiList(sel).forEach(function(s){ if(out.indexOf(s)<0) out.push(s); });
+  return out;
+}
+function seiSelectHTML(id, cls, sel, attrs){
+  var chosen = seiList(sel), names = seiOptions(sel);
+  var html = '<select multiple size="1"'+(id?' id="'+id+'"':'')+' class="sei'+(cls?' '+cls:'')+'"'+(attrs||'')+'>';
+  names.forEach(function(n){
+    html += '<option value="'+esc(n)+'"'+(chosen.indexOf(n)>-1?' selected':'')+'>'+esc(n)+'</option>';
+  });
+  return html+'</select>';
+}
+function seiFieldHTML(sel){
+  if(!seiOptions(sel).length) return '<div class="sub" style="padding:9px 0">No SEI names configured yet.</div>';
+  return seiSelectHTML('f_sei', '', sel, '')+'<p class="hint">Optional. Hold Ctrl/Cmd to pick more than one.</p>';
+}
+function seiSelectedValues(node){
+  if(!node) return [];
+  var out = [];
+  [].slice.call(node.options||[]).forEach(function(o){ if(o.selected) out.push(o.value); });
+  return out;
+}
+function seiVal(id){ return seiSelectedValues(el(id)); }
+
 function selOptions(list, sel){
   return (list||[]).map(function(o){ return '<option'+(o===sel?' selected':'')+'>'+esc(o)+'</option>'; }).join('');
 }
@@ -407,7 +453,7 @@ function bootstrap(force){
 function warm(){
   return gs('api_workspace', S.caseF).then(function(w){
     if(w.boot){ S.boot=w.boot; S.bootAt=Date.now(); }
-    if(w.customers){ CACHE.customers=w.customers; CACHE.customersAt=Date.now(); }
+    if(w.customers){ CACHE.customers=w.customers; CACHE.customersAt=Date.now(); noteSeiNames(w.customers); }
     if(w.cases){ CACHE.cases=w.cases; CACHE.casesAt=Date.now(); CACHE.casesKey=JSON.stringify(S.caseF); }
     return w.boot;
   });
@@ -457,11 +503,13 @@ function vDash(pre){
       '<div class="sub">Your performance and open work.</div></div>';
     if(S.peers.length){
       html += '<div><label>Whose dashboard</label><select id="dashWho" onchange="switchDash()"><option value="">Me ('+esc(S.user.name)+')</option>'+
-        S.peers.map(function(p){ return '<option value="'+esc(p.email)+'">'+esc(p.name)+'</option>'; }).join('')+'</select></div>';
+        S.peers.map(function(p){ return '<option value="'+esc(p.email)+'">'+esc(peerLabel(p))+'</option>'; }).join('')+'</select></div>';
     } else if(lvl()>=3){
       html += '<div class="sub" style="align-self:center">No other users to view yet.</div>';
     }
-    html += '<button class="btn" onclick="nav(\'customers\')">+ New customer</button></div>';
+    /* P5: the "+ New customer" button that used to sit here duplicated the
+       Customers tab in the top nav, so it was removed. */
+    html += '</div>';
     html += '<div id="dashBlocks"></div>';
     html += '<div class="card"><div class="ovl">Recent activity</div>'+ recentHTML(d.recent) +'</div>';
     el('main').innerHTML = html;
@@ -491,14 +539,14 @@ function backendPrompt(){
 }
 function renderBackendDash(d){
   var html = '<div class="pagehead"><div class="grow"><h1>Overview</h1>'+
-    '<div class="sub">Back-office view — full access across all tags, no personal sales targets.</div></div>';
+    '<div class="sub">Back-office view — full access across all locations, no personal sales targets.</div></div>';
   if(S.peers.length){
     html += '<div><label>View a user\u2019s dashboard</label><select id="dashWho" onchange="switchDash()"><option value="">\u2014 select a user \u2014</option>'+
-      S.peers.map(function(p){ return '<option value="'+esc(p.email)+'">'+esc(p.name)+'</option>'; }).join('')+'</select></div>';
+      S.peers.map(function(p){ return '<option value="'+esc(p.email)+'">'+esc(peerLabel(p))+'</option>'; }).join('')+'</select></div>';
   }
-  html += '<button class="btn ghost" onclick="nav(\'customers\')">Customers</button>'+
-    '<button class="btn ghost" onclick="nav(\'cases\')">Cases</button>'+
-    (isAdmin()?'<button class="btn" onclick="nav(\'admin\')">Admin</button>':'')+'</div>';
+  /* P5: the Customers and Cases buttons that used to sit here duplicated the
+     top nav and were removed. */
+  html += (isAdmin()?'<button class="btn" onclick="nav(\'admin\')">Admin</button>':'')+'</div>';
   html += '<div id="dashBlocks">'+backendPrompt()+'</div>';
   html += '<div class="card"><div class="ovl">Recent activity</div>'+ recentHTML(d.recent) +'</div>';
   el('main').innerHTML = html;
@@ -507,8 +555,8 @@ function renderBackendDash(d){
 function dashBlocksHTML(dash, subjectEmail, readOnly){
   var s = dash.stats;
   var html = '<div class="stats">'+
-    '<div class="stat" onclick="goCases({mine:true,outcome:\'Open\'})"><div class="n">'+s.myCustomers+'</div><div class="t">My customers</div></div>'+
-    '<div class="stat" onclick="goCases({mine:true,outcome:\'Open\'})"><div class="n">'+s.openOpps+'</div><div class="t">Open cases</div></div>'+
+    '<div class="stat" onclick="goCases({owned:true,outcome:\'Open\'})"><div class="n">'+s.myCustomers+'</div><div class="t">My customers</div></div>'+
+    '<div class="stat" onclick="goCases({owned:true,outcome:\'Open\'})"><div class="n">'+s.openOpps+'</div><div class="t">Open cases</div></div>'+
     '<div class="stat"><div class="n">'+esc(S.settings.currency)+' '+fmtShort(s.wonMonthValue)+'</div><div class="t">Won this month</div><div class="x">'+s.wonMonthCount+' order'+(s.wonMonthCount===1?'':'s')+'</div></div>'+
     '<div class="stat"><div class="n">'+esc(S.settings.currency)+' '+fmtShort(s.won2wValue)+'</div><div class="t">Won — last 2 weeks</div><div class="x">'+s.won2wCount+' order'+(s.won2wCount===1?'':'s')+'</div></div>'+
     '</div>';
@@ -540,7 +588,7 @@ function recentHTML(recent){
   });
   return html+'</ul>';
 }
-function goCases(f){ S.caseF = {mine:!!f.mine, stage:f.stage||'', outcome:f.outcome||'', q:''}; vCases(); }
+function goCases(f){ S.caseF = {owned:!!(f.owned||f.mine), assigned:!!f.assigned, stage:f.stage||'', outcome:f.outcome||'', q:''}; vCases(); }
 
 /* ---- L1 minimal dashboard ---- */
 function renderL1Dash(d){
@@ -559,7 +607,7 @@ function vCustomers(){
   el('main').innerHTML =
     '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div>'+
     '<button class="btn ghost" onclick="mBulkCustomers()">Bulk add</button></div>'+
-    '<div class="card"><input id="custQ" placeholder="Search customers by name, tag, type or area…" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
+    '<div class="card"><input id="custQ" placeholder="Search customers by name, location, type or area…" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
     '<div id="custBody"></div>';
   el('custQ').focus();
   custApply();
@@ -584,7 +632,7 @@ function runSearch(q){
       el('custBody').innerHTML='<div class="card"><div class="empty">No customers match "'+esc(q)+'".</div>'+createBar(q)+'</div>';
       return;
     }
-    var html='<div class="ovl">Search results</div>'+createBar(q)+'<div style="overflow-x:auto"><table><tr><th>Customer</th><th>Tag</th><th>Type</th><th>Priority</th><th>Handlers</th><th></th></tr>';
+    var html='<div class="ovl">Search results</div>'+createBar(q)+'<div style="overflow-x:auto"><table><tr><th>Customer</th><th>Location</th><th>Type</th><th>Priority</th><th>Handlers</th><th></th></tr>';
     list.forEach(function(c){
       var extra = c.access==='FULL' ? '<div class="sub">'+esc(c.area||'')+'</div>' : '';
       var click = c.access==='FULL' ? 'nav(\'customer\',\''+esc(c.id)+'\')' : 'mRestricted(\''+esc(c.id)+'\')';
@@ -633,7 +681,7 @@ function loadMyCustomers(){
   else gridShell('<div class="sub">Loading…</div>');
   if(have && fresh(CACHE.customersAt)) return;
   gs('api_myCustomers').then(function(d){
-    CACHE.customers=d; CACHE.customersAt=Date.now();
+    CACHE.customers=d; CACHE.customersAt=Date.now(); noteSeiNames(d);
     if(S.route!=='customers' || v('custQ')) return;
     if(gridBusy()){ MC=d; return; }
     if(sameData(MC,d)){ MC=d; return; }
@@ -655,7 +703,7 @@ function loadAllCustomers(force){
   if(have){ MC=have; gridShell(''); renderMyCustomers(); }
   else gridShell('<div class="sub">Fetching…</div>');
   gs('api_allCustomers').then(function(d){
-    CACHE.customers=d; CACHE.customersAt=Date.now();
+    CACHE.customers=d; CACHE.customersAt=Date.now(); noteSeiNames(d);
     if(S.route!=='customers' || v('custQ')) return;
     if(gridBusy()){ MC=d; return; }
     if(have && sameData(MC,d)){ MC=d; return; }
@@ -672,7 +720,7 @@ function mcFiltered(){
   return MC.customers.filter(function(c){
     if(!mcTextMatch(c.name,MCFILT.name)) return false;
     if(!mcTextMatch(c.area,MCFILT.area)) return false;
-    if(!mcTextMatch(c.sei,MCFILT.sei)) return false;
+    if(!mcTextMatch(seiList(c.sei).join(', '),MCFILT.sei)) return false;
     if(!mcTextMatch(c.remarks,MCFILT.remarks)) return false;
     if(MCFILT.tag){ if(MCFILT.tag===MCBLANK){ if((c.tags||[]).length) return false; } else if((c.tags||[]).indexOf(MCFILT.tag)<0) return false; }
     if(MCFILT.type){ if(MCFILT.type===MCBLANK){ if(c.type) return false; } else if(c.type!==MCFILT.type) return false; }
@@ -692,9 +740,10 @@ function mcSelCount(){ return Object.keys(MCSEL).filter(function(id){ return MCS
 function renderMyCustomers(){
   if(!el('mcWrap')) return;
   var d=MC, all=gridIsAll();
+  noteSeiNames(d);
   if(el('mcCount')) el('mcCount').textContent='('+d.total+')';
   if(!d.customers.length){
-    el('mcWrap').innerHTML='<div class="empty">'+(all?'No customers in the database yet.':'You don\'t handle any customers yet.<br>Create one with "+ New customer", or ask a handler to add you to theirs.')+'</div>';
+    el('mcWrap').innerHTML='<div class="empty">'+(all?'No customers in the database yet.':'You don\'t handle any customers yet.<br>Search above and create one from the search result, or ask a handler to add you to theirs.')+'</div>';
     return;
   }
   var canPri=d.canEditPriority, canCls=d.canEditClass, canDel=d.canDelete;
@@ -725,7 +774,7 @@ function renderMyCustomers(){
   html+='<div style="overflow-x:auto"><table class="grid">'+
     '<tr>'+
       (canDel?'<th style="width:24px"><input type="checkbox" '+(rows.length&&rows.every(function(c){return MCSEL[c.id];})?'checked':'')+' onclick="mcSelectAll(this.checked)"></th>':'')+
-      '<th>Name</th><th>Tag</th><th>Type</th><th>Priority</th><th>Area</th><th>SEI</th><th>Remarks</th><th>Contacts</th><th>'+hcol+'</th><th></th>'+
+      '<th>Name</th><th>Location</th><th>Type</th><th>Priority</th><th>Area</th><th>SEI</th><th>Remarks</th><th>Contacts</th><th>'+hcol+'</th><th></th>'+
     '</tr>'+
     '<tr class="fr">'+
       (canDel?'<th></th>':'')+
@@ -745,7 +794,7 @@ function renderMyCustomers(){
       '<td>'+(canCls?'<select class="ce" onchange="cellSave(\''+esc(c.id)+'\',\'type\',this.value,this)">'+eopts(d.types,c.type)+'</select>':(typeChip(c.type)||'<span class="sub">—</span>'))+'</td>'+
       '<td>'+(canPri?'<select class="ce" onchange="cellSave(\''+esc(c.id)+'\',\'priority\',this.value,this)">'+eopts(d.priorities,c.priority)+'</select>':(priChip(c.priority)||'<span class="sub">—</span>'))+'</td>'+
       '<td><input class="ce" value="'+esc(c.area||'')+'" onchange="cellSave(\''+esc(c.id)+'\',\'area\',this.value,this)"></td>'+
-      '<td><input class="ce" value="'+esc(c.sei||'')+'" onchange="cellSave(\''+esc(c.id)+'\',\'sei\',this.value,this)"></td>'+
+      '<td>'+seiSelectHTML('', 'ce', c.sei, ' onchange="cellSaveMulti(\''+esc(c.id)+'\',\'sei\',this)"')+'</td>'+
       '<td><input class="ce" value="'+esc(c.remarks||'')+'" onchange="cellSave(\''+esc(c.id)+'\',\'remarks\',this.value,this)"></td>'+
       '<td>'+(noC?'<span class="pill red">0</span>':'<span class="sub">'+c.contacts+'</span>')+'</td>'+
       '<td class="sub">'+esc(handlersTxt)+'</td>'+
@@ -805,10 +854,26 @@ function cellSave(id, field, value, node){
     c[field]=value;                                    // local model updated instantly
   }
   PENDING[id]=PENDING[id]||{}; PENDING[id][field]=value;
+  /* (see cellSaveMulti below for the array-valued <select multiple> path) */
   NODES[id+'|'+field]=node;
   node.style.outline='2px solid var(--line)';          // quiet "not saved yet"
   clearTimeout(pendTimer);
   pendTimer=setTimeout(flushCells, 700);
+}
+/* P8: SEI is now an array field edited through a <select multiple>, so the
+   grid needs a save path that sends every selected value, including none. */
+function cellSaveMulti(id, field, node){
+  cellSave(id, field, seiSelectedValues(node), node);
+}
+/* Rolls a failed optimistic edit back into whatever control produced it. */
+function setCellValue(node, val){
+  if(!node) return;
+  if(node.multiple){
+    var list = seiList(val);
+    [].slice.call(node.options||[]).forEach(function(o){ o.selected = list.indexOf(o.value)>-1; });
+    return;
+  }
+  if('value' in node) node.value = val;
 }
 function flushCells(){
   var ids=Object.keys(PENDING);
@@ -828,7 +893,7 @@ function flushCells(){
       var id=f.id;
       Object.keys(sent[id]||{}).forEach(function(fld){
         var n=sentNodes[id+'|'+fld];
-        if(n){ n.style.outline='2px solid var(--red)'; if('value' in n && sentPrev[id] && fld in sentPrev[id]) n.value=sentPrev[id][fld]; }
+        if(n){ n.style.outline='2px solid var(--red)'; if(sentPrev[id] && fld in sentPrev[id]) setCellValue(n, sentPrev[id][fld]); }
         var c=MC && MC.customers.filter(function(x){return x.id===id;})[0];
         if(c && sentPrev[id] && fld in sentPrev[id]) c[fld]=sentPrev[id][fld];
       });
@@ -839,7 +904,7 @@ function flushCells(){
     Object.keys(sent).forEach(function(id){
       Object.keys(sent[id]).forEach(function(fld){
         var n=sentNodes[id+'|'+fld];
-        if(n){ n.style.outline='2px solid var(--red)'; if('value' in n && sentPrev[id] && fld in sentPrev[id]) n.value=sentPrev[id][fld]; }
+        if(n){ n.style.outline='2px solid var(--red)'; if(sentPrev[id] && fld in sentPrev[id]) setCellValue(n, sentPrev[id][fld]); }
         var c=MC && MC.customers.filter(function(x){return x.id===id;})[0];
         if(c && sentPrev[id] && fld in sentPrev[id]) c[fld]=sentPrev[id][fld];
       });
@@ -856,7 +921,7 @@ function mRestricted(id){
     var hs = (d.handlers||[]).map(function(h){ return esc(h.name); }).join(', ') || '—';
     openModal(d.customer.name,
       '<div class="kv"><b>Customer ID</b><span class="mono">'+esc(d.customer.id)+'</span>'+
-      '<b>Tags</b><span>'+tagChips(d.customer.tags)+'</span>'+
+      '<b>Location</b><span>'+tagChips(d.customer.tags)+'</span>'+
       '<b>Type / Priority</b><span>'+(typeChip(d.customer.type)||'—')+' '+(priChip(d.customer.priority)||'')+'</span>'+
       '<b>Handlers</b><span>'+hs+'</span></div>'+
       '<p class="hint" style="margin-top:14px">This customer is in your area, but you are not one of its account handlers, so its contacts, cases and quotations are not open to you. Ask one of the handlers above (or an L3+ user) to add you as a handler.</p>',
@@ -874,21 +939,29 @@ function priorityFieldHTML(c){
   c = c||{};
   return '<div class="frow"><div><label>Priority</label><select id="f_priority"><option value="">—</option>'+selOptions(S.settings.priorities, c.priority)+'</select></div></div>';
 }
-function custFormHTML(c){
+/* P7: Location is mandatory and sits directly under the customer name.
+   The DB/RPC field is still `tags` - only the label changed. */
+function locationFieldHTML(sel){
+  return '<label class="req">Location</label>'+
+    tagPickerHTML('f_tags', S.settings.tags, sel||[], false)+
+    '<p class="hint">Controls who can see this customer. Pick at least one.</p>';
+}
+/* `afterName` is injected between the name row and everything else so the
+   location picker can be the second thing on the form. */
+function custFormHTML(c, afterName){
   c = c||{};
   return '<div class="frow"><div><label class="req">Customer name</label><input id="f_name" value="'+esc(c.name||'')+'"></div></div>'+
+    (afterName||'')+
     '<div class="frow"><div><label>Area</label><input id="f_area" value="'+esc(c.area||'')+'"></div>'+
     '<div><label>GSTIN</label><input id="f_gstin" value="'+esc(c.gstin||'')+'"></div>'+
-    '<div><label>SEI</label><input id="f_sei" value="'+esc(c.sei||'')+'"></div></div>'+
+    '<div><label>SEI</label>'+seiFieldHTML(c.sei)+'</div></div>'+
     '<div class="frow"><div><label>Address</label><input id="f_address" value="'+esc(c.address||'')+'"></div></div>'+
     '<div class="frow"><div><label>Website</label><input id="f_website" value="'+esc(c.website||'')+'"></div></div>'+
     '<div class="frow"><div><label>Notes</label><textarea id="f_notes">'+esc(c.notes||'')+'</textarea></div></div>'+
     '<div class="frow"><div><label>Remarks</label><textarea id="f_remarks">'+esc(c.remarks||'')+'</textarea></div></div>';
 }
 function mNewCustomer(prefillName){
-  var body = custFormHTML({ name: prefillName || '' }) + classFieldsHTML({}) +
-    '<label>Tag <span class="hint" style="display:inline">(controls who can see this customer)</span></label>'+
-    tagPickerHTML('f_tags', S.settings.tags, [], false)+
+  var body = custFormHTML({ name: prefillName || '' }, locationFieldHTML([])) + classFieldsHTML({}) +
     '<div class="card" style="margin-top:16px;padding:14px;background:#FAFBFA"><div class="ovl" style="margin-bottom:10px">First contact (optional)</div>'+
     '<div class="frow"><div><label>Name</label><input id="fc_name"></div><div><label>Designation</label><input id="fc_desig"></div></div>'+
     '<div class="frow"><div><label>Phone</label><input id="fc_phone"></div><div><label>Email</label><input id="fc_email"></div></div></div>';
@@ -899,12 +972,15 @@ function mNewCustomer(prefillName){
 }
 function saveNewCustomer(force){
   var d = {
-    name:v('f_name'), area:v('f_area'), sei:v('f_sei'), remarks:v('f_remarks'),
+    name:v('f_name'), area:v('f_area'), sei:seiVal('f_sei'), remarks:v('f_remarks'),
     gstin:v('f_gstin'), address:v('f_address'), website:v('f_website'), notes:v('f_notes'),
     type:v('f_type'), priority:v('f_priority'), tags: pickerVal('f_tags'), force: !!force,
     contact:{ name:v('fc_name'), designation:v('fc_desig'), phone:v('fc_phone'), email:v('fc_email') }
   };
   if(!d.name){ toast('Customer name is required.', true); return; }
+  /* P7: mirrors the server's mandatory-location rule so the user is told
+     before the round trip. */
+  if(!d.tags.length){ toast('Location is required — pick at least one.', true); return; }
   el('saveCustBtn').disabled = true;
   gs('api_createCustomer', d).then(function(r){
     closeModal(); toast('Customer created — '+r.id); nav('customer', r.id);
@@ -921,18 +997,17 @@ function saveNewCustomer(force){
 function mEditCustomer(c){
   var canCls = CUR.customer && CUR.customer.canEditTags;       // L3+: tags, type, archive
   var canPri = (CUR.customer && CUR.customer.canEditPriority) || lvl()>=2;  // L2+: priority
-  var body = custFormHTML(c);
+  var body = custFormHTML(c, canCls ? locationFieldHTML(c.tags||[]) : '');
   if(canCls){
     body += classFieldsHTML(c);
-    body += '<label>Tag</label>'+tagPickerHTML('f_tags', S.settings.tags, c.tags||[], false);
     body += '<div class="frow" style="margin-top:12px"><div><label>Status</label><select id="f_status">'+
       '<option'+(c.status!=='Archived'?' selected':'')+'>Active</option>'+
       '<option'+(c.status==='Archived'?' selected':'')+'>Archived</option></select></div></div>';
   }else if(canPri){
     body += priorityFieldHTML(c);
-    body += '<p class="hint">Tag, type and archive status can only be changed at L3 or higher.</p>';
+    body += '<p class="hint">Location, type and archive status can only be changed at L3 or higher.</p>';
   }else{
-    body += '<p class="hint">Tag, type, priority and archive status can only be changed at L2 or higher.</p>';
+    body += '<p class="hint">Location, type, priority and archive status can only be changed at L2 or higher.</p>';
   }
   openModal('Edit — '+c.name, body,
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
@@ -942,10 +1017,14 @@ function saveEditCustomer(id){
   var canCls = CUR.customer && CUR.customer.canEditTags;
   var canPri = (CUR.customer && CUR.customer.canEditPriority) || lvl()>=2;
   var d = {
-    name:v('f_name'), area:v('f_area'), sei:v('f_sei'), remarks:v('f_remarks'),
+    name:v('f_name'), area:v('f_area'), sei:seiVal('f_sei'), remarks:v('f_remarks'),
     gstin:v('f_gstin'), address:v('f_address'), website:v('f_website'), notes:v('f_notes')
   };
-  if(canCls){ d.tags = pickerVal('f_tags'); d.type = v('f_type'); d.status = v('f_status'); }
+  if(canCls){
+    d.tags = pickerVal('f_tags'); d.type = v('f_type'); d.status = v('f_status');
+    /* P7: an edit may never leave a customer with no location. */
+    if(!d.tags.length){ toast('Location is required — pick at least one.', true); return; }
+  }
   if(canPri && el('f_priority')){ d.priority = v('f_priority'); }
   el('saveBtn').disabled = true;
   gs('api_updateCustomer', id, d).then(function(){ closeModal(); toast('Saved.'); vCustomer(id); })
@@ -956,8 +1035,8 @@ function saveEditCustomer(id){
 function mBulkCustomers(){
   openModal('Bulk add customers',
     '<p class="sub" style="margin-bottom:8px">Paste rows from Excel (one customer per line). Columns, in order:</p>'+
-    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Tag · Type · Priority · Area</p>'+
-    '<p class="hint">Only Name is required. Tag must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
+    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area</p>'+
+    '<p class="hint">Only Name is required. Location must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
     '<textarea id="bc_paste" style="min-height:130px;font-family:var(--mono);font-size:12px;margin-top:10px" placeholder="ABC Industries\tPunjab\tOEM\tHigh\tLudhiana"></textarea>'+
     '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkCust()">Preview</button></div>'+
     '<div id="bc_prev" style="margin-top:10px"></div>',
@@ -981,7 +1060,7 @@ function previewBulkCust(){
     .filter(function(r){ return r.name; });
   if(!BCROWS.length){ toast('No valid rows (every row needs a name).', true); el('bc_prev').innerHTML=''; el('bc_save').style.display='none'; return; }
   var html = '<div class="ovl">Preview — '+BCROWS.length+' customer'+(BCROWS.length===1?'':'s')+'</div>'+
-    '<table><tr><th>Name</th><th>Tag</th><th>Type</th><th>Priority</th><th>Area</th></tr>';
+    '<table><tr><th>Name</th><th>Location</th><th>Type</th><th>Priority</th><th>Area</th></tr>';
   BCROWS.slice(0,10).forEach(function(r){
     html += '<tr><td><b>'+esc(r.name)+'</b></td><td>'+esc(r.tag||'—')+'</td><td>'+esc(r.type||'—')+'</td><td>'+esc(r.priority||'—')+'</td><td>'+esc(r.area||'—')+'</td></tr>';
   });
@@ -1032,7 +1111,7 @@ function renderCustomer(d){
     html += '<div class="card"><div class="ovl">Details</div><div class="kv">'+
       '<b>Type / Priority</b><span>'+(typeChip(c.type)||'—')+' '+(priChip(c.priority)||'')+'</span>'+
       '<b>Area</b><span>'+esc(c.area||'—')+'</span>'+
-      '<b>SEI</b><span>'+esc(c.sei||'—')+'</span>'+
+      '<b>SEI</b><span>'+esc(seiList(c.sei).join(', ')||'—')+'</span>'+
       '<b>Remarks</b><span>'+esc(c.remarks||'—')+'</span>'+
       '<b>Address</b><span>'+esc(c.address||'—')+'</span>'+
       '<b>GSTIN</b><span class="mono">'+esc(c.gstin||'—')+'</span>'+
@@ -1042,8 +1121,17 @@ function renderCustomer(d){
 
     html += '<div class="card"><div class="ovl">Account handlers</div>';
     (d.handlers||[]).forEach(function(h){
-      html += '<div class="qr"><div style="flex:1"><b>'+esc(h.name)+'</b><div class="sub mono">'+esc(h.email)+'</div></div>'+
-        '<button class="btn danger sm" onclick="rmHandler(\''+esc(c.id)+'\',\''+esc(h.email)+'\')">Remove</button></div>';
+      /* P9: Direct is a virtual, login-less placeholder that the server clears
+         automatically the moment a real handler is added. Offering Remove
+         could only ever leave the customer with no handler at all, so it gets
+         no Remove button and no (non-existent) email address. */
+      var direct = isDirectAccount(h.email);
+      html += '<div class="qr"><div style="flex:1"><b>'+esc(h.name)+'</b>'+
+        (direct
+          ? '<div class="sub">Unassigned — no account handler yet. Adding one replaces this automatically.</div>'
+          : '<div class="sub mono">'+esc(h.email)+'</div>')+'</div>'+
+        (direct ? '' : '<button class="btn danger sm" onclick="rmHandler(\''+esc(c.id)+'\',\''+esc(h.email)+'\')">Remove</button>')+
+        '</div>';
     });
     if(!(d.handlers||[]).length) html += '<div class="empty">No handlers assigned.</div>';
     html += '<button class="btn ghost sm" onclick="mAddHandler(\''+esc(c.id)+'\')">+ Add handler</button></div>';
@@ -1215,12 +1303,23 @@ function mNewCase(custId){
     el('fo_title').focus();
   }).catch(oops);
 }
+/* P10: the modal used to call EVERY non-removable owner an account handler.
+   On a Direct-handled customer that made the person who merely created the
+   case look like the account handler. The server now says why each person
+   owns the case, so say exactly that. */
+function ownerSourceLabel(o){
+  if(o.source==='handler') return '(account handler — owner of every case on the account)';
+  if(o.source==='creator') return '(created this case)';
+  if(o.source==='manual')  return '(added to this case)';
+  /* Pre-P10 payloads carry no source; fall back to the old removable split. */
+  return o.removable ? '(added to this case)' : '(account handler — owner of every case on the account)';
+}
 function mOwners(){
   var d=CUR.caseData; if(!d) return;
   ensureUsers().then(function(){
     var list=d.case.ownerList||[];
     var rowsH = list.map(function(o){
-      return '<div class="qr"><div style="flex:1">'+esc(o.name)+' '+(o.removable?'<span class="sub">(added for this case)</span>':'<span class="sub">(account handler — owner of every case on the account)</span>')+'</div>'+
+      return '<div class="qr"><div style="flex:1">'+esc(o.name)+' <span class="sub">'+esc(ownerSourceLabel(o))+'</span></div>'+
         (o.removable?'<button class="btn lk" onclick="removeOwner(\''+esc(o.email)+'\')">remove</button>':'')+'</div>';
     }).join('');
     var body='<p class="hint" style="margin-top:0">Account handlers are always owners and can\'t be removed here (remove them as a handler on the customer instead). You can add other users as owners of this case.</p>'+
@@ -1478,14 +1577,20 @@ function vCases(){
     S.settings.stages.map(function(st){ return '<option'+(st===f.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select>'+
     '<select id="cf_outcome" onchange="applyCaseF()">'+
     ['','Open','Won','Lost','Hold'].map(function(o){ var lbl = o===''?'All outcomes':(o==='Open'?'Open only':o); return '<option value="'+esc(o)+'"'+(o===f.outcome?' selected':'')+'>'+esc(lbl)+'</option>'; }).join('')+'</select>'+
-    '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="cf_mine" style="width:auto"'+(f.mine?' checked':'')+' onchange="applyCaseF()"> Mine only</label>'+
+    /* P6: two independent boxes, OR-combined by the server. Both unticked =
+       every case visible to me. The sizing lives in the stylesheet now - the
+       inline width:auto this replaces lost to `.filterbar input`. */
+    '<label class="cbx"><input type="checkbox" id="cf_owned"'+(f.owned?' checked':'')+' onchange="applyCaseF()"> Owned by me</label>'+
+    '<label class="cbx"><input type="checkbox" id="cf_assigned"'+(f.assigned?' checked':'')+' onchange="applyCaseF()"> Assigned to me</label>'+
     '<button class="btn sm" onclick="applyCaseF()">Apply</button></div>'+
     '<div id="caseRes"><div class="empty">Loading…</div></div></div>';
   el('main').innerHTML = html;
   loadCases();
 }
 function applyCaseF(){
-  S.caseF = { q:v('cf_q'), stage:v('cf_stage'), outcome:v('cf_outcome'), mine:el('cf_mine').checked };
+  S.caseF = { q:v('cf_q'), stage:v('cf_stage'), outcome:v('cf_outcome'),
+              owned:!!(el('cf_owned') && el('cf_owned').checked),
+              assigned:!!(el('cf_assigned') && el('cf_assigned').checked) };
   loadCases();
 }
 function loadCases(){
@@ -1545,7 +1650,7 @@ function renderQLCust(){
   }
   if(QL.newMode){
     el('ql_cust').innerHTML = '<label class="req">New customer name</label><input id="ql_cname" placeholder="Customer name">'+
-      '<div class="frow" style="margin-top:8px"><div><label>Tag</label><select id="ql_tag"><option value="">—</option>'+selOptions(S.settings.tags,'')+'</select></div>'+
+      '<div class="frow" style="margin-top:8px"><div><label>Location</label><select id="ql_tag"><option value="">—</option>'+selOptions(S.settings.tags,'')+'</select></div>'+
       '<div><label>Type</label><select id="ql_type"><option value="">—</option>'+selOptions(S.settings.types,'')+'</select></div>'+
       '<div><label>Priority</label><select id="ql_pri"><option value="">—</option>'+selOptions(S.settings.priorities,'')+'</select></div></div>'+
       '<button class="btn lk" onclick="qlToSearch()">← search existing instead</button>';
@@ -1896,7 +2001,7 @@ function vAdmin(){
 }
 function renderAdmin(users, links){
   var html = '<div class="card"><div class="ovl">Users &amp; access levels</div>';
-  html += '<table><tr><th>Email</th><th>Name</th><th>Level</th><th>Allowed tags</th><th>Status</th><th></th></tr>';
+  html += '<table><tr><th>Email</th><th>Name</th><th>Level</th><th>Allowed locations</th><th>Status</th><th></th></tr>';
   (users||[]).forEach(function(u){
     var lc = u.role==='L6'?'b-green':(u.role==='L5'?'b-blue':(u.role==='L4'?'b-blue':(u.role==='L1'?'b-grey':'b-amber')));
     html += '<tr><td class="mono">'+esc(u.email)+'</td><td>'+esc(u.name)+'</td>'+
@@ -1910,10 +2015,10 @@ function renderAdmin(users, links){
     Object.keys({L1:1,L2:1,L3:1,L4:1,L5:1,L6:1}).map(function(k){ return '<b>'+k+'</b><span class="sub">'+esc(LEVEL_DESC[k])+'</span>'; }).join('')+
     '</div></div>';
 
-  html += '<div class="row"><div class="col"><div class="card"><div class="ovl">Customer tags (geographies)</div>'+
+  html += '<div class="row"><div class="col"><div class="card"><div class="ovl">Customer locations (geographies)</div>'+
     '<textarea id="ad_tags" class="listedit" style="min-height:100px">'+esc(S.settings.tags.join('\n'))+'</textarea>'+
-    '<p class="hint">Tags drive access control. Removing a tag does not remove it from customers that already have it.</p>'+
-    '<button class="btn sm" onclick="saveSettings({tags:linesOf(\'ad_tags\')})">Save tags</button></div>'+
+    '<p class="hint">Locations drive access control. Removing a location does not remove it from customers that already have it.</p>'+
+    '<button class="btn sm" onclick="saveSettings({tags:linesOf(\'ad_tags\')})">Save locations</button></div>'+
     '<div class="card"><div class="ovl">Customer types</div>'+
     '<textarea id="ad_types" class="listedit" style="min-height:80px">'+esc(S.settings.types.join('\n'))+'</textarea>'+
     '<button class="btn sm" onclick="saveSettings({types:linesOf(\'ad_types\')})">Save types</button></div>'+
@@ -1936,7 +2041,7 @@ function renderAdmin(users, links){
 
   html += '<div class="card"><div class="ovl">Import customers from the sheet</div>'+
     '<p style="margin-bottom:8px">Open the database sheet (link below), paste rows into the <b>Import</b> tab under these columns, then run import:</p>'+
-    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Tag · Type · Priority · Area · Address · GSTIN · ContactName · ContactDesignation · ContactPhone · ContactEmail · Handlers</p>'+
+    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area · Address · GSTIN · ContactName · ContactDesignation · ContactPhone · ContactEmail · Handlers</p>'+
     '<p class="hint">Handlers accept comma-separated emails (must be active users). Rows whose Name already exists are skipped. Processed rows are cleared. Tip: for everyday use the in-app “Bulk add” on the Customers page is faster.</p>'+
     '<div style="margin-top:10px;display:flex;gap:10px;align-items:center"><button class="btn" id="impBtn" onclick="runImport()">Run customer import</button><span id="impRes" class="sub"></span></div></div>';
 
@@ -1967,7 +2072,7 @@ function loadRecycle(){
 function renderRecycle(d){
   if(!el('recycleBin')) return;
   if(!d.customers.length){ el('recycleBin').innerHTML='<div class="empty">The recycle bin is empty.</div>'; return; }
-  var html='<table><tr><th>Customer</th><th>Tag</th><th>Area</th><th>Deleted</th><th></th></tr>';
+  var html='<table><tr><th>Customer</th><th>Location</th><th>Area</th><th>Deleted</th><th></th></tr>';
   d.customers.forEach(function(c){
     html+='<tr><td><b>'+esc(c.name)+'</b> <span class="sub mono">'+esc(c.id)+'</span></td>'+
       '<td>'+tagChips(c.tags)+'</td><td class="sub">'+esc(c.area||'—')+'</td>'+
@@ -2019,9 +2124,9 @@ function mUser(u){
     '</select></div>'+
     '<div><label>Status</label><select id="au_active"><option value="1"'+(u.active!==false?' selected':'')+'>Active</option><option value="0"'+(u.active===false?' selected':'')+'>Inactive</option></select></div></div>'+
     '<p class="hint" id="au_hint" style="margin-top:-4px"></p>'+
-    '<label>Allowed tags (full access to matching customers; needed for L2/L3)</label>'+
+    '<label>Allowed locations (full access to matching customers; needed for L2/L3)</label>'+
     tagPickerHTML('au_tags', S.settings.tags, u.allowedTags||[], true)+
-    '<p class="hint">L4 and L5 see everything regardless of tags.</p>',
+    '<p class="hint">L4 and L5 see everything regardless of location.</p>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
     '<button class="btn" onclick="saveUser(\''+esc(u.email||'')+'\')">Save user</button>', true);
   userLvlHint();
@@ -2036,8 +2141,8 @@ function saveUser(origEmail){
 var LEVEL_DESC = {
   L1:'Assignments only — sees only cases assigned to them.',
   L2:'Sales — own dashboard + assignments. Can create customers, cases, quotes, set priority, and assign to others.',
-  L3:'L2 + can view the dashboards of L2 users who share a tag, and edit customer tags and type.',
-  L4:'L3 + full access to all customers and cases across all tags.',
+  L3:'L2 + can view the dashboards of L2 users who share a location, and edit customer locations and type.',
+  L4:'L3 + full access to all customers and cases across all locations.',
   L5:'L4 without a sales performance dashboard — back-office, full data access, no Admin.',
   L6:'L5 + Admin (users, lists, import, database links). No performance dashboard.'
 };

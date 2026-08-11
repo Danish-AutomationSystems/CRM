@@ -3,9 +3,10 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS } from '../db/schema';
-import { normalizeEmail } from '../domain/lists';
+import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
 import type {
   ActivityLogEntry,
+  CaseOwnerRow,
   CustomerCaseSummary,
   ContactRow,
   CustomerQuoteSummary,
@@ -28,7 +29,7 @@ type CustomerDbRow = {
   gstin: string | null;
   website: string | null;
   notes: string | null;
-  sei: string | null;
+  sei: string[] | null;
   remarks: string | null;
   status: 'Active' | 'Archived';
   created_by: string | null;
@@ -110,7 +111,7 @@ function toCustomer(row: CustomerDbRow): CustomerRow {
     gstin: row.gstin ?? '',
     website: row.website ?? '',
     notes: row.notes ?? '',
-    sei: row.sei ?? '',
+    sei: row.sei ?? [],
     remarks: row.remarks ?? '',
     status: row.status,
     createdBy: row.created_by ?? '',
@@ -323,13 +324,7 @@ export class PostgresCustomerRepository implements CustomerRepository {
 
   async listCasesByCustomer(customerId: string): Promise<CustomerCaseSummary[]> {
     const rows = (await this.db`
-      with handler_owners as (
-        select customer_id, array_agg(user_email order by user_email) filter (where user_email <> 'direct') as owners
-        from public.handlers
-        where customer_id = ${customerId}
-        group by customer_id
-      ),
-      latest_quotes as (
+      with latest_quotes as (
         select distinct on (case_id)
           case_id,
           total as quoted_value
@@ -339,12 +334,26 @@ export class PostgresCustomerRepository implements CustomerRepository {
           and case_id is not null
         order by case_id, rev desc
       )
+      -- P11: owners are materialised on the case, never derived from public.handlers.
       select c.case_id, c.customer_id, c.title, c.stage, c.outcome, c.order_value,
              lq.quoted_value,
-             coalesce(ho.owners, array_remove(string_to_array(coalesce(c.owner, ''), '|'), '')) as owners,
+             case
+               when cardinality(so.owners) > 0 then so.owners
+               when lower(btrim(coalesce(c.owner, ''))) in ('', 'direct') then '{}'::text[]
+               else array[lower(btrim(c.owner))]
+             end as owners,
              c.assignee, c.updated_at
       from public.cases c
-      left join handler_owners ho on ho.customer_id = c.customer_id
+      left join lateral (
+        select coalesce(
+          (
+            select array_agg(distinct lower(btrim(t)))
+            from unnest(string_to_array(coalesce(c.extra_owners, ''), '|')) as t
+            where btrim(t) <> ''
+          ),
+          '{}'::text[]
+        ) as owners
+      ) so on true
       left join latest_quotes lq on lq.case_id = c.case_id
       where c.customer_id = ${customerId}
       order by c.updated_at desc
@@ -450,6 +459,42 @@ export class PostgresCustomerRepository implements CustomerRepository {
       where customer_id = ${customerId}
         and user_email = 'direct'
     `;
+  }
+
+  async listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]> {
+    const rows = (await this.db`
+      select case_id, customer_id, outcome, extra_owners
+      from public.cases
+      where customer_id = ${customerId}
+    `) as Array<{ case_id: string; customer_id: string; outcome: string | null; extra_owners: string | null }>;
+
+    return rows.map((row) => ({
+      id: row.case_id,
+      customerId: row.customer_id,
+      outcome: row.outcome ?? '',
+      extraOwners: parsePipe(row.extra_owners).map(normalizeEmail)
+    }));
+  }
+
+  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
+    await this.db`
+      update public.cases
+      set extra_owners = ${joinPipe(extraOwners)},
+          updated_at = now(),
+          version = version + 1
+      where case_id = ${caseId}
+    `;
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    const rows = (await this.db`
+      select value
+      from public.settings
+      where key = ${key}
+      limit 1
+    `) as Array<{ value: string | null }>;
+
+    return rows[0]?.value ?? null;
   }
 
   async listUsers(): Promise<CustomerUserRow[]> {

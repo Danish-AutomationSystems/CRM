@@ -179,7 +179,7 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
     gstin: '',
     website: '',
     notes: '',
-    sei: '',
+    sei: [],
     remarks: '',
     status: 'Active',
     createdBy: 'admin@automationsystems.org',
@@ -224,8 +224,18 @@ describe('admin service access and users', () => {
       expect.objectContaining({ email: 'admin@automationsystems.org', allowedTags: ['*'], active: true }),
       expect.objectContaining({ email: 'inactive@automationsystems.org', allowedTags: ['NCR'], active: false }),
       expect.objectContaining({ email: 'manager@automationsystems.org', active: true }),
-      expect.objectContaining({ email: 'sales@automationsystems.org', active: true })
+      expect.objectContaining({ email: 'sales@automationsystems.org', active: true }),
+      // P9: Direct is synthesised, never a public.users row.
+      { email: 'direct', name: 'Direct', role: 'L2', allowedTags: ['*'], active: true, addedOn: '', hasLogin: false }
     ]);
+    expect(users.filter((row) => row.hasLogin === false)).toHaveLength(1);
+  });
+
+  it('P9: refuses to create or edit the virtual Direct account', async () => {
+    const { repo, service } = makeService();
+
+    await expect(service.saveUser(admin, { email: 'direct', name: 'Direct' })).rejects.toThrow();
+    expect(repo.users.map((row) => row.email)).not.toContain('direct');
   });
 
   it('normalizes saved users, defaults invalid roles, preserves inactive users, and logs add/edit', async () => {
@@ -306,6 +316,17 @@ describe('admin service settings and links', () => {
     ]);
     expect(repo.logs).toEqual([expect.objectContaining({ action: 'SETTINGS', details: 'Settings updated' })]);
     await expect(service.saveSettings(admin, { tags: [] })).rejects.toThrow('Keep at least one tag');
+  });
+
+  it('P8: an L6 can edit the SEI_NAMES list through the existing settings RPC', async () => {
+    const { repo, service } = makeService();
+
+    await service.saveSettings(admin, { seiNames: [' Ravi Kumar ', '', 'Anita Rao'] });
+    expect(repo.settings).toEqual([{ key: 'SEI_NAMES', value: 'Ravi Kumar | Anita Rao' }]);
+
+    // Clearing it back to empty is allowed - SEI is optional and ships empty.
+    await service.saveSettings(admin, { seiNames: [] });
+    expect(repo.settings).toEqual([{ key: 'SEI_NAMES', value: '' }]);
   });
 
   it('returns stack metadata links without leaking secrets or Google Drive storage', async () => {
@@ -416,7 +437,9 @@ describe('admin service imports', () => {
     expect(repo.contacts).toEqual([expect.objectContaining({ customerId: 'CUST-0002', name: 'Buyer' })]);
     expect(repo.handlers).toEqual([
       expect.objectContaining({ customerId: 'CUST-0002', email: 'other@automationsystems.org', assignedBy: 'import' }),
-      expect.objectContaining({ customerId: 'CUST-0003', email: 'admin@automationsystems.org', assignedBy: 'import (default)' })
+      // P1: the L6 admin running the import must not become an account handler, so the
+      // handler-less row falls back to the virtual Direct account instead.
+      expect.objectContaining({ customerId: 'CUST-0003', email: 'direct', assignedBy: 'import (default)' })
     ]);
     expect(repo.importCustomers).toEqual([]);
     expect(repo.logs).toEqual([expect.objectContaining({ action: 'IMPORT', details: '2 customers imported, 1 skipped' })]);

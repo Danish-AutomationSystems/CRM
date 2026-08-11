@@ -132,6 +132,10 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     return this.customers.find((customer) => customer.id === id) ?? null;
   }
 
+  async getCustomersByIds(ids: string[]): Promise<CustomerRow[]> {
+    return this.customers.filter((customer) => ids.includes(customer.id));
+  }
+
   async findCustomerByName(name: string): Promise<CustomerRow | null> {
     const key = name.trim().toLowerCase();
     return this.customers.find((customer) => customer.name.trim().toLowerCase() === key) ?? null;
@@ -237,6 +241,24 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
 
   async removeDirectHandlers(customerId: string): Promise<void> {
     this.handlers = this.handlers.filter((row) => !(row.customerId === customerId && row.email === 'direct'));
+  }
+
+  settingRows: Record<string, string> = {};
+
+  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
+    return this.cases
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
+  }
+
+  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
+    const row = this.cases.find((item) => item.id === caseId);
+    if (!row) throw new Error('missing test case');
+    row.extraOwners = extraOwners;
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    return this.settingRows[key] ?? null;
   }
 
   async hasCases(customerId: string): Promise<boolean> {

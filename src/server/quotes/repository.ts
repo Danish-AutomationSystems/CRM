@@ -28,7 +28,7 @@ type CustomerDbRow = {
   gstin: string | null;
   website: string | null;
   notes: string | null;
-  sei: string | null;
+  sei: string[] | null;
   remarks: string | null;
   status: 'Active' | 'Archived';
   created_by: string | null;
@@ -166,7 +166,7 @@ function toCustomer(row: CustomerDbRow): QuoteCustomerRow {
     gstin: row.gstin ?? '',
     website: row.website ?? '',
     notes: row.notes ?? '',
-    sei: row.sei ?? '',
+    sei: row.sei ?? [],
     remarks: row.remarks ?? '',
     status: row.status,
     createdBy: row.created_by ?? '',
