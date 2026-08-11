@@ -14,16 +14,33 @@
 -- (sql.begin), so this file must NOT issue its own BEGIN/COMMIT - doing so would commit
 -- before the schema_migrations bookkeeping row is written. Everything below is atomic.
 
--- Snapshot the pre-conversion values so the result can be verified per row.
+-- The split, as a single expression with NO subquery.
+--
+-- This deliberately avoids the `select ... from unnest(...)` form: PostgreSQL rejects a
+-- subquery inside an ALTER COLUMN ... USING transform ("cannot use subquery in transform
+-- expression", SQLSTATE 0A000), which is exactly how the first version of this migration
+-- failed. array_remove over regexp_split_to_array is equivalent and legal there.
+--
+-- Equivalence with parseSeiText() in src/server/customers/sei.ts: that function splits on
+-- [|,], trims each part and drops blanks. Here the separator pattern absorbs the surrounding
+-- whitespace and btrim() handles the outer edges, so the elements come out already trimmed;
+-- array_remove(..., '') then drops the blanks left by empty segments such as 'a,,b' or a
+-- trailing separator. Order is preserved throughout.
+--
+--   sei                 -> result
+--   '  Ravi , Anita  '  -> {Ravi,Anita}
+--   'Ravi,,Anita'       -> {Ravi,Anita}
+--   'Ravi |'            -> {Ravi}
+--   ''  / NULL          -> {}
+
+-- Snapshot the pre-conversion values so the result can be verified per row. This uses the
+-- identical expression to the conversion below, so the check cannot pass or fail for reasons
+-- unrelated to the data.
 create temporary table _p8_sei_before on commit drop as
 select
   customer_id,
   sei as sei_text,
-  (
-    select coalesce(array_agg(btrim(t) order by ord), '{}'::text[])
-    from unnest(regexp_split_to_array(coalesce(sei, ''), '\s*[|,]\s*')) with ordinality as u(t, ord)
-    where btrim(t) <> ''
-  ) as expected
+  array_remove(regexp_split_to_array(btrim(coalesce(sei, '')), '\s*[|,]\s*'), '') as expected
 from public.customers;
 
 -- customers_sei_idx is a btree on the old text column; it must go before the type change.
@@ -34,16 +51,7 @@ alter table public.customers
 
 alter table public.customers
   alter column sei type text[]
-  using (
-    case
-      when btrim(coalesce(sei, '')) = '' then '{}'::text[]
-      else (
-        select coalesce(array_agg(btrim(t) order by ord), '{}'::text[])
-        from unnest(regexp_split_to_array(sei, '\s*[|,]\s*')) with ordinality as u(t, ord)
-        where btrim(t) <> ''
-      )
-    end
-  );
+  using array_remove(regexp_split_to_array(btrim(coalesce(sei, '')), '\s*[|,]\s*'), '');
 
 alter table public.customers
   alter column sei set default '{}'::text[];
@@ -53,16 +61,7 @@ alter table public.recycle_bin
 
 alter table public.recycle_bin
   alter column sei type text[]
-  using (
-    case
-      when btrim(coalesce(sei, '')) = '' then '{}'::text[]
-      else (
-        select coalesce(array_agg(btrim(t) order by ord), '{}'::text[])
-        from unnest(regexp_split_to_array(sei, '\s*[|,]\s*')) with ordinality as u(t, ord)
-        where btrim(t) <> ''
-      )
-    end
-  );
+  using array_remove(regexp_split_to_array(btrim(coalesce(sei, '')), '\s*[|,]\s*'), '');
 
 alter table public.recycle_bin
   alter column sei set default '{}'::text[];
