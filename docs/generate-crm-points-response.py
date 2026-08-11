@@ -218,12 +218,18 @@ bullet(
 )
 
 para(
-    "Two things to be clear about up front. First, nothing has been deployed: four database "
-    "migrations are written, self-verifying and tested, but have not been applied to any "
-    "database, including production. The deployment section explains the order they must run "
-    "in and why. Second, there is an honest list of remaining limitations at the end. The most "
-    "immediate one is that the SEI name list ships empty and needs an L6 to fill it in before "
-    "the field does anything useful."
+    "This work is now live in production. A full backup was taken and verified first, all "
+    "database migrations were applied and self-verified, and the code was deployed. The "
+    "deployment section records what happened, including one migration that failed on its "
+    "first attempt and rolled back cleanly before being corrected and re-run."
+)
+para(
+    "Two things worth knowing up front. Two migrations from an earlier release, 0003 and 0004, "
+    "turned out never to have been applied to production at all - which meant quotation "
+    "features had been failing before any of this work started. They are applied now. And "
+    "there is an honest list of remaining limitations at the end; the most immediate is that "
+    "the SEI name list ships empty and needs an L6 to fill it in before the field does "
+    "anything useful."
 )
 
 h2("Verification status")
@@ -1220,34 +1226,53 @@ para(
     "afterwards."
 )
 
-h2("Recommended deployment sequence")
+h2("What actually happened during deployment")
 numbered(
-    "Take a full manual database backup with pg_dump and confirm you can actually restore it "
-    "into a scratch database. Do this first. There is no automated backup on the free plan to "
-    "rely on instead."
+    "A full backup was taken of all fourteen tables and verified: every value decoded and every "
+    "row count matched the live database. Because the free plan has no automated backups, this "
+    "was written with a purpose-built tool that needs nothing beyond the database driver the "
+    "application already uses."
 )
 numbered(
-    "Apply 0005, 0006, 0007, 0008 in that order to a staging or branch database that has real "
-    "production data in it, not an empty one. The self-checks in these migrations only prove "
-    "anything against real rows."
+    "The migration tracking table did not exist, revealing that migrations 0003 and 0004 from "
+    "an earlier release had never been applied to production. The column quotations.drive_file_id "
+    "was missing entirely, which means every quotation query had been failing in production "
+    "before this work began. Migrations 0001 and 0002 were confirmed already in place and are "
+    "written to be safely repeatable, so replaying them changed nothing."
 )
 numbered(
-    "Confirm on staging: existing cases show the same owners as before; no L5 or L6 appears as "
-    "an account handler anywhere; customers that had no location now show TO BE FILLED; existing "
-    "SEI values survived the conversion; and a customer restore from the recycle bin still works."
-)
-numbered("Deploy the application code.")
-numbered(
-    "Apply the same four migrations to production, in the same order. Each aborts its own "
-    "transaction on any mismatch, so a failure leaves the database as it was rather than half "
-    "converted."
+    "0001 through 0007 applied successfully. 0008 failed and rolled back cleanly: it used a "
+    "form of query that PostgreSQL does not permit when changing a column's type. Because every "
+    "migration runs inside its own transaction, the database was left exactly as it was rather "
+    "than half-converted."
 )
 numbered(
-    "Immediately after: have an L6 populate the SEI names list under Admin > Settings. Until "
-    "that is done the field cannot be used."
+    "0008 was rewritten using an equivalent expression, then checked against the application's "
+    "own parsing logic across eleven awkward inputs - including values with doubled separators, "
+    "a separator-only string, and an empty value - before being applied. It then passed its own "
+    "internal per-row verification."
 )
 numbered(
-    "Then: review any customer showing TO BE FILLED as its location and give it a real one."
+    "Post-migration checks confirmed: all eight migrations applied; both SEI columns converted "
+    "to lists; row counts unchanged in every table; the two customers that had no location now "
+    "carry TO BE FILLED; and all four cases have at least one owner."
+)
+numbered(
+    "The database password was rotated and the connection string updated in the hosting "
+    "environment, then the application code was deployed."
+)
+
+h2("Still to do")
+numbered(
+    "Have an L6 populate the SEI names list under Admin > Settings. Until that is done the "
+    "field cannot be used."
+)
+numbered(
+    "Review the two customers showing TO BE FILLED as their location and give them a real one."
+)
+numbered(
+    "Rotate the database password again at a convenient point, since it was shared over chat "
+    "during deployment, and update it in the hosting environment at the same time."
 )
 
 para(
