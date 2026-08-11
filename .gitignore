@@ -17,3 +17,9 @@ pnpm-debug.log*
 
 .vercel
 .env*.local
+
+# Database backups produced by scripts/backup-database.mjs.
+# These contain the entire customer, contact, case and quotation dataset in
+# plain JSON, including uploaded quotation files. They must never be committed.
+backups/
+*.backup.json

@@ -1,8 +1,15 @@
 import type { CrmContext } from '../auth/context';
 import { accessLevel, caseOwners, caseVisible } from '../auth/access';
-import type { CaseRepository, CaseService } from '../cases/service';
+import type { CaseCustomerRow, CaseRepository, CaseService } from '../cases/service';
 import type { CustomerService } from '../customers/service';
-import { DEFAULT_SETTINGS } from '../settings/defaults';
+import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
+import {
+  DIRECT_EMAIL,
+  DIRECT_NAME,
+  DIRECT_VISIBLE_FROM_LEVEL,
+  directVirtualUser,
+  isDirect
+} from '../domain/direct';
 import { normalizeEmail } from '../domain/lists';
 import type { CaseRecord, CustomerRecord } from '../domain/types';
 
@@ -17,6 +24,7 @@ export type DashboardActivityRow = {
 
 export type DashboardRepository = CaseRepository & {
   listActivity(limit?: number): Promise<DashboardActivityRow[]>;
+  getCustomersByIds(ids: string[]): Promise<CaseCustomerRow[]>;
 };
 
 type DashboardDependencies = {
@@ -120,10 +128,14 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
     let won2wCount = 0;
     const ym = yearMonthNow();
 
+    // P9: Direct is a virtual account. It never appears in a case's owner set, so its
+    // dashboard is attributed by the customer's `handlers.user_email = 'direct'` rows.
+    const directSubject = isDirect(subjectEmail);
+
     for (const row of cases) {
       const customerName = customersById[row.customerId]?.name ?? row.customerId;
-      const owners = caseOwners(caseRecord(row), ownership);
-      const mine = owners.includes(subjectEmail);
+      const owners = caseOwners(caseRecord(row));
+      const mine = directSubject ? subjectHandles.has(row.customerId) : owners.includes(subjectEmail);
       if (mine && !row.outcome) {
         openMine.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage });
       }
@@ -175,11 +187,30 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
     };
     const out: Array<{ when: string; who: string; action: string; entity: string; details: string }> = [];
     const rows = activity.slice().sort((a, b) => String(b.when).localeCompare(String(a.when)));
+
+    // Every customerId a lookup might need is knowable up front, so fetch them all in one
+    // batched query rather than sequentially awaiting inside the filter loop below.
+    const isSelfRow = (row: DashboardActivityRow) =>
+      roleLevel(user) >= 4 || normalizeEmail(row.who) === normalizeEmail(user.email);
+    const neededCustomerIds = Array.from(
+      new Set(rows.filter((row) => !isSelfRow(row) && row.customerId).map((row) => row.customerId))
+    );
+    const customersById =
+      neededCustomerIds.length > 0
+        ? (await repo.getCustomersByIds(neededCustomerIds)).reduce<Record<string, Awaited<ReturnType<DashboardRepository['getCustomer']>>>>(
+            (map, customer) => {
+              if (customer) map[customer.id] = customer;
+              return map;
+            },
+            {}
+          )
+        : {};
+
     for (const row of rows) {
       if (out.length >= 14) break;
-      let ok = roleLevel(user) >= 4 || normalizeEmail(row.who) === normalizeEmail(user.email);
+      let ok = isSelfRow(row);
       if (!ok && row.customerId) {
-        const customer = await repo.getCustomer(row.customerId);
+        const customer = customersById[row.customerId];
         if (customer) {
           ok = accessLevel(user, customerRecord(customer), ownership) === 'FULL';
         }
@@ -210,16 +241,28 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
                 if (level >= 4) return true;
                 return roleLevel(candidate as CrmContext) === 2 && sharedTag(user, candidate);
               })
-              .map((candidate) => ({ email: candidate.email, name: candidate.name, role: candidate.role }))
+              .map((candidate) => ({
+                email: candidate.email,
+                name: candidate.name,
+                role: candidate.role,
+                hasLogin: true
+              }))
               .sort((a, b) => a.name.localeCompare(b.name))
           : [];
+
+      // P9: Direct is synthesised into the "view a user's dashboard" picker for L4+ only.
+      if (level >= DIRECT_VISIBLE_FROM_LEVEL) {
+        const direct = directVirtualUser();
+        peers.push({ email: direct.email, name: direct.name, role: direct.role, hasLogin: false });
+      }
 
       return {
         user: { email: normalizeEmail(user.email), name: user.name, role: user.role, level },
         settings: {
           stages: [...DEFAULT_SETTINGS.STAGES],
           outcomes: [...DEFAULT_SETTINGS.OUTCOMES],
-          tags: [...DEFAULT_SETTINGS.TAGS],
+          // P7: the backfill placeholder is recognised server-side but never offered.
+          tags: [...SELECTABLE_TAGS],
           types: [...DEFAULT_SETTINGS.TYPES],
           priorities: [...DEFAULT_SETTINGS.PRIORITIES],
           categories: [...DEFAULT_SETTINGS.CATEGORIES],
@@ -240,7 +283,26 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
     async dashboard(user: CrmContext, forEmail?: unknown) {
       const users = await repo.listUsers();
       const idx = userIndex(users);
-      const target = forEmail ? expandEmail(forEmail) : normalizeEmail(user.email);
+      // `direct` has no '@', so it must be recognised before expandEmail() appends a domain.
+      const target = isDirect(forEmail as string)
+        ? DIRECT_EMAIL
+        : forEmail
+          ? expandEmail(forEmail)
+          : normalizeEmail(user.email);
+
+      // P9: the Direct subject is virtual - it has no public.users row to validate against.
+      if (isDirect(target)) {
+        if (roleLevel(user) < DIRECT_VISIBLE_FROM_LEVEL) {
+          throw new Error(
+            `Your access level (${user.role}) does not allow this. It needs L${DIRECT_VISIBLE_FROM_LEVEL} or higher.`
+          );
+        }
+        return {
+          subject: { email: DIRECT_EMAIL, name: DIRECT_NAME, role: '' },
+          dash: await computeDash(DIRECT_EMAIL)
+        };
+      }
+
       if (target !== normalizeEmail(user.email)) {
         if (roleLevel(user) < 3) throw new Error('Your access level (L2) does not allow this. It needs L3 or higher.');
         const subject = idx[target];

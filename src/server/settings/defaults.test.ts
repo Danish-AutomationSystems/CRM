@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_SETTINGS, defaultSettingRows } from './defaults';
+import { DEFAULT_SETTINGS, SELECTABLE_TAGS, TAG_TO_BE_FILLED, defaultSettingRows } from './defaults';
 
 describe('DEFAULT_SETTINGS', () => {
   it('matches the Apps Script seeded CRM settings', () => {
     expect(DEFAULT_SETTINGS.STAGES).toEqual(['Lead', 'Opportunity', 'Quoted']);
     expect(DEFAULT_SETTINGS.OUTCOMES).toEqual(['Won', 'Lost', 'Hold']);
-    expect(DEFAULT_SETTINGS.TAGS).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other']);
+    // P7: TO BE FILLED is a RECOGNISED location so backfilled rows survive a later save.
+    expect(DEFAULT_SETTINGS.TAGS).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other', 'TO BE FILLED']);
     expect(DEFAULT_SETTINGS.PRIORITIES).toEqual(['High', 'Medium', 'Low']);
     expect(DEFAULT_SETTINGS.TAX_PCT).toBe(18);
     expect(DEFAULT_SETTINGS.CURRENCY).toBe('INR');
@@ -28,6 +29,13 @@ describe('DEFAULT_SETTINGS', () => {
       'Service',
       'Others'
     ]);
+  });
+
+  it('P7: never offers TO BE FILLED as a selectable location', () => {
+    expect(TAG_TO_BE_FILLED).toBe('TO BE FILLED');
+    expect(DEFAULT_SETTINGS.TAGS).toContain(TAG_TO_BE_FILLED);
+    expect(SELECTABLE_TAGS).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other']);
+    expect(SELECTABLE_TAGS).not.toContain(TAG_TO_BE_FILLED);
   });
 
   it('returns seed rows with list settings pipe-delimited', () => {

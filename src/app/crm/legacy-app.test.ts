@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { CrmApp } from './CrmApp';
 import { quoteDownloadActions } from './legacy-app';
-import { legacyAppScript } from './legacy-full.generated';
+import { legacyAppScript, legacyBodyHtml } from './legacy-full.generated';
 
 declare global {
   interface Window {
@@ -61,6 +61,94 @@ function workspace(role = 'L6') {
     boot: bootstrap(role),
     customers: { scope: 'mine', customers: [] },
     cases: []
+  };
+}
+
+/**
+ * Customer-grid metadata as workstream A now serves it: `seiNames` carries the
+ * admin-managed SEI list, `tags` already excludes the `TO BE FILLED` backfill
+ * placeholder, and every `customers[].sei` is an array rather than a string.
+ */
+function customerGrid(overrides: Record<string, unknown> = {}) {
+  return {
+    scope: 'all',
+    total: 1,
+    canEditPriority: true,
+    canEditClass: true,
+    canDelete: true,
+    tags: ['Punjab', 'Chandigarh'],
+    types: ['OEM', 'End User'],
+    priorities: ['High', 'Medium', 'Low'],
+    seiNames: ['Ravi Kumar', 'Anita Rao'],
+    customers: [
+      {
+        id: 'CUST-1',
+        name: 'Acme Controls',
+        tags: ['Punjab'],
+        type: 'OEM',
+        priority: 'High',
+        area: 'Mohali',
+        sei: ['Ravi Kumar'],
+        remarks: '',
+        contacts: 1,
+        handlers: []
+      }
+    ],
+    ...overrides
+  };
+}
+
+function gridWorkspace(role = 'L6') {
+  return { boot: bootstrap(role), customers: customerGrid(), cases: [] };
+}
+
+function customerDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    access: 'FULL',
+    customer: {
+      id: 'CUST-1',
+      name: 'Acme Controls',
+      tags: ['Punjab'],
+      type: 'OEM',
+      priority: 'High',
+      area: 'Mohali',
+      sei: ['Ravi Kumar', 'Anita Rao'],
+      remarks: '',
+      address: '',
+      gstin: '',
+      website: '',
+      notes: '',
+      status: '',
+      createdOn: '2026-07-01',
+      createdBy: 'admin@automationsystems.org'
+    },
+    handlers: [],
+    contacts: [],
+    cases: [],
+    quotes: [],
+    ...overrides
+  };
+}
+
+function caseDetail(ownerList: Array<Record<string, unknown>>) {
+  return {
+    customer: { id: 'CUST-1', name: 'Acme Controls' },
+    case: {
+      id: 'CASE-1',
+      title: 'Panel upgrade',
+      customerId: 'CUST-1',
+      stage: 'Lead',
+      outcome: '',
+      details: '',
+      orderValue: '',
+      wonCategories: [],
+      owners: ownerList.map((owner) => owner.name),
+      ownerList
+    },
+    canEdit: true,
+    canAssignTicket: true,
+    quotes: [],
+    history: []
   };
 }
 
@@ -295,6 +383,15 @@ describe('legacy CRM full client', () => {
     expect(screen.queryByRole('button', { name: 'Save to Drive' })).not.toBeInTheDocument();
   });
 
+  test('is syntactically valid JavaScript - the check whose absence let the generated artifact rot', () => {
+    // scripts/port-legacy-index.mjs's el(x).innerHTML/textContent -> setHtml/setText
+    // rewrite previously stopped scanning at the FIRST ';' in the assigned
+    // expression, silently emitting invalid JS whenever that expression
+    // contained a ';' inside a string, template literal, or nested callback
+    // body. This must never regress unnoticed again.
+    expect(() => new Function(legacyAppScript)).not.toThrow();
+  });
+
   test('does not leave generated inline handlers with HTML-escaped JavaScript string arguments', () => {
     const unsafeHandlerArguments = [...legacyAppScript.matchAll(/\\''\+esc\([^)]+\)\+'\\'/g)];
 
@@ -316,11 +413,26 @@ describe('legacy CRM full client', () => {
 
   test('does not retain Apps Script runtime references, scriptlets, or Drive UI copy', () => {
     const crmDir = path.join(process.cwd(), 'src', 'app', 'crm');
-    const source = fs
+    // legacy-full.generated.ts is excluded from the raw-file scan and checked
+    // via the already-imported, already-unescaped legacyAppScript/legacyBodyHtml
+    // strings instead - the file on disk stores the script as a single JSON
+    // string literal (real newlines escaped to literal "\n" sequences), so
+    // stripping full-line "//" developer comments (which legitimately may
+    // reference legacy terms while describing *why* the generator rewrites
+    // them, without leaving any actual untransformed UI copy behind) is only
+    // meaningful against the real, multi-line source text.
+    const rawSource = fs
       .readdirSync(crmDir)
-      .filter((file) => /\.(ts|tsx)$/.test(file) && !file.endsWith('.test.ts'))
+      .filter((file) => /\.(ts|tsx)$/.test(file) && !file.endsWith('.test.ts') && file !== 'legacy-full.generated.ts')
       .map((file) => fs.readFileSync(path.join(crmDir, file), 'utf8'))
       .join('\n');
+
+    const scriptWithoutComments = legacyAppScript
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    const source = rawSource + '\n' + legacyBodyHtml + '\n' + scriptWithoutComments;
 
     expect(source).not.toMatch(/google\.script\.run/);
     expect(source).not.toMatch(/<\?|\?>/);
@@ -539,6 +651,364 @@ describe('legacy CRM full client', () => {
 
       await screen.findByRole('heading', { name: 'New Name' });
       expect(screen.queryByRole('heading', { name: 'Old Name' })).not.toBeInTheDocument();
+    });
+  });
+
+  /* ------------------------------------------------------------------
+   * Manager-feedback points P5-P10 (workstream B, UI half).
+   * ---------------------------------------------------------------- */
+
+  describe('P5 - redundant dashboard buttons are gone', () => {
+    test('the L4 dashboard no longer duplicates the top nav with "+ New customer"', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L4');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Dashboard' });
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.querySelector('#dashWho, .sub')).toBeTruthy();
+      expect([...main.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('+ New customer');
+    });
+
+    test('the L5/L6 dashboard no longer duplicates the Customers and Cases nav buttons', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+
+      await screen.findByRole('heading', { name: 'Overview' });
+      const main = document.getElementById('main') as HTMLElement;
+      const labels = [...main.querySelectorAll('button')].map((b) => b.textContent);
+      expect(labels).not.toContain('Customers');
+      expect(labels).not.toContain('Cases');
+      // The Admin shortcut is not a nav duplicate for the manager's purposes
+      // (it is the same tab, but it was not one of the three called out) -
+      // keep it, and keep the real nav working.
+      expect(document.querySelector('#navCust')).toBeTruthy();
+      expect(document.querySelector('#navCases')).toBeTruthy();
+    });
+  });
+
+  describe('P6 - cases filter is two independent checkboxes', () => {
+    test('renders "Owned by me" and "Assigned to me" instead of a single "Mine only" box', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listCases') return [];
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("cases")');
+      await screen.findByRole('heading', { name: 'Cases' });
+
+      expect(document.getElementById('cf_owned')).toBeTruthy();
+      expect(document.getElementById('cf_assigned')).toBeTruthy();
+      expect(document.getElementById('cf_mine')).toBeNull();
+      expect(document.getElementById('main')?.textContent).toContain('Owned by me');
+      expect(document.getElementById('main')?.textContent).toContain('Assigned to me');
+      expect(document.getElementById('main')?.textContent).not.toContain('Mine only');
+    });
+
+    test('each checkbox maps to its own server filter flag and both are OR-combined', async () => {
+      const listCalls: unknown[][] = [];
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listCases') {
+          listCalls.push(args);
+          return [];
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("cases")');
+      await screen.findByRole('heading', { name: 'Cases' });
+
+      window.eval('document.getElementById("cf_owned").checked = true; applyCaseF();');
+      await waitFor(() => expect(listCalls.length).toBeGreaterThan(0));
+      expect(listCalls.at(-1)?.[0]).toMatchObject({ owned: true, assigned: false });
+
+      window.eval('document.getElementById("cf_assigned").checked = true; applyCaseF();');
+      await waitFor(() => expect(listCalls.at(-1)?.[0]).toMatchObject({ owned: true, assigned: true }));
+
+      window.eval(
+        'document.getElementById("cf_owned").checked = false; document.getElementById("cf_assigned").checked = false; applyCaseF();'
+      );
+      await waitFor(() => expect(listCalls.at(-1)?.[0]).toMatchObject({ owned: false, assigned: false }));
+    });
+
+    test('checkboxes are exempted from the global full-width input rule that inflated them', () => {
+      const css = fs.readFileSync(path.join(process.cwd(), 'src', 'app', 'crm', 'legacy-full-ui.css'), 'utf8');
+
+      expect(css).toMatch(/input\[type=checkbox\]/);
+      // The inline style="width:auto" this replaces lost to `.filterbar input`
+      // (same specificity, defined later). The real fix must therefore both
+      // out-specify AND out-order that rule.
+      expect(css.indexOf('.filterbar input[type=checkbox]')).toBeGreaterThan(css.indexOf('.filterbar input,.filterbar select'));
+    });
+  });
+
+  describe('P7 - location is mandatory, first, and never called "tag"', () => {
+    test('the create-customer modal puts Location directly under Name and marks it required', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('mNewCustomer("Acme Controls")');
+
+      const body = document.getElementById('mbody') as HTMLElement;
+      const name = body.querySelector('#f_name') as HTMLElement;
+      const tags = body.querySelector('#f_tags') as HTMLElement;
+      expect(name).toBeTruthy();
+      expect(tags).toBeTruthy();
+      // Location sits after Name and before every other field.
+      expect(name.compareDocumentPosition(tags) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const area = body.querySelector('#f_area') as HTMLElement;
+      expect(tags.compareDocumentPosition(area) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      const locationLabel = [...body.querySelectorAll('label')].find((l) => l.textContent?.trim() === 'Location');
+      expect(locationLabel).toBeTruthy();
+      expect(locationLabel?.className).toContain('req');
+      expect(body.textContent).not.toMatch(/\bTags?\b/);
+    });
+
+    test('saving a new customer with no location is refused client-side, matching the server', async () => {
+      const calls: string[] = [];
+      mockRpc((fn) => {
+        calls.push(fn);
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_createCustomer') return { id: 'CUST-2' };
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('mNewCustomer("Acme Controls")');
+      window.eval('saveNewCustomer(false)');
+
+      expect(calls).not.toContain('api_createCustomer');
+      expect(document.getElementById('toast')?.textContent).toMatch(/location/i);
+
+      window.eval('document.querySelector("#f_tags button").className = "on"; saveNewCustomer(false)');
+      await waitFor(() => expect(calls).toContain('api_createCustomer'));
+    });
+
+    test('the customer grid, search box and restricted view all say Location, never Tag', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_allCustomers') return customerGrid();
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customers")');
+      await screen.findByRole('heading', { name: 'Customers' });
+      await waitFor(() => expect(document.querySelector('table.grid')).toBeTruthy());
+
+      const headers = [...document.querySelectorAll('table.grid th')].map((th) => th.textContent);
+      expect(headers).toContain('Location');
+      expect(headers).not.toContain('Tag');
+      expect((document.getElementById('custQ') as HTMLInputElement).placeholder).toMatch(/location/i);
+      expect((document.getElementById('custQ') as HTMLInputElement).placeholder).not.toMatch(/\btag\b/i);
+    });
+  });
+
+  describe('P8 - SEI is an optional dropdown multi-select over the admin list', () => {
+    test('the grid cell is a multi-select of seiNames, not a free-text input', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_allCustomers') return customerGrid();
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customers")');
+      await waitFor(() => expect(document.querySelector('table.grid')).toBeTruthy());
+
+      const sei = document.querySelector('table.grid select.sei') as HTMLSelectElement;
+      expect(sei).toBeTruthy();
+      expect(sei.multiple).toBe(true);
+      expect([...sei.options].map((o) => o.value)).toEqual(['Ravi Kumar', 'Anita Rao']);
+      expect([...sei.selectedOptions].map((o) => o.value)).toEqual(['Ravi Kumar']);
+      // Deliberately NOT the pill/tagpick style used by locations.
+      expect(sei.closest('td')?.querySelector('.tagpick')).toBeNull();
+    });
+
+    test('SEI round-trips as an array, and zero selections is valid', async () => {
+      const patches: unknown[] = [];
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_allCustomers') return customerGrid();
+        if (fn === 'api_saveCustomerCells') {
+          patches.push(args[0]);
+          return { saved: ['CUST-1'], failed: [] };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customers")');
+      await waitFor(() => expect(document.querySelector('table.grid select.sei')).toBeTruthy());
+
+      window.eval(
+        'var s=document.querySelector("table.grid select.sei"); s.options[0].selected=false; s.options[1].selected=true; cellSaveMulti("CUST-1","sei",s); flushCells();'
+      );
+
+      await waitFor(() => expect(patches.length).toBe(1));
+      expect(patches[0]).toEqual([{ id: 'CUST-1', fields: { sei: ['Anita Rao'] } }]);
+
+      window.eval(
+        'var s2=document.querySelector("table.grid select.sei"); s2.options[1].selected=false; cellSaveMulti("CUST-1","sei",s2); flushCells();'
+      );
+      await waitFor(() => expect(patches.length).toBe(2));
+      expect(patches[1]).toEqual([{ id: 'CUST-1', fields: { sei: [] } }]);
+    });
+
+    test('the customer detail view lists every SEI name instead of printing an array', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCustomer') return customerDetail();
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Acme Controls' });
+
+      expect(document.getElementById('main')?.textContent).toContain('Ravi Kumar, Anita Rao');
+    });
+  });
+
+  describe('P9 - Direct is a special, non-removable handler', () => {
+    test('a Direct handler renders with no Remove button and no email address', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCustomer') {
+          return customerDetail({ handlers: [{ email: 'direct', name: 'Direct' }] });
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Acme Controls' });
+
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.textContent).toContain('Direct');
+      expect(main.textContent).not.toContain('direct@');
+      expect([...main.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Remove');
+    });
+
+    test('a real handler keeps its Remove button', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCustomer') {
+          return customerDetail({ handlers: [{ email: 'sales@automationsystems.org', name: 'Sales User' }] });
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Acme Controls' });
+
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.textContent).toContain('sales@automationsystems.org');
+      expect([...main.querySelectorAll('button')].map((b) => b.textContent)).toContain('Remove');
+    });
+
+    test('Direct appears in the dashboard picker as a login-less account', async () => {
+      const boot = bootstrap('L6');
+      boot.peers = [
+        { email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2', hasLogin: true },
+        { email: 'direct', name: 'Direct', role: 'L2', hasLogin: false }
+      ] as never;
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return { boot, customers: customerGrid(), cases: [] };
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+
+      const picker = document.getElementById('dashWho') as HTMLSelectElement;
+      expect(picker).toBeTruthy();
+      const direct = [...picker.options].find((o) => o.value === 'direct');
+      expect(direct).toBeTruthy();
+      expect(direct?.textContent).toBe('Direct (no login)');
+    });
+  });
+
+  describe('P10 - case owners are labelled by why they own the case', () => {
+    test('a creator-sourced owner is not described as the account handler', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'admin@automationsystems.org', name: 'Admin User' }];
+        if (fn === 'api_getCase') {
+          return caseDetail([
+            { email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }
+          ]);
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+      window.eval('mOwners()');
+
+      await waitFor(() => expect(document.getElementById('mbody')?.textContent).toContain('Admin User'));
+      const body = document.getElementById('mbody')?.textContent ?? '';
+      expect(body).toMatch(/created this case/i);
+      expect(body).not.toMatch(/account handler — owner of every case/);
+    });
+
+    test('handler, creator and manual owners each get their own wording', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'admin@automationsystems.org', name: 'Admin User' }];
+        if (fn === 'api_getCase') {
+          return caseDetail([
+            { email: 'handler@automationsystems.org', name: 'Handler User', source: 'handler', removable: false },
+            { email: 'creator@automationsystems.org', name: 'Creator User', source: 'creator', removable: true },
+            { email: 'added@automationsystems.org', name: 'Added User', source: 'manual', removable: true }
+          ]);
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+      window.eval('mOwners()');
+
+      await waitFor(() => expect(document.getElementById('mbody')?.textContent).toContain('Handler User'));
+      const rows = [...(document.getElementById('mbody')?.querySelectorAll('.qr') ?? [])].map((r) => r.textContent ?? '');
+      expect(rows[0]).toMatch(/account handler — owner of every case on the account/);
+      expect(rows[1]).toMatch(/created this case/i);
+      expect(rows[2]).toMatch(/added to this case/i);
+      // Only the non-removable handler loses its remove control.
+      expect(rows[0]).not.toMatch(/remove/i);
+      expect(rows[1]).toMatch(/remove/i);
+      expect(rows[2]).toMatch(/remove/i);
     });
   });
 });

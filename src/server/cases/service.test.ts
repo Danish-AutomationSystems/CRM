@@ -123,7 +123,7 @@ function customer(overrides: Partial<NonNullable<CustomerRow>> = {}): NonNullabl
     gstin: '03AAAAA0000A1Z5',
     website: 'https://alpha.example',
     notes: 'Sensitive customer notes',
-    sei: '',
+    sei: [],
     remarks: '',
     status: 'Active',
     createdBy: sales.email,
@@ -182,7 +182,7 @@ function makeService() {
 }
 
 describe('case service ownership and assignment', () => {
-  it('derives owners from handlers plus extras and uses stored owner only as fallback', async () => {
+  it('P11: seeds owners from the real handlers at creation and stores them on the case', async () => {
     const { repo, service } = makeService();
     repo.handlers.push({ customerId: 'CUST-0001', email: 'other@automationsystems.org', assignedBy: sales.email, assignedAt: 'now' });
 
@@ -191,6 +191,12 @@ describe('case service ownership and assignment', () => {
       stage: 'Opportunity',
       assignee: 'worker'
     });
+
+    expect(repo.cases.find((row) => row.id === created.id)?.extraOwners).toEqual([
+      sales.email,
+      'other@automationsystems.org'
+    ]);
+
     await service.addCaseOwner(sales, created.id, 'manager');
     const full = await service.getCase(sales, created.id);
 
@@ -200,14 +206,67 @@ describe('case service ownership and assignment', () => {
       'manager@automationsystems.org'
     ]);
     expect(full.case.ownerList).toEqual([
-      expect.objectContaining({ email: sales.email, removable: false }),
-      expect.objectContaining({ email: 'other@automationsystems.org', removable: false }),
-      expect.objectContaining({ email: 'manager@automationsystems.org', removable: true })
+      { email: sales.email, name: sales.name, source: 'handler', removable: false },
+      { email: 'other@automationsystems.org', name: 'Other Sales', source: 'handler', removable: false },
+      { email: 'manager@automationsystems.org', name: 'Manager User', source: 'manual', removable: true }
     ]);
 
+    // P11: dropping the handler rows must NOT change who owns the case.
     repo.handlers = [];
-    const fallback = await service.getCase({ ...sales, role: 'L4' }, created.id);
-    expect(fallback.case.ownerEmails).toEqual([sales.email, 'manager@automationsystems.org']);
+    const afterHandlerRemoval = await service.getCase({ ...sales, role: 'L4' }, created.id);
+    expect(afterHandlerRemoval.case.ownerEmails).toEqual([
+      sales.email,
+      'other@automationsystems.org',
+      'manager@automationsystems.org'
+    ]);
+    // ...but they are no longer labelled as account handlers, so they become removable.
+    expect(afterHandlerRemoval.case.ownerList.map((owner) => owner.source)).toEqual([
+      'creator',
+      'manual',
+      'manual'
+    ]);
+  });
+
+  it('P10: a case created on a Direct-handled customer labels the creator as creator, not handler', async () => {
+    const { repo, service } = makeService();
+    // Exactly the reported scenario: an L6 creates the customer, so the handler is Direct.
+    repo.handlers = [{ customerId: 'CUST-0001', email: 'direct', assignedBy: 'admin@automationsystems.org', assignedAt: 'now' }];
+    repo.users.push(user({ email: 'admin@automationsystems.org', name: 'Admin User', role: 'L6', allowedTags: ['*'] }));
+    const admin: CrmContext = { ...sales, email: 'admin@automationsystems.org', name: 'Admin User', role: 'L6', allowedTags: ['*'] };
+
+    const created = await service.createCase(admin, 'CUST-0001', { title: 'Direct enquiry', assignee: 'worker' });
+    const full = await service.getCase(admin, created.id);
+
+    expect(full.case.ownerEmails).toEqual([admin.email]);
+    expect(full.case.ownerList).toEqual([
+      { email: admin.email, name: 'Admin User', source: 'creator', removable: false }
+    ]);
+    // The creator is NOT an account handler, so the handler-specific refusal must not fire...
+    await expect(service.removeCaseOwner(admin, created.id, admin.email)).rejects.toThrow(
+      'at least one owner'
+    );
+    // ...and once a second owner exists, the creator can be removed.
+    await service.addCaseOwner(admin, created.id, 'manager');
+    await service.removeCaseOwner(admin, created.id, admin.email);
+    expect(repo.cases.find((row) => row.id === created.id)?.extraOwners).toEqual([
+      'manager@automationsystems.org'
+    ]);
+  });
+
+  it('refuses to remove an account handler from a case and refuses to empty the owner list', async () => {
+    const { repo, service } = makeService();
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Solo case', assignee: 'worker' });
+
+    await expect(service.removeCaseOwner(sales, created.id, sales.email)).rejects.toThrow('at least one owner');
+
+    await service.addCaseOwner(sales, created.id, 'manager');
+    await expect(service.removeCaseOwner(sales, created.id, sales.email)).rejects.toThrow(
+      'Account handlers are owners of every case'
+    );
+    expect(repo.cases.find((row) => row.id === created.id)?.extraOwners).toEqual([
+      sales.email,
+      'manager@automationsystems.org'
+    ]);
   });
 
   it('lets any visible open case be reassigned to any active user and blocks inactive targets', async () => {
@@ -219,6 +278,40 @@ describe('case service ownership and assignment', () => {
     expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'inactive')).rejects.toThrow('not an active CRM user');
+  });
+});
+
+describe('case service assignable users', () => {
+  it('P1: an L5/L6 who may not be an account handler is still eligible as case owner and assignee', async () => {
+    const { repo, service } = makeService();
+    repo.users.push(user({ email: 'l5@automationsystems.org', name: 'L5 User', role: 'L5', allowedTags: ['*'] }));
+    repo.users.push(user({ email: 'l6@automationsystems.org', name: 'L6 User', role: 'L6', allowedTags: ['*'] }));
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Backend help', assignee: 'worker' });
+
+    await service.addCaseOwner(sales, created.id, 'l5');
+    await service.addCaseOwner(sales, created.id, 'l6');
+    const assigned = await service.assignTicket(sales, created.id, 'l5');
+
+    expect(repo.cases.find((row) => row.id === created.id)?.extraOwners).toEqual([
+      sales.email,
+      'l5@automationsystems.org',
+      'l6@automationsystems.org'
+    ]);
+    expect(assigned).toMatchObject({ ok: true, assigneeEmail: 'l5@automationsystems.org' });
+    expect((await service.listAssignableUsers(sales)).map((row) => row.email)).toEqual(
+      expect.arrayContaining(['l5@automationsystems.org', 'l6@automationsystems.org'])
+    );
+  });
+
+  it('P9: never offers the virtual Direct account as a ticket assignee', async () => {
+    const { repo, service } = makeService();
+    // Even if a 'direct' row somehow reached public.users, it can never hold a ticket.
+    repo.users.push(user({ email: 'direct', name: 'Direct', role: 'L2', allowedTags: ['*'] }));
+
+    const assignable = await service.listAssignableUsers(sales);
+
+    expect(assignable.map((row) => row.email)).not.toContain('direct');
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'direct')).rejects.toThrow();
   });
 });
 
@@ -319,6 +412,58 @@ describe('case reads, lists, and quick log', () => {
     expect(mine).toHaveLength(300);
     expect(mine.some((row) => row.id === 'CASE-2026-0002')).toBe(false);
     expect(mine.every((row) => row.assignee !== '')).toBe(true);
+  });
+
+  it('P6: filters by owned, assigned, both (OR) and neither', async () => {
+    const { repo, service } = makeService();
+    // A fixture where the owned set and the assigned set genuinely differ.
+    repo.cases = [
+      // owned only
+      caseRow({ id: 'CASE-2026-0001', extraOwners: [sales.email], assignee: 'other@automationsystems.org' }),
+      // assigned only
+      caseRow({
+        id: 'CASE-2026-0002',
+        owner: 'other@automationsystems.org',
+        extraOwners: ['other@automationsystems.org'],
+        assignee: sales.email
+      }),
+      // both
+      caseRow({ id: 'CASE-2026-0003', extraOwners: [sales.email], assignee: sales.email }),
+      // neither (visible only because sales is an account handler of CUST-0001)
+      caseRow({
+        id: 'CASE-2026-0004',
+        owner: 'other@automationsystems.org',
+        extraOwners: ['other@automationsystems.org'],
+        assignee: 'other@automationsystems.org'
+      })
+    ];
+
+    const ids = async (filter: Record<string, unknown>) =>
+      (await service.listCases(sales, filter)).map((row) => row.id).sort();
+
+    expect(await ids({ owned: true })).toEqual(['CASE-2026-0001', 'CASE-2026-0003']);
+    expect(await ids({ assigned: true })).toEqual(['CASE-2026-0002', 'CASE-2026-0003']);
+    // OR, not AND.
+    expect(await ids({ owned: true, assigned: true })).toEqual([
+      'CASE-2026-0001',
+      'CASE-2026-0002',
+      'CASE-2026-0003'
+    ]);
+    // Neither set: every visible case, i.e. today's behaviour.
+    expect(await ids({})).toEqual([
+      'CASE-2026-0001',
+      'CASE-2026-0002',
+      'CASE-2026-0003',
+      'CASE-2026-0004'
+    ]);
+    expect(await ids({ owned: false, assigned: false })).toHaveLength(4);
+    // Legacy in-flight clients send `mine`, which must keep behaving as `owned`.
+    expect(await ids({ mine: true })).toEqual(['CASE-2026-0001', 'CASE-2026-0003']);
+    expect(await ids({ mine: true, assigned: true })).toEqual([
+      'CASE-2026-0001',
+      'CASE-2026-0002',
+      'CASE-2026-0003'
+    ]);
   });
 
   it('quick-log creates new customers with handlers, reuses duplicate names, and blocks inaccessible existing customers', async () => {

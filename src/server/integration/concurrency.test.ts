@@ -201,6 +201,24 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     this.handlers = this.handlers.filter((row) => !(row.customerId === customerId && row.email === 'direct'));
   }
 
+  settingRows: Record<string, string> = {};
+
+  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
+    return this.cases
+      .filter((row) => row.customerId === customerId)
+      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
+  }
+
+  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
+    const row = this.cases.find((item) => item.id === caseId);
+    if (!row) throw new Error('missing test case');
+    row.extraOwners = extraOwners;
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    return this.settingRows[key] ?? null;
+  }
+
   async listUsers(): Promise<UserRow[]> {
     return this.users;
   }
@@ -303,7 +321,7 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
       gstin: '',
       website: '',
       notes: '',
-      sei: '',
+      sei: [],
       remarks: '',
       status: 'Active',
       createdBy: sales.email,

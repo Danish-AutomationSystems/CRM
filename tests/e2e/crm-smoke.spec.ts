@@ -57,7 +57,11 @@ function bootPayload() {
       company: 'Automation Systems NG Pvt Ltd'
     },
     nav: { admin: true },
-    peers: [{ email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2' }],
+    peers: [
+      { email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2', hasLogin: true },
+      // P9: the virtual Direct account now rides along in the picker for L4+.
+      { email: 'direct', name: 'Direct', role: 'L2', hasLogin: false }
+    ],
     self: {
       stats: {
         myCustomers: 4,
@@ -94,7 +98,8 @@ const customerSummary = {
   type: 'OEM',
   priority: 'High',
   area: 'Mohali',
-  sei: '',
+  // P8: sei is a string[] now, not free text.
+  sei: ['Ravi Kumar'],
   remarks: '',
   contacts: 1,
   handlers: [{ name: 'Playwright Admin', email: 'playwright@automationsystems.org' }]
@@ -111,7 +116,7 @@ function customerDetailPayload() {
       priority: customerSummary.priority,
       status: '',
       area: customerSummary.area,
-      sei: '',
+      sei: customerSummary.sei,
       remarks: '',
       address: '',
       gstin: '',
@@ -156,7 +161,9 @@ function rpcData(fn: string) {
         canDelete: true,
         tags: ['Punjab', 'Chandigarh', 'NCR'],
         types: ['OEM', 'End User'],
-        priorities: ['High', 'Medium', 'Low']
+        priorities: ['High', 'Medium', 'Low'],
+        // P8: the admin-managed SEI list the grid dropdown is built from.
+        seiNames: ['Ravi Kumar', 'Anita Rao']
       };
     case 'api_getCustomer':
       return customerDetailPayload();
@@ -170,7 +177,11 @@ function rpcData(fn: string) {
           customerId: 'CUST-2026-0001',
           details: 'Replace panel controls',
           orderValue: '',
-          wonCategories: []
+          wonCategories: [],
+          // P10: owners now say WHY they own the case.
+          ownerList: [
+            { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+          ]
         },
         canEdit: true,
         canAssignTicket: true,
@@ -215,6 +226,13 @@ function rpcData(fn: string) {
         blocks: [{ title: 'Items', headers: ['Item', 'Amount'], rows: [['Panel upgrade', '120000']] }],
         revisions: [{ quoteNo: 'QTN-2026-0001', rev: 0, status: 'Sent', date: '2026-07-29', total: 120000 }]
       };
+    // The Case-owners modal builds its "add another owner" picker from this, so
+    // the modal renders empty without it - which is what made the P10 test fail.
+    case 'api_listAssignableUsers':
+      return [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', role: 'L6' },
+        { email: 'sales@automationsystems.org', name: 'Sales User', role: 'L2' }
+      ];
     case 'api_admin_listUsers':
       return [boot.user];
     case 'api_admin_links':
@@ -320,7 +338,7 @@ test('mocked authenticated session renders critical CRM route containers', async
   await page.getByRole('button', { name: 'Customers' }).first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
   await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
-  await expect(page.getByPlaceholder('Search customers by name, tag, type or area…')).toBeVisible();
+  await expect(page.getByPlaceholder('Search customers by name, location, type or area…')).toBeVisible();
   await expect(page.locator('table.grid input.ce').first()).toHaveValue(customerSummary.name);
 
   await page.getByRole('button', { name: 'Cases' }).click();
@@ -731,4 +749,140 @@ test('generating a quotation surfaces real Drive document links and hides Save t
     'https://drive.google.com/file/d/pdf-1/view'
   );
   await expect(page.getByRole('button', { name: 'Save to Drive' })).toHaveCount(0);
+});
+
+/* --------------------------------------------------------------------------
+ * Manager-feedback points P5-P10 (workstream B, UI half).
+ * ------------------------------------------------------------------------ */
+
+test('P5 - the dashboard no longer duplicates the Customers and Cases nav buttons', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm');
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+
+  const main = page.locator('#main');
+  await expect(main.getByRole('button', { name: 'Customers', exact: true })).toHaveCount(0);
+  await expect(main.getByRole('button', { name: 'Cases', exact: true })).toHaveCount(0);
+  await expect(main.getByRole('button', { name: '+ New customer' })).toHaveCount(0);
+
+  // The top nav still routes to both.
+  await page.locator('#nav').getByRole('button', { name: 'Customers' }).click();
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
+  await page.locator('#nav').getByRole('button', { name: 'Cases' }).click();
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
+});
+
+test('P6 - the cases filter renders two normal-sized checkboxes, not one oversized box', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/cases');
+  await expect(page.getByRole('heading', { name: 'Cases' })).toBeVisible();
+
+  const owned = page.locator('#cf_owned');
+  const assigned = page.locator('#cf_assigned');
+  await expect(owned).toBeVisible();
+  await expect(assigned).toBeVisible();
+  await expect(page.locator('#cf_mine')).toHaveCount(0);
+
+  // The bug was purely visual: the global `input{width:100%;min-height:40px}`
+  // rule plus `.filterbar input{min-width:140px}` turned it into a slab.
+  const box = await owned.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeLessThan(30);
+  expect(box!.height).toBeLessThan(30);
+
+  await owned.check();
+  await expect(owned).toBeChecked();
+  await assigned.check();
+  await expect(assigned).toBeChecked();
+  // Independent, not a radio pair.
+  await owned.uncheck();
+  await expect(assigned).toBeChecked();
+});
+
+test('P7 - the customer UI says Location, and the create modal puts it under Name', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/customers');
+  await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
+  await expect(page.locator('table.grid th', { hasText: 'Location' }).first()).toBeVisible();
+  await expect(page.locator('table.grid th').filter({ hasText: /^Tag$/ })).toHaveCount(0);
+
+  await page.evaluate(() => (window as unknown as { mNewCustomer: (n: string) => void }).mNewCustomer('New Co'));
+  const body = page.locator('#mbody');
+  await expect(body.locator('label.req', { hasText: 'Location' })).toBeVisible();
+
+  const nameTop = (await body.locator('#f_name').boundingBox())!.y;
+  const locationTop = (await body.locator('#f_tags').boundingBox())!.y;
+  const areaTop = (await body.locator('#f_area').boundingBox())!.y;
+  expect(locationTop).toBeGreaterThan(nameTop);
+  expect(areaTop).toBeGreaterThan(locationTop);
+
+  // Mandatory: saving with no location never reaches the server.
+  await page.getByRole('button', { name: 'Save customer' }).click();
+  await expect(page.locator('#toast')).toContainText(/location/i);
+});
+
+test('P8 - SEI is a dropdown multi-select over the admin list, not a text box', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/customers');
+  const sei = page.locator('table.grid select.sei').first();
+  await expect(sei).toBeVisible();
+  await expect(sei).toHaveAttribute('multiple', '');
+  await expect(sei.locator('option')).toHaveCount(2);
+  // Deliberately NOT the pill/tagpick control used by locations.
+  await expect(page.locator('table.grid .tagpick')).toHaveCount(0);
+});
+
+test('P9 - a Direct handler has no Remove button and no email address', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await context.addCookies([
+    {
+      name: storageCookieName,
+      value: JSON.stringify(createFakeSession()),
+      domain: '127.0.0.1',
+      path: '/',
+      sameSite: 'Lax',
+      httpOnly: false,
+      secure: false,
+      expires: Math.floor(Date.now() / 1000) + 60 * 60
+    }
+  ]);
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string };
+    const data =
+      body.fn === 'api_getCustomer'
+        ? { ...customerDetailPayload(), handlers: [{ email: 'direct', name: 'Direct' }] }
+        : rpcData(body.fn);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+  });
+
+  await page.goto('/crm/customer/CUST-2026-0001');
+  const handlers = page.locator('.card', { has: page.getByText('Account handlers') });
+  await expect(handlers.getByText('Direct', { exact: true })).toBeVisible();
+  await expect(handlers.getByRole('button', { name: 'Remove' })).toHaveCount(0);
+  await expect(handlers).not.toContainText('direct@');
+
+  // Direct is offered in the dashboard picker, flagged as login-less.
+  await page.goto('/crm');
+  await expect(page.locator('#dashWho option[value="direct"]')).toHaveText('Direct (no login)');
+});
+
+test('P10 - a case creator is not mislabelled as the account handler', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/case/CASE-2026-0001');
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+  await page.getByRole('button', { name: 'manage' }).click();
+
+  const body = page.locator('#mbody');
+  await expect(body).toContainText('created this case');
+  await expect(body).not.toContainText('account handler — owner of every case on the account');
 });

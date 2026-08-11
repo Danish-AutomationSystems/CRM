@@ -5,6 +5,8 @@ import type { CrmContext } from '../auth/context';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS, CRM_ROLES, CRM_TABLES, type CrmRole } from '../db/schema';
+import { DIRECT_EMAIL, directVirtualUser, isDirect } from '../domain/direct';
+import { isBackendRole } from '../customers/service';
 import { joinPipe, normalizeEmail, parseList, parsePipe } from '../domain/lists';
 import { DEFAULT_SETTINGS, type DefaultSettingKey } from '../settings/defaults';
 
@@ -31,7 +33,7 @@ export type AdminCustomerRow = {
   gstin: string;
   website: string;
   notes: string;
-  sei: string;
+  sei: string[];
   remarks: string;
   status: 'Active' | 'Archived';
   createdBy: string;
@@ -147,6 +149,7 @@ export type SaveSettingsInput = Partial<{
   types: unknown;
   priorities: unknown;
   categories: unknown;
+  seiNames: unknown;
   sources: unknown;
   taxPct: unknown;
   currency: unknown;
@@ -187,7 +190,7 @@ type CustomerDbRow = {
   gstin: string | null;
   website: string | null;
   notes: string | null;
-  sei: string | null;
+  sei: string[] | null;
   remarks: string | null;
   status: 'Active' | 'Archived';
   created_by: string | null;
@@ -281,6 +284,9 @@ function normalizeRole(value: unknown): CrmRole {
 }
 
 function assertEmail(email: string): void {
+  if (isDirect(email)) {
+    throw new Error('Direct is a built-in placeholder account and cannot be created or edited.');
+  }
   if (!email || !email.includes('@')) {
     throw new Error('Enter a valid email address.');
   }
@@ -358,7 +364,7 @@ function toCustomer(row: CustomerDbRow): AdminCustomerRow {
     gstin: row.gstin ?? '',
     website: row.website ?? '',
     notes: row.notes ?? '',
-    sei: row.sei ?? '',
+    sei: row.sei ?? [],
     remarks: row.remarks ?? '',
     status: row.status,
     createdBy: normalizeEmail(row.created_by),
@@ -435,14 +441,31 @@ export function createAdminService(repo: AdminRepository) {
   return {
     async listUsers(user: CrmContext) {
       ensureAdmin(user);
-      return sortUsers(await repo.listUsers()).map((row) => ({
-        email: row.email,
-        name: row.name,
-        role: row.role,
-        allowedTags: row.allowedTags,
-        active: row.active,
-        addedOn: row.addedOn
-      }));
+      const direct = directVirtualUser();
+      return [
+        ...sortUsers(await repo.listUsers())
+          .filter((row) => !isDirect(row.email))
+          .map((row) => ({
+            email: row.email,
+            name: row.name,
+            role: row.role,
+            allowedTags: row.allowedTags,
+            active: row.active,
+            addedOn: row.addedOn,
+            hasLogin: true
+          })),
+        // P9: Direct is synthesised, never a public.users row (the table's CHECK constraint
+        // forbids it). It is listed so an admin can see which accounts sit under it.
+        {
+          email: direct.email as string,
+          name: direct.name as string,
+          role: direct.role,
+          allowedTags: direct.allowedTags,
+          active: direct.active,
+          addedOn: '',
+          hasLogin: false
+        }
+      ];
     },
 
     async saveUser(user: CrmContext, input: SaveUserInput) {
@@ -511,6 +534,10 @@ export function createAdminService(repo: AdminRepository) {
       if (input.categories !== undefined) {
         writes.push({ key: 'CATEGORIES', value: joinPipe(cleanList(input.categories)) });
       }
+      // P8: the SEI name list is admin-managed and may legitimately be empty.
+      if (input.seiNames !== undefined) {
+        writes.push({ key: 'SEI_NAMES', value: joinPipe(cleanList(input.seiNames)) });
+      }
       if (input.sources !== undefined) writes.push({ key: 'SOURCES', value: joinPipe(cleanList(input.sources)) });
       if (input.taxPct !== undefined) {
         const taxPct = Number(input.taxPct) || 0;
@@ -576,6 +603,9 @@ export function createAdminService(repo: AdminRepository) {
         const activeUsers = new Set(
           users.filter((row) => row.active).map((row) => normalizeEmail(row.email))
         );
+        const backendUsers = new Set(
+          users.filter((row) => isBackendRole(row.role)).map((row) => normalizeEmail(row.email))
+        );
 
         let created = 0;
         const skipped: string[] = [];
@@ -605,7 +635,7 @@ export function createAdminService(repo: AdminRepository) {
             gstin: asText(row.gstin),
             website: '',
             notes: '',
-            sei: '',
+            sei: [],
             remarks: '',
             status: 'Active',
             createdBy: actor,
@@ -629,8 +659,14 @@ export function createAdminService(repo: AdminRepository) {
             });
           }
 
-          const handlerEmails = parseList(row.handlers).map(normalizeEmail).filter((email) => activeUsers.has(email));
-          const assignedHandlers = handlerEmails.length ? handlerEmails : [actor];
+          // P1: never create an L5/L6 handler row - not from the sheet, and not by defaulting
+          // to the (L6) admin running the import. Such customers become Direct instead.
+          const handlerEmails = parseList(row.handlers)
+            .map(normalizeEmail)
+            .filter((email) => activeUsers.has(email) && !backendUsers.has(email));
+          const assignedHandlers = handlerEmails.length
+            ? handlerEmails
+            : [isBackendRole(user.role) ? DIRECT_EMAIL : actor];
           for (const handlerEmail of assignedHandlers) {
             await trx.addHandler({
               customerId,

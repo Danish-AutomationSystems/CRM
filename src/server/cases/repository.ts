@@ -29,7 +29,7 @@ type CustomerDbRow = {
   gstin: string | null;
   website: string | null;
   notes: string | null;
-  sei: string | null;
+  sei: string[] | null;
   remarks: string | null;
   status: 'Active' | 'Archived';
   created_by: string | null;
@@ -109,7 +109,7 @@ function toCustomer(row: CustomerDbRow): CaseCustomerRow {
     gstin: row.gstin ?? '',
     website: row.website ?? '',
     notes: row.notes ?? '',
-    sei: row.sei ?? '',
+    sei: row.sei ?? [],
     remarks: row.remarks ?? '',
     status: row.status,
     createdBy: row.created_by ?? '',
@@ -226,6 +226,18 @@ export class PostgresCaseRepository implements CaseRepository {
     `) as CustomerDbRow[];
 
     return rows[0] ? toCustomer(rows[0]) : null;
+  }
+
+  async getCustomersByIds(ids: string[]): Promise<CaseCustomerRow[]> {
+    if (ids.length === 0) return [];
+    const rows = (await this.db`
+      select customer_id, name, tags, type, priority, area, address, gstin, website, notes,
+             sei, remarks, status, created_by, created_at, updated_at
+      from public.customers
+      where customer_id in ${this.db(ids)}
+    `) as CustomerDbRow[];
+
+    return rows.map(toCustomer);
   }
 
   async findCustomerByName(name: string): Promise<CaseCustomerRow | null> {
