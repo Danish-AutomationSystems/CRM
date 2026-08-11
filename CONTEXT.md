@@ -578,6 +578,17 @@ npx playwright test
 - `docs/superpowers/specs/2026-07-31-crm-tab-routing-design.md`
 - `docs/superpowers/agent-reports/*`
 
+## Known Issue: `public.settings` table is write-only from the app's perspective (2026-08-11)
+
+- `api_admin_saveSettings` writes `TAGS`/`TYPES`/`PRIORITIES`/`CATEGORIES`/`SOURCES`/`TAX_PCT`/`CURRENCY`/`COMPANY` into `public.settings` and it round-trips correctly through `admin/service.ts`'s own read path (`listSettings()` / `settingsFromRows()`), which is used only by `runImport`/`runImportContacts`.
+- Every other consumer - `dashboard/service.ts` `bootstrap()` (the settings block sent to the client), `customers/service.ts`, `cases/service.ts` (valid-tag/type/priority/category/stage/outcome checks) - imports the hardcoded `DEFAULT_SETTINGS` constant from `src/server/settings/defaults.ts` directly and never reads the `settings` table.
+- Net effect: an L6 admin editing tags/types/priorities/categories/sources/tax/currency/company in Admin writes to the DB, the write succeeds, but the rest of the app (dashboard, customer/case validation, quote defaults) keeps using the original hardcoded values until `defaults.ts` itself is edited and redeployed. Only the CSV-style bulk-import flows honor the DB row.
+- Not yet fixed. Confirm with Himanshu whether Admin > Settings editing is expected to be live before treating this as a bug to close - it may be intentional (defaults.ts as the single source of truth, settings table reserved for import-time overrides only), but as shipped it is surprising UI behavior.
+
+## Session Log
+
+- 2026-08-11: Full data-flow / schema audit (no code changes). Confirmed via `git status --short` the working tree has no pending source changes (only untracked local tool dirs: `.agent/`, `.claude-code-history/`, `.codex-history/`). `npx vercel whoami` returned "Not authorized" in this environment - could not pull `npx vercel env ls` output; env var names/values were not re-verified this session, only the names already documented above. Found and documented the `public.settings` drift issue above.
+
 ## If A New Agent Takes Over
 
 Start here:
