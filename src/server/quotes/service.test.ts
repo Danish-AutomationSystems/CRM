@@ -217,7 +217,19 @@ function makeService(deps: QuoteServiceDeps = {}) {
     user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L4', allowedTags: ['*'] }),
     user({ email: 'outsider@automationsystems.org', name: 'Outsider', allowedTags: ['NCR'] })
   ];
-  return { repo, service: createQuoteService(repo, deps) };
+  // Provide default Drive mocks if not overridden
+  const finalDeps: QuoteServiceDeps = {
+    getDriveClient: () => ({
+      uploadFile: vi.fn().mockResolvedValue({ id: 'pdf-1', webViewLink: 'https://drive.google.com/file/d/pdf-1/view' }),
+      listDocsInFolder: vi.fn().mockResolvedValue([]),
+      copyFile: vi.fn().mockResolvedValue({ id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' }),
+      exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
+      shareDomainReadable: vi.fn().mockResolvedValue(undefined)
+    }),
+    getQuotationsFolderId: async () => 'folder-out',
+    ...deps
+  };
+  return { repo, service: createQuoteService(repo, finalDeps) };
 }
 
 describe('quote service template listing', () => {
@@ -418,6 +430,29 @@ describe('quote service external uploads and status changes', () => {
     repo.cases[0] = caseRow({ stage: 'Opportunity', outcome: 'Won' });
     await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
     expect(repo.cases[0].stage).toBe('Opportunity');
+  });
+
+  it('refuses to upload a quotation when Drive is not configured', async () => {
+    const repo = new FakeQuoteRepository();
+    repo.customers = [customer()];
+    repo.cases = [caseRow()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: sales.email, assignedBy: sales.email, assignedAt: 'now' }];
+    repo.users = [user()];
+    const service = createQuoteService(repo); // no deps: Drive unavailable
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        mimeType: 'application/pdf',
+        dataB64: Buffer.from('external quotation').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow(/Google Drive is not configured/);
+
+    expect(repo.quotes).toHaveLength(0);
   });
 });
 

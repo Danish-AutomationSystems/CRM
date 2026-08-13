@@ -542,6 +542,9 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const dataB64 = String(input.dataB64 ?? '');
       if (!dataB64) throw new Error('Choose a file to upload.');
       if (dataB64.length > 11_000_000) throw new Error('That file is too large - please keep uploads under about 8 MB.');
+      if (!deps.getDriveClient || !deps.getQuotationsFolderId) {
+        throw new Error('Google Drive is not configured. Run the one-time Drive setup first.');
+      }
 
       const title = asText(input.title) || `Quotation for ${customer.name}`;
       const status = quoteStatus(input.status, 'Sent');
