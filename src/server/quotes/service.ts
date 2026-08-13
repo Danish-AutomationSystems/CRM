@@ -306,11 +306,6 @@ function cleanBoqBlocks(input: unknown): Array<Omit<QuoteBoqBlock, 'quoteNo' | '
   return cleaned;
 }
 
-function quoteDownloadUrl(quoteNo: string, rev: number, format = 'html'): string {
-  const suffix = format ? `?format=${encodeURIComponent(format)}` : '';
-  return `/api/download/quote/${encodeURIComponent(quoteNo)}/${rev}${suffix}`;
-}
-
 function cleanUploadFileName(value: unknown): string {
   const fileName = asText(value)
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
@@ -553,71 +548,108 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const fileName = cleanUploadFileName(input.fileName);
       const uploadMimeType = cleanMimeType(input.mimeType);
 
-      return repo.withTransaction(async (tx) => {
-        const trx = tx ?? repo;
-        let caseId = asText(input.caseId);
-        await validateCase(trx, caseId, customer.id);
-        const allocation = await allocateQuoteRevision(trx, {
-          baseQuoteNo: asText(input.baseQuoteNo),
-          caseId
-        });
-        caseId = allocation.caseId;
-        if (caseId) await validateCase(trx, caseId, customer.id);
-        await supersedePrevious(trx, allocation.previous);
-        if (!caseId) {
-          caseId = await createAutoCase(
-            trx,
-            user,
-            customer,
-            title,
-            allocation.quoteNo,
-            status === 'Sent' ? 'Quoted' : 'Opportunity',
-            'Auto-created with uploaded quotation'
-          );
-        }
+      const folderId = await deps.getQuotationsFolderId();
+      const drive = deps.getDriveClient();
+      const uploaded = await drive.uploadFile(
+        {
+          fileName: `${customer.name} - ${fileName}`,
+          mimeType: uploadMimeType,
+          body: Buffer.from(dataB64, 'base64')
+        },
+        folderId
+      );
 
-        const downloadUrl = quoteDownloadUrl(allocation.quoteNo, allocation.rev, '');
-        const now = nowIso();
-        await trx.createQuote({
-          quoteNo: allocation.quoteNo,
-          rev: allocation.rev,
-          caseId,
-          customerId: customer.id,
-          title,
-          source: 'External',
-          fileName,
-          uploadMimeType,
-          uploadDataB64: dataB64,
-          templateId: '',
-          templateName: '',
-          status,
-          subtotal: '',
-          taxPct: '',
-          taxAmount: '',
-          total,
-          currency,
-          validUntil: asText(input.validUntil),
-          notes: String(input.notes ?? ''),
-          doc: '',
-          pdf: downloadUrl,
-          driveFileId: '',
-          driveViewLink: '',
-          driveSavedAt: '',
-          driveSavedBy: '',
-          createdBy: normalizeEmail(user.email),
-          createdAt: now,
-          updatedAt: now
+      let committed: { quoteNo: string; rev: number; caseId: string };
+      try {
+        committed = await repo.withTransaction(async (tx) => {
+          const trx = tx ?? repo;
+          let caseId = asText(input.caseId);
+          await validateCase(trx, caseId, customer.id);
+          const allocation = await allocateQuoteRevision(trx, {
+            baseQuoteNo: asText(input.baseQuoteNo),
+            caseId
+          });
+          caseId = allocation.caseId;
+          if (caseId) await validateCase(trx, caseId, customer.id);
+          await supersedePrevious(trx, allocation.previous);
+          if (!caseId) {
+            caseId = await createAutoCase(
+              trx,
+              user,
+              customer,
+              title,
+              allocation.quoteNo,
+              status === 'Sent' ? 'Quoted' : 'Opportunity',
+              'Auto-created with uploaded quotation'
+            );
+          }
+
+          const now = nowIso();
+          await trx.createQuote({
+            quoteNo: allocation.quoteNo,
+            rev: allocation.rev,
+            caseId,
+            customerId: customer.id,
+            title,
+            source: 'External',
+            fileName,
+            uploadMimeType,
+            uploadDataB64: '',
+            templateId: '',
+            templateName: '',
+            status,
+            subtotal: '',
+            taxPct: '',
+            taxAmount: '',
+            total,
+            currency,
+            validUntil: asText(input.validUntil),
+            notes: String(input.notes ?? ''),
+            doc: '',
+            pdf: '',
+            driveFileId: uploaded.id,
+            driveViewLink: uploaded.webViewLink,
+            driveSavedAt: now,
+            driveSavedBy: normalizeEmail(user.email),
+            createdBy: normalizeEmail(user.email),
+            createdAt: now,
+            updatedAt: now
+          });
+          await trx.logActivity({
+            action: 'QUOTE_UPLOAD',
+            entity: `${allocation.quoteNo} R${allocation.rev}`,
+            customerId: customer.id,
+            details: `${title} - ${currency} ${total}`,
+            who: normalizeEmail(user.email)
+          });
+          if (caseId && status === 'Sent') await bumpCaseToQuoted(trx, caseId);
+          return { quoteNo: allocation.quoteNo, rev: allocation.rev, caseId };
         });
-        await trx.logActivity({
-          action: 'QUOTE_UPLOAD',
-          entity: `${allocation.quoteNo} R${allocation.rev}`,
-          customerId: customer.id,
-          details: `${title} - ${currency} ${total}`,
-          who: normalizeEmail(user.email)
-        });
-        if (caseId && status === 'Sent') await bumpCaseToQuoted(trx, caseId);
-        return { quoteNo: allocation.quoteNo, rev: allocation.rev, caseId };
-      });
+      } catch (error) {
+        // The database rolled back, so the Drive file is now unreferenced.
+        // Best effort only: if this delete also fails we still surface the
+        // original database error, because that is the one the user needs.
+        try {
+          await drive.deleteFile(uploaded.id);
+        } catch {
+          // Leaves one orphan file in the folder. No data loss, no database
+          // impact. Identifiable by its missing "<quoteNo> R<rev>" prefix.
+        }
+        throw error;
+      }
+
+      // Cosmetic only - the row and the link are already correct, so a rename
+      // failure must not fail an otherwise complete upload.
+      try {
+        await drive.renameFile(
+          uploaded.id,
+          `${committed.quoteNo} R${committed.rev} - ${customer.name} - ${fileName}`
+        );
+      } catch {
+        // Intentionally ignored.
+      }
+
+      return committed;
     },
 
     async getQuotation(user: CrmContext, quoteNo: string, rev: number) {
