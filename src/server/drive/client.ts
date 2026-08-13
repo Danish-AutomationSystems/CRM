@@ -12,6 +12,8 @@ export type DriveClient = {
   copyFile(fileId: string, name: string, folderId: string): Promise<{ id: string; webViewLink: string }>;
   exportPdf(fileId: string): Promise<Buffer>;
   shareDomainReadable(fileId: string): Promise<void>;
+  renameFile(fileId: string, name: string): Promise<void>;
+  deleteFile(fileId: string): Promise<void>;
 };
 
 function requireEnv(name: string): string {
@@ -109,6 +111,16 @@ export function createDriveClient(): DriveClient {
       return Buffer.from(response.data as ArrayBuffer);
     },
 
-    shareDomainReadable
+    shareDomainReadable,
+
+    async renameFile(fileId: string, name: string) {
+      const drive = await driveApi();
+      await drive.files.update({ fileId, requestBody: { name } });
+    },
+
+    async deleteFile(fileId: string) {
+      const drive = await driveApi();
+      await drive.files.delete({ fileId });
+    }
   };
 }
