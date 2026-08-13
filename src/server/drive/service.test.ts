@@ -185,7 +185,11 @@ describe('createDriveService', () => {
   });
 
   it('rejects a customer the user cannot access, same as getDownloadArtifact would', async () => {
-    const outsider: CrmContext = { ...sales, allowedTags: ['NCR'] };
+    // Genuinely unauthorized: not a registered handler for CUST-1 (the sales
+    // fixture's email is, via repo.handlers in beforeEach) AND a tag
+    // mismatch - either alone can still resolve to FULL access, so both
+    // must differ from the sales fixture for this to actually be denied.
+    const outsider: CrmContext = { ...sales, email: 'outsider@automationsystems.org', allowedTags: ['NCR'] };
     const quoteService = createQuoteService(repo);
     const driveService = createDriveService({
       quoteService,
@@ -194,7 +198,14 @@ describe('createDriveService', () => {
       getFolderId: async () => 'folder-abc'
     });
 
-    await expect(driveService.saveQuotationToDrive(outsider, 'QTN-2026-0001', 0)).rejects.toThrow();
+    // Tightened to the specific access-denied message (not a bare
+    // .rejects.toThrow()) so this test can actually distinguish
+    // "access denied" from any other rejection - in particular the
+    // Drive-hosted message below, which a looser assertion could not tell
+    // apart from a genuine access-control failure.
+    await expect(driveService.saveQuotationToDrive(outsider, 'QTN-2026-0001', 0)).rejects.toThrow(
+      /not an account handler/
+    );
   });
 
   it('refuses to save an already Drive-hosted upload back to Drive', async () => {
@@ -217,8 +228,60 @@ describe('createDriveService', () => {
       getFolderId: async () => 'folder-abc'
     });
 
+    // The message comes straight from getDownloadArtifact/externalArtifact,
+    // reached only after access is already granted - see the regression
+    // test below for the unauthorized case.
     await expect(driveService.saveQuotationToDrive(sales, 'QTN-2026-0001', 1)).rejects.toThrow(
-      /already stored in Google Drive/
+      /stored in Google Drive/
+    );
+  });
+
+  it('rejects an unauthorized caller before revealing that a quote is Drive-hosted (regression test)', async () => {
+    // Before this fix, saveQuotationToDrive checked "already Drive-hosted"
+    // against the repo directly, ahead of any access check. An outsider
+    // asking to save a Drive-hosted quote they cannot access would learn it
+    // exists and is already in Drive, instead of getting a bare
+    // access-denied error - something they could not learn pre-Task-4.
+    repo.quotes.push({
+      ...baseQuote(),
+      rev: 1,
+      source: 'External',
+      fileName: 'customer-quote.pdf',
+      uploadMimeType: 'application/pdf',
+      uploadDataB64: '',
+      driveFileId: 'existing-file-id',
+      driveViewLink: 'https://drive.google.com/file/d/existing-file-id/view'
+    });
+
+    // Genuinely unauthorized: not a registered handler for CUST-1 (the sales
+    // fixture's email is, via repo.handlers in beforeEach) AND a tag
+    // mismatch - either alone can still resolve to FULL access, so both
+    // must differ from the sales fixture for this to actually be denied.
+    const outsider: CrmContext = { ...sales, email: 'outsider@automationsystems.org', allowedTags: ['NCR'] };
+    const quoteService = createQuoteService(repo);
+    const driveService = createDriveService({
+      quoteService,
+      quoteRepository: repo,
+      getDriveClient: () => fakeDriveClient(),
+      getFolderId: async () => 'folder-abc'
+    });
+
+    await expect(driveService.saveQuotationToDrive(outsider, 'QTN-2026-0001', 1)).rejects.toThrow(
+      /not an account handler/
+    );
+  });
+
+  it('throws not-found for a quote that does not exist', async () => {
+    const quoteService = createQuoteService(repo);
+    const driveService = createDriveService({
+      quoteService,
+      quoteRepository: repo,
+      getDriveClient: () => fakeDriveClient(),
+      getFolderId: async () => 'folder-abc'
+    });
+
+    await expect(driveService.saveQuotationToDrive(sales, 'QTN-2026-9999', 0)).rejects.toThrow(
+      /was not found/
     );
   });
 
