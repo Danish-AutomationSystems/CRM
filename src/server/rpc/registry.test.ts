@@ -85,4 +85,25 @@ describe('RPC registry', () => {
       expect(rpcError.message).toBe(message);
     }
   });
+
+  it('surfaces the Drive-hosted upload message instead of a generic 500', () => {
+    const message = 'This quotation is stored in Google Drive - use the "View in Drive" link to open it.';
+
+    const rpcError = normalizeRpcError(new Error(message));
+
+    expect(rpcError.status).toBe(400);
+    expect(rpcError.code).toBe('bad_request');
+    expect(rpcError.message).toBe(message);
+  });
+
+  it('still hides unrelated internal errors that merely mention Drive', () => {
+    for (const message of [
+      'Drive API returned 503 for folder 1AbC_secretFolderId.',
+      'getaddrinfo ENOTFOUND www.googleapis.com'
+    ]) {
+      const rpcError = normalizeRpcError(new Error(message));
+      expect(rpcError.status).toBe(500);
+      expect(rpcError.message).toBe('Something went wrong.');
+    }
+  });
 });

@@ -32,6 +32,18 @@ function driveFileName(quoteNo: string, rev: number, customerName: string, baseF
 export function createDriveService(deps: DriveServiceDeps) {
   return {
     async saveQuotationToDrive(user: CrmContext, quoteNo: string, rev: number) {
+      // getDownloadArtifact runs the access check (ensureFull, via loadQuote)
+      // BEFORE it looks at Drive-hosted state, and - since Task 4's
+      // externalArtifact fix - it already throws for an External quote with
+      // no stored bytes. Deliberately not re-checking "already Drive-hosted"
+      // ourselves ahead of this call: an earlier version of this function did
+      // exactly that (per the original task brief) and it let an unauthorized
+      // caller learn a quote exists and is Drive-hosted before authorization
+      // ever ran - a regression from the pre-Task-4 behaviour, where an
+      // unauthorized caller learned nothing beyond "access denied". Routing
+      // everything through getDownloadArtifact first keeps access-check-first
+      // ordering intact and still blocks the stub upload, because
+      // externalArtifact() throws instead of returning a fabricated artifact.
       const artifact = await deps.quoteService.getDownloadArtifact(user, quoteNo, rev);
       const quote = await deps.quoteRepository.getQuote(quoteNo, rev);
       if (!quote) throw new Error(`Quotation ${quoteNo} R${rev} was not found.`);

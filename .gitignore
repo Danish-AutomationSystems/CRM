@@ -23,3 +23,6 @@ pnpm-debug.log*
 # plain JSON, including uploaded quotation files. They must never be committed.
 backups/
 *.backup.json
+
+# Word temporary lock files
+~$*

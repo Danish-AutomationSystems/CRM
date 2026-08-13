@@ -217,7 +217,57 @@ function makeService(deps: QuoteServiceDeps = {}) {
     user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L4', allowedTags: ['*'] }),
     user({ email: 'outsider@automationsystems.org', name: 'Outsider', allowedTags: ['NCR'] })
   ];
-  return { repo, service: createQuoteService(repo, deps) };
+  // Provide default Drive mocks if not overridden
+  const finalDeps: QuoteServiceDeps = {
+    getDriveClient: () => ({
+      uploadFile: vi.fn().mockResolvedValue({ id: 'pdf-1', webViewLink: 'https://drive.google.com/file/d/pdf-1/view' }),
+      listDocsInFolder: vi.fn().mockResolvedValue([]),
+      copyFile: vi.fn().mockResolvedValue({ id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' }),
+      exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
+      shareDomainReadable: vi.fn().mockResolvedValue(undefined),
+      renameFile: vi.fn().mockResolvedValue(undefined),
+      deleteFile: vi.fn().mockResolvedValue(undefined)
+    }),
+    getQuotationsFolderId: async () => 'folder-out',
+    ...deps
+  };
+  return { repo, service: createQuoteService(repo, finalDeps) };
+}
+
+function fakeDriveDeps(overrides: Partial<{
+  upload: (input: { fileName: string; mimeType: string; body: Buffer }, folderId: string) => Promise<{ id: string; webViewLink: string }>;
+  rename: (fileId: string, name: string) => Promise<void>;
+  remove: (fileId: string) => Promise<void>;
+}> = {}) {
+  const calls = {
+    uploaded: [] as Array<{ fileName: string; folderId: string; body: Buffer }>,
+    renamed: [] as Array<{ fileId: string; name: string }>,
+    deleted: [] as string[]
+  };
+  const deps: QuoteServiceDeps = {
+    getQuotationsFolderId: async () => 'folder-abc',
+    getDriveClient: () =>
+      ({
+        async uploadFile(input: { fileName: string; mimeType: string; body: Buffer }, folderId: string) {
+          calls.uploaded.push({ fileName: input.fileName, folderId, body: input.body });
+          if (overrides.upload) return overrides.upload(input, folderId);
+          return { id: 'drive-file-1', webViewLink: 'https://drive.google.com/file/d/drive-file-1/view' };
+        },
+        async renameFile(fileId: string, name: string) {
+          calls.renamed.push({ fileId, name });
+          if (overrides.rename) return overrides.rename(fileId, name);
+        },
+        async deleteFile(fileId: string) {
+          calls.deleted.push(fileId);
+          if (overrides.remove) return overrides.remove(fileId);
+        },
+        async listDocsInFolder() { return []; },
+        async copyFile() { return { id: '', webViewLink: '' }; },
+        async exportPdf() { return Buffer.alloc(0); },
+        async shareDomainReadable() { return undefined; }
+      }) as never
+  };
+  return { deps, calls };
 }
 
 describe('quote service template listing', () => {
@@ -345,7 +395,7 @@ describe('quote service generated quotations', () => {
 });
 
 describe('quote service external uploads and status changes', () => {
-  it('stores external upload metadata without Google Drive links and advances open Sent cases to Quoted', async () => {
+  it('stores external upload metadata with Google Drive links, not the blob, and advances open Sent cases to Quoted', async () => {
     const { repo, service } = makeService();
 
     const result = await service.uploadQuotation(sales, {
@@ -365,16 +415,38 @@ describe('quote service external uploads and status changes', () => {
       source: 'External',
       fileName: 'vendor-offer.pdf',
       uploadMimeType: 'application/pdf',
-      uploadDataB64: Buffer.from('external quotation').toString('base64'),
+      uploadDataB64: '',
       status: 'Sent',
       subtotal: '',
       taxPct: '',
       taxAmount: '',
       total: 2500,
       doc: '',
-      pdf: '/api/download/quote/QTN-2026-0001/0'
+      pdf: '',
+      driveFileId: 'pdf-1',
+      driveViewLink: 'https://drive.google.com/file/d/pdf-1/view'
     });
     expect(repo.cases[0].stage).toBe('Quoted');
+  });
+
+  it('refuses to build a download artifact for a Drive-hosted upload', async () => {
+    const { deps } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    expect(repo.quotes[0].uploadDataB64).toBe('');
+    await expect(service.getDownloadArtifact(sales, result.quoteNo, result.rev)).rejects.toThrow(
+      /stored in Google Drive/
+    );
   });
 
   it('creates Draft external auto-cases at Opportunity and Sent external auto-cases at Quoted', async () => {
@@ -419,10 +491,224 @@ describe('quote service external uploads and status changes', () => {
     await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
     expect(repo.cases[0].stage).toBe('Opportunity');
   });
+
+  it('refuses to upload a quotation when Drive is not configured', async () => {
+    const repo = new FakeQuoteRepository();
+    repo.customers = [customer()];
+    repo.cases = [caseRow()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: sales.email, assignedBy: sales.email, assignedAt: 'now' }];
+    repo.users = [user()];
+    const service = createQuoteService(repo); // no deps: Drive unavailable
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        mimeType: 'application/pdf',
+        dataB64: Buffer.from('external quotation').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow(/Google Drive is not configured/);
+
+    expect(repo.quotes).toHaveLength(0);
+  });
+
+  it('stores an uploaded quotation in Drive and not in the database', async () => {
+    const { deps, calls } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      mimeType: 'application/pdf',
+      dataB64: Buffer.from('external quotation').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    const stored = repo.quotes.find((q) => q.quoteNo === result.quoteNo && q.rev === result.rev)!;
+    expect(stored.uploadDataB64).toBe('');
+    expect(stored.pdf).toBe('');
+    expect(stored.driveFileId).toBe('drive-file-1');
+    expect(stored.driveViewLink).toBe('https://drive.google.com/file/d/drive-file-1/view');
+    expect(stored.driveSavedBy).toBe('sales@automationsystems.org');
+    expect(stored.driveSavedAt).not.toBe('');
+
+    expect(calls.uploaded).toHaveLength(1);
+    expect(calls.uploaded[0].folderId).toBe('folder-abc');
+    expect(calls.uploaded[0].body.toString()).toBe('external quotation');
+    expect(calls.uploaded[0].fileName).toBe('Alpha Panels - vendor-offer.pdf');
+  });
+
+  it('renames the Drive file to the full convention after the transaction commits', async () => {
+    const { deps, calls } = fakeDriveDeps();
+    const { service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    expect(calls.renamed).toEqual([
+      { fileId: 'drive-file-1', name: `${result.quoteNo} R${result.rev} - Alpha Panels - vendor-offer.pdf` }
+    ]);
+  });
+
+  it('writes nothing to the database when the Drive upload fails', async () => {
+    const { deps } = fakeDriveDeps({
+      upload: async () => {
+        throw new Error('Drive quota exceeded.');
+      }
+    });
+    const { repo, service } = makeService(deps);
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        caseId: 'CASE-2026-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        dataB64: Buffer.from('x').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow('Drive quota exceeded.');
+
+    expect(repo.quotes).toHaveLength(0);
+    expect(repo.logs).toHaveLength(0);
+  });
+
+  it('deletes the orphaned Drive file when the transaction fails', async () => {
+    const { deps, calls } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+    repo.createQuote = async () => {
+      throw new Error('database write failed');
+    };
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        caseId: 'CASE-2026-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        dataB64: Buffer.from('x').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow('database write failed');
+
+    expect(calls.deleted).toEqual(['drive-file-1']);
+  });
+
+  it('surfaces the original error when the orphan cleanup also fails', async () => {
+    const { deps, calls } = fakeDriveDeps({
+      remove: async () => {
+        throw new Error('drive delete failed');
+      }
+    });
+    const { repo, service } = makeService(deps);
+    repo.createQuote = async () => {
+      throw new Error('database write failed');
+    };
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        caseId: 'CASE-2026-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        dataB64: Buffer.from('x').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow('database write failed');
+
+    // The guarantee is "the database error wins despite cleanup running and
+    // failing", not "cleanup was never reached".
+    expect(calls.deleted).toEqual(['drive-file-1']);
+  });
+
+  it('falls back to the canonical Drive view URL when Drive omits webViewLink', async () => {
+    const { deps } = fakeDriveDeps({
+      upload: async () => ({ id: 'drive-file-1', webViewLink: '' })
+    });
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    const stored = repo.quotes.find((q) => q.quoteNo === result.quoteNo)!;
+    expect(stored.driveFileId).toBe('drive-file-1');
+    expect(stored.driveViewLink).toBe('https://drive.google.com/file/d/drive-file-1/view');
+  });
+
+  it('writes nothing to the database when Drive returns no file id', async () => {
+    const { deps, calls } = fakeDriveDeps({
+      upload: async () => ({ id: '', webViewLink: '' })
+    });
+    const { repo, service } = makeService(deps);
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        caseId: 'CASE-2026-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        dataB64: Buffer.from('x').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow('Drive did not return a file id.');
+
+    expect(repo.quotes).toHaveLength(0);
+    expect(repo.logs).toHaveLength(0);
+    expect(calls.deleted).toEqual([]);
+  });
+
+  it('still succeeds when the post-commit rename fails', async () => {
+    const { deps } = fakeDriveDeps({
+      rename: async () => {
+        throw new Error('drive rename failed');
+      }
+    });
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    const stored = repo.quotes.find((q) => q.quoteNo === result.quoteNo)!;
+    expect(stored.driveFileId).toBe('drive-file-1');
+  });
 });
 
-describe('quote repository Drive save fields', () => {
-  it('updateQuote persists Drive save fields', async () => {
+// Note: this covers the in-memory FakeQuoteRepository used by the service tests,
+// not PostgresQuoteRepository. The real insert/select column lists are guarded
+// statically in repository.test.ts.
+describe('FakeQuoteRepository test double contract', () => {
+  it('updateQuote merges Drive save fields into the stored row', async () => {
     const repo = new FakeQuoteRepository();
     repo.quotes.push({
       quoteNo: 'QTN-2026-0001',
@@ -582,7 +868,9 @@ describe('generateQuoteDoc', () => {
       listDocsInFolder: vi.fn().mockResolvedValue([]),
       copyFile: vi.fn().mockResolvedValue({ id: 'copy-1', webViewLink: 'https://drive.google.com/file/d/copy-1/view' }),
       exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
-      shareDomainReadable: vi.fn().mockResolvedValue(undefined)
+      shareDomainReadable: vi.fn().mockResolvedValue(undefined),
+      renameFile: vi.fn().mockResolvedValue(undefined),
+      deleteFile: vi.fn().mockResolvedValue(undefined)
     };
     const docsClient = {
       getDocument: vi.fn().mockResolvedValueOnce(firstDoc).mockResolvedValueOnce(tablesDoc),
@@ -705,7 +993,7 @@ describe('generateQuoteDoc', () => {
   });
 
   it('refuses to generate when Drive is not configured', async () => {
-    const { repo, service } = makeService();
+    const { repo, service } = makeService({ getDriveClient: undefined, getQuotationsFolderId: undefined });
     seedGenerated(repo);
 
     await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('not configured');

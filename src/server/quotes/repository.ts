@@ -421,14 +421,17 @@ export class PostgresQuoteRepository implements QuoteRepository {
       insert into public.quotations (
         quote_no, rev, case_id, customer_id, title, source, file_name, upload_mime_type,
         upload_data, template_id, template_name, status, subtotal, tax_pct, tax_amount, total, currency,
-        valid_until, notes, doc_link, pdf_link, created_by, created_at, updated_at
+        valid_until, notes, doc_link, pdf_link, drive_file_id, drive_view_link, drive_saved_at,
+        drive_saved_by, created_by, created_at, updated_at
       )
       values (
         ${row.quoteNo}, ${row.rev}, ${row.caseId || null}, ${row.customerId}, ${row.title}, ${row.source},
         ${row.fileName}, ${row.uploadMimeType}, ${dbBytes(row.uploadDataB64)},
         ${row.templateId}, ${row.templateName}, ${row.status}, ${dbNumber(row.subtotal)},
         ${dbNumber(row.taxPct)}, ${dbNumber(row.taxAmount)}, ${dbNumber(row.total)}, ${row.currency},
-        ${dbDate(row.validUntil)}, ${row.notes}, ${row.doc}, ${row.pdf}, ${dbEmail(row.createdBy)},
+        ${dbDate(row.validUntil)}, ${row.notes}, ${row.doc}, ${row.pdf},
+        ${row.driveFileId}, ${row.driveViewLink}, ${row.driveSavedAt || null},
+        ${row.driveSavedBy ? normalizeEmail(row.driveSavedBy) : null}, ${dbEmail(row.createdBy)},
         ${row.createdAt}, ${row.updatedAt}
       )
     `;

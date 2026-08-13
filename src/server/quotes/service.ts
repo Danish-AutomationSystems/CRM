@@ -306,11 +306,6 @@ function cleanBoqBlocks(input: unknown): Array<Omit<QuoteBoqBlock, 'quoteNo' | '
   return cleaned;
 }
 
-function quoteDownloadUrl(quoteNo: string, rev: number, format = 'html'): string {
-  const suffix = format ? `?format=${encodeURIComponent(format)}` : '';
-  return `/api/download/quote/${encodeURIComponent(quoteNo)}/${rev}${suffix}`;
-}
-
 function cleanUploadFileName(value: unknown): string {
   const fileName = asText(value)
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
@@ -323,15 +318,6 @@ function cleanUploadFileName(value: unknown): string {
 function cleanMimeType(value: unknown): string {
   const text = asText(value).toLowerCase();
   return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(text) ? text : 'application/octet-stream';
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function activeRevisions(quotes: readonly QuoteRow[]): QuoteRow[] {
@@ -419,7 +405,7 @@ async function loadQuote(repo: QuoteRepository, user: CrmContext, quoteNo: strin
   return { quote, customer };
 }
 
-function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDownloadArtifact {
+function externalArtifact(quote: QuoteRow): QuoteDownloadArtifact {
   if (quote.uploadDataB64) {
     return {
       fileName: cleanUploadFileName(quote.fileName),
@@ -428,11 +414,7 @@ function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDow
     };
   }
 
-  return {
-    fileName: safeQuoteFileName(quote.quoteNo, quote.rev, customer.name),
-    mimeType: 'text/html; charset=utf-8',
-    body: `<!doctype html><html><body><h1>${escapeHtml(quote.quoteNo)} R${quote.rev}</h1><p>External quotation: ${escapeHtml(quote.fileName || 'quotation')}</p></body></html>`
-  };
+  throw new Error('This quotation is stored in Google Drive - use the "View in Drive" link to open it.');
 }
 
 export type QuoteServiceDeps = {
@@ -542,6 +524,9 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const dataB64 = String(input.dataB64 ?? '');
       if (!dataB64) throw new Error('Choose a file to upload.');
       if (dataB64.length > 11_000_000) throw new Error('That file is too large - please keep uploads under about 8 MB.');
+      if (!deps.getDriveClient || !deps.getQuotationsFolderId) {
+        throw new Error('Google Drive is not configured. Run the one-time Drive setup first.');
+      }
 
       const title = asText(input.title) || `Quotation for ${customer.name}`;
       const status = quoteStatus(input.status, 'Sent');
@@ -550,71 +535,124 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const fileName = cleanUploadFileName(input.fileName);
       const uploadMimeType = cleanMimeType(input.mimeType);
 
-      return repo.withTransaction(async (tx) => {
-        const trx = tx ?? repo;
-        let caseId = asText(input.caseId);
-        await validateCase(trx, caseId, customer.id);
-        const allocation = await allocateQuoteRevision(trx, {
-          baseQuoteNo: asText(input.baseQuoteNo),
-          caseId
-        });
-        caseId = allocation.caseId;
-        if (caseId) await validateCase(trx, caseId, customer.id);
-        await supersedePrevious(trx, allocation.previous);
-        if (!caseId) {
-          caseId = await createAutoCase(
-            trx,
-            user,
-            customer,
-            title,
-            allocation.quoteNo,
-            status === 'Sent' ? 'Quoted' : 'Opportunity',
-            'Auto-created with uploaded quotation'
-          );
-        }
+      const folderId = await deps.getQuotationsFolderId();
+      const drive = deps.getDriveClient();
+      const uploaded = await drive.uploadFile(
+        {
+          fileName: `${customer.name} - ${fileName}`,
+          mimeType: uploadMimeType,
+          body: Buffer.from(dataB64, 'base64')
+        },
+        folderId
+      );
 
-        const downloadUrl = quoteDownloadUrl(allocation.quoteNo, allocation.rev, '');
-        const now = nowIso();
-        await trx.createQuote({
-          quoteNo: allocation.quoteNo,
-          rev: allocation.rev,
-          caseId,
-          customerId: customer.id,
-          title,
-          source: 'External',
-          fileName,
-          uploadMimeType,
-          uploadDataB64: dataB64,
-          templateId: '',
-          templateName: '',
-          status,
-          subtotal: '',
-          taxPct: '',
-          taxAmount: '',
-          total,
-          currency,
-          validUntil: asText(input.validUntil),
-          notes: String(input.notes ?? ''),
-          doc: '',
-          pdf: downloadUrl,
-          driveFileId: '',
-          driveViewLink: '',
-          driveSavedAt: '',
-          driveSavedBy: '',
-          createdBy: normalizeEmail(user.email),
-          createdAt: now,
-          updatedAt: now
+      if (!uploaded.id) throw new Error('Drive did not return a file id.');
+      // Drive normally returns webViewLink, but the field is optional in the API
+      // response. An empty link would commit a row whose file is unreachable from
+      // the UI. The canonical view URL is fully derivable from the id, so fall
+      // back to it rather than discarding a file that uploaded successfully.
+      const driveViewLink = uploaded.webViewLink || `https://drive.google.com/file/d/${uploaded.id}/view`;
+
+      let committed: { quoteNo: string; rev: number; caseId: string };
+      try {
+        committed = await repo.withTransaction(async (tx) => {
+          const trx = tx ?? repo;
+          let caseId = asText(input.caseId);
+          await validateCase(trx, caseId, customer.id);
+          const allocation = await allocateQuoteRevision(trx, {
+            baseQuoteNo: asText(input.baseQuoteNo),
+            caseId
+          });
+          caseId = allocation.caseId;
+          if (caseId) await validateCase(trx, caseId, customer.id);
+          await supersedePrevious(trx, allocation.previous);
+          if (!caseId) {
+            caseId = await createAutoCase(
+              trx,
+              user,
+              customer,
+              title,
+              allocation.quoteNo,
+              status === 'Sent' ? 'Quoted' : 'Opportunity',
+              'Auto-created with uploaded quotation'
+            );
+          }
+
+          const now = nowIso();
+          await trx.createQuote({
+            quoteNo: allocation.quoteNo,
+            rev: allocation.rev,
+            caseId,
+            customerId: customer.id,
+            title,
+            source: 'External',
+            fileName,
+            uploadMimeType,
+            uploadDataB64: '',
+            templateId: '',
+            templateName: '',
+            status,
+            subtotal: '',
+            taxPct: '',
+            taxAmount: '',
+            total,
+            currency,
+            validUntil: asText(input.validUntil),
+            notes: String(input.notes ?? ''),
+            doc: '',
+            pdf: '',
+            driveFileId: uploaded.id,
+            driveViewLink,
+            driveSavedAt: now,
+            driveSavedBy: normalizeEmail(user.email),
+            createdBy: normalizeEmail(user.email),
+            createdAt: now,
+            updatedAt: now
+          });
+          await trx.logActivity({
+            action: 'QUOTE_UPLOAD',
+            entity: `${allocation.quoteNo} R${allocation.rev}`,
+            customerId: customer.id,
+            details: `${title} - ${currency} ${total}`,
+            who: normalizeEmail(user.email)
+          });
+          if (caseId && status === 'Sent') await bumpCaseToQuoted(trx, caseId);
+          return { quoteNo: allocation.quoteNo, rev: allocation.rev, caseId };
         });
-        await trx.logActivity({
-          action: 'QUOTE_UPLOAD',
-          entity: `${allocation.quoteNo} R${allocation.rev}`,
-          customerId: customer.id,
-          details: `${title} - ${currency} ${total}`,
-          who: normalizeEmail(user.email)
-        });
-        if (caseId && status === 'Sent') await bumpCaseToQuoted(trx, caseId);
-        return { quoteNo: allocation.quoteNo, rev: allocation.rev, caseId };
-      });
+      } catch (error) {
+        // The database rolled back, so the Drive file is now unreferenced.
+        // Best effort only: if this delete also fails we still surface the
+        // original database error, because that is the one the user needs.
+        try {
+          await drive.deleteFile(uploaded.id);
+        } catch (cleanupError) {
+          // Leaves one orphan file in the folder. No data loss, no database
+          // impact. Identifiable by its missing "<quoteNo> R<rev>" prefix.
+          console.error('Drive orphan cleanup failed:', uploaded.id, cleanupError);
+        }
+        throw error;
+      }
+
+      // Cosmetic only - the row and the link are already correct, so a rename
+      // failure must not fail an otherwise complete upload.
+      try {
+        await drive.renameFile(
+          uploaded.id,
+          `${committed.quoteNo} R${committed.rev} - ${customer.name} - ${fileName}`
+        );
+      } catch (renameError) {
+        // Cosmetic only: the row and the link are already correct, so the upload
+        // still succeeds. Logged so a file left under its provisional name is
+        // distinguishable from an orphan of a rolled-back transaction.
+        console.error(
+          'Drive post-commit rename failed:',
+          uploaded.id,
+          `${committed.quoteNo} R${committed.rev}`,
+          renameError
+        );
+      }
+
+      return committed;
     },
 
     async getQuotation(user: CrmContext, quoteNo: string, rev: number) {
@@ -787,7 +825,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
 
     async getDownloadArtifact(user: CrmContext, quoteNo: string, rev: number): Promise<QuoteDownloadArtifact> {
       const { quote, customer } = await loadQuote(repo, user, quoteNo, rev);
-      if (quote.source === 'External') return externalArtifact(quote, customer);
+      if (quote.source === 'External') return externalArtifact(quote);
 
       const [blocks, users] = await Promise.all([repo.listBoqBlocks(quoteNo, rev), repo.listUsers()]);
       const idx = userIndex(users);

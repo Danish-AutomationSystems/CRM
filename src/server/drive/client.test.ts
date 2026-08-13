@@ -4,6 +4,8 @@ const filesCreate = vi.fn();
 const filesList = vi.fn();
 const filesCopy = vi.fn();
 const filesExport = vi.fn();
+const filesUpdate = vi.fn();
+const filesDelete = vi.fn();
 const permissionsCreate = vi.fn();
 
 vi.mock('googleapis', () => ({
@@ -12,7 +14,7 @@ vi.mock('googleapis', () => ({
       OAuth2: vi.fn().mockImplementation(() => ({ setCredentials: vi.fn() }))
     },
     drive: vi.fn().mockImplementation(() => ({
-      files: { create: filesCreate, list: filesList, copy: filesCopy, export: filesExport },
+      files: { create: filesCreate, list: filesList, copy: filesCopy, export: filesExport, update: filesUpdate, delete: filesDelete },
       permissions: { create: permissionsCreate }
     }))
   }
@@ -24,6 +26,8 @@ describe('createDriveClient', () => {
     filesList.mockReset();
     filesCopy.mockReset();
     filesExport.mockReset();
+    filesUpdate.mockReset();
+    filesDelete.mockReset();
     permissionsCreate.mockReset();
     process.env.GOOGLE_DRIVE_CLIENT_ID = 'test-client-id';
     process.env.GOOGLE_DRIVE_CLIENT_SECRET = 'test-client-secret';
@@ -135,5 +139,26 @@ describe('createDriveClient', () => {
     permissionsCreate.mockRejectedValue(new Error('Domain policy blocks link sharing.'));
     const { createDriveClient } = await import('./client');
     await expect(createDriveClient().shareDomainReadable('copy-1')).resolves.toBeUndefined();
+  });
+
+  it('renames a file', async () => {
+    filesUpdate.mockResolvedValue({ data: { id: 'file-123' } });
+
+    const { createDriveClient } = await import('./client');
+    await createDriveClient().renameFile('file-123', 'QTN-2026-0001 R0 - Acme Controls - offer.pdf');
+
+    expect(filesUpdate).toHaveBeenCalledWith({
+      fileId: 'file-123',
+      requestBody: { name: 'QTN-2026-0001 R0 - Acme Controls - offer.pdf' }
+    });
+  });
+
+  it('deletes a file', async () => {
+    filesDelete.mockResolvedValue({ data: {} });
+
+    const { createDriveClient } = await import('./client');
+    await createDriveClient().deleteFile('file-123');
+
+    expect(filesDelete).toHaveBeenCalledWith({ fileId: 'file-123' });
   });
 });
