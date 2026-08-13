@@ -610,7 +610,7 @@ describe('quote service external uploads and status changes', () => {
   });
 
   it('surfaces the original error when the orphan cleanup also fails', async () => {
-    const { deps } = fakeDriveDeps({
+    const { deps, calls } = fakeDriveDeps({
       remove: async () => {
         throw new Error('drive delete failed');
       }
@@ -631,6 +631,54 @@ describe('quote service external uploads and status changes', () => {
         status: 'Sent'
       })
     ).rejects.toThrow('database write failed');
+
+    // The guarantee is "the database error wins despite cleanup running and
+    // failing", not "cleanup was never reached".
+    expect(calls.deleted).toEqual(['drive-file-1']);
+  });
+
+  it('falls back to the canonical Drive view URL when Drive omits webViewLink', async () => {
+    const { deps } = fakeDriveDeps({
+      upload: async () => ({ id: 'drive-file-1', webViewLink: '' })
+    });
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    const stored = repo.quotes.find((q) => q.quoteNo === result.quoteNo)!;
+    expect(stored.driveFileId).toBe('drive-file-1');
+    expect(stored.driveViewLink).toBe('https://drive.google.com/file/d/drive-file-1/view');
+  });
+
+  it('writes nothing to the database when Drive returns no file id', async () => {
+    const { deps, calls } = fakeDriveDeps({
+      upload: async () => ({ id: '', webViewLink: '' })
+    });
+    const { repo, service } = makeService(deps);
+
+    await expect(
+      service.uploadQuotation(sales, {
+        customerId: 'CUST-0001',
+        caseId: 'CASE-2026-0001',
+        title: 'Vendor offer',
+        fileName: 'vendor-offer.pdf',
+        dataB64: Buffer.from('x').toString('base64'),
+        total: 100,
+        status: 'Sent'
+      })
+    ).rejects.toThrow('Drive did not return a file id.');
+
+    expect(repo.quotes).toHaveLength(0);
+    expect(repo.logs).toHaveLength(0);
+    expect(calls.deleted).toEqual([]);
   });
 
   it('still succeeds when the post-commit rename fails', async () => {
@@ -656,8 +704,11 @@ describe('quote service external uploads and status changes', () => {
   });
 });
 
-describe('quote repository Drive save fields', () => {
-  it('updateQuote persists Drive save fields', async () => {
+// Note: this covers the in-memory FakeQuoteRepository used by the service tests,
+// not PostgresQuoteRepository. The real insert/select column lists are guarded
+// statically in repository.test.ts.
+describe('FakeQuoteRepository test double contract', () => {
+  it('updateQuote merges Drive save fields into the stored row', async () => {
     const repo = new FakeQuoteRepository();
     repo.quotes.push({
       quoteNo: 'QTN-2026-0001',
