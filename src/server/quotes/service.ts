@@ -546,6 +546,13 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         folderId
       );
 
+      if (!uploaded.id) throw new Error('Drive did not return a file id.');
+      // Drive normally returns webViewLink, but the field is optional in the API
+      // response. An empty link would commit a row whose file is unreachable from
+      // the UI. The canonical view URL is fully derivable from the id, so fall
+      // back to it rather than discarding a file that uploaded successfully.
+      const driveViewLink = uploaded.webViewLink || `https://drive.google.com/file/d/${uploaded.id}/view`;
+
       let committed: { quoteNo: string; rev: number; caseId: string };
       try {
         committed = await repo.withTransaction(async (tx) => {
@@ -595,7 +602,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
             doc: '',
             pdf: '',
             driveFileId: uploaded.id,
-            driveViewLink: uploaded.webViewLink,
+            driveViewLink,
             driveSavedAt: now,
             driveSavedBy: normalizeEmail(user.email),
             createdBy: normalizeEmail(user.email),
@@ -618,9 +625,10 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         // original database error, because that is the one the user needs.
         try {
           await drive.deleteFile(uploaded.id);
-        } catch {
+        } catch (cleanupError) {
           // Leaves one orphan file in the folder. No data loss, no database
           // impact. Identifiable by its missing "<quoteNo> R<rev>" prefix.
+          console.error('Drive orphan cleanup failed:', uploaded.id, cleanupError);
         }
         throw error;
       }
@@ -632,8 +640,16 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
           uploaded.id,
           `${committed.quoteNo} R${committed.rev} - ${customer.name} - ${fileName}`
         );
-      } catch {
-        // Intentionally ignored.
+      } catch (renameError) {
+        // Cosmetic only: the row and the link are already correct, so the upload
+        // still succeeds. Logged so a file left under its provisional name is
+        // distinguishable from an orphan of a rolled-back transaction.
+        console.error(
+          'Drive post-commit rename failed:',
+          uploaded.id,
+          `${committed.quoteNo} R${committed.rev}`,
+          renameError
+        );
       }
 
       return committed;
