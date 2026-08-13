@@ -12,6 +12,8 @@ function fakeDriveClient(overrides: Partial<DriveClient> = {}): DriveClient {
     copyFile: vi.fn(),
     exportPdf: vi.fn(),
     shareDomainReadable: vi.fn(),
+    renameFile: vi.fn(),
+    deleteFile: vi.fn(),
     ...overrides
   };
 }
@@ -193,6 +195,31 @@ describe('createDriveService', () => {
     });
 
     await expect(driveService.saveQuotationToDrive(outsider, 'QTN-2026-0001', 0)).rejects.toThrow();
+  });
+
+  it('refuses to save an already Drive-hosted upload back to Drive', async () => {
+    repo.quotes.push({
+      ...baseQuote(),
+      rev: 1,
+      source: 'External',
+      fileName: 'customer-quote.pdf',
+      uploadMimeType: 'application/pdf',
+      uploadDataB64: '',
+      driveFileId: 'existing-file-id',
+      driveViewLink: 'https://drive.google.com/file/d/existing-file-id/view'
+    });
+
+    const quoteService = createQuoteService(repo);
+    const driveService = createDriveService({
+      quoteService,
+      quoteRepository: repo,
+      getDriveClient: () => fakeDriveClient(),
+      getFolderId: async () => 'folder-abc'
+    });
+
+    await expect(driveService.saveQuotationToDrive(sales, 'QTN-2026-0001', 1)).rejects.toThrow(
+      /already stored in Google Drive/
+    );
   });
 
   it('propagates a Drive upload failure without corrupting the quote row', async () => {

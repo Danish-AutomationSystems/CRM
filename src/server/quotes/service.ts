@@ -320,15 +320,6 @@ function cleanMimeType(value: unknown): string {
   return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(text) ? text : 'application/octet-stream';
 }
 
-function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function activeRevisions(quotes: readonly QuoteRow[]): QuoteRow[] {
   return quotes.filter((quote) => quote.status === 'Draft' || quote.status === 'Sent');
 }
@@ -414,7 +405,7 @@ async function loadQuote(repo: QuoteRepository, user: CrmContext, quoteNo: strin
   return { quote, customer };
 }
 
-function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDownloadArtifact {
+function externalArtifact(quote: QuoteRow): QuoteDownloadArtifact {
   if (quote.uploadDataB64) {
     return {
       fileName: cleanUploadFileName(quote.fileName),
@@ -423,11 +414,7 @@ function externalArtifact(quote: QuoteRow, customer: QuoteCustomerRow): QuoteDow
     };
   }
 
-  return {
-    fileName: safeQuoteFileName(quote.quoteNo, quote.rev, customer.name),
-    mimeType: 'text/html; charset=utf-8',
-    body: `<!doctype html><html><body><h1>${escapeHtml(quote.quoteNo)} R${quote.rev}</h1><p>External quotation: ${escapeHtml(quote.fileName || 'quotation')}</p></body></html>`
-  };
+  throw new Error('This quotation is stored in Google Drive - use the "View in Drive" link to open it.');
 }
 
 export type QuoteServiceDeps = {
@@ -822,7 +809,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
 
     async getDownloadArtifact(user: CrmContext, quoteNo: string, rev: number): Promise<QuoteDownloadArtifact> {
       const { quote, customer } = await loadQuote(repo, user, quoteNo, rev);
-      if (quote.source === 'External') return externalArtifact(quote, customer);
+      if (quote.source === 'External') return externalArtifact(quote);
 
       const [blocks, users] = await Promise.all([repo.listBoqBlocks(quoteNo, rev), repo.listUsers()]);
       const idx = userIndex(users);

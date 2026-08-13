@@ -429,6 +429,26 @@ describe('quote service external uploads and status changes', () => {
     expect(repo.cases[0].stage).toBe('Quoted');
   });
 
+  it('refuses to build a download artifact for a Drive-hosted upload', async () => {
+    const { deps } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+
+    const result = await service.uploadQuotation(sales, {
+      customerId: 'CUST-0001',
+      caseId: 'CASE-2026-0001',
+      title: 'Vendor offer',
+      fileName: 'vendor-offer.pdf',
+      dataB64: Buffer.from('x').toString('base64'),
+      total: 100,
+      status: 'Sent'
+    });
+
+    expect(repo.quotes[0].uploadDataB64).toBe('');
+    await expect(service.getDownloadArtifact(sales, result.quoteNo, result.rev)).rejects.toThrow(
+      /stored in Google Drive/
+    );
+  });
+
   it('creates Draft external auto-cases at Opportunity and Sent external auto-cases at Quoted', async () => {
     const { repo, service } = makeService();
     repo.cases = [];

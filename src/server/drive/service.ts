@@ -32,9 +32,13 @@ function driveFileName(quoteNo: string, rev: number, customerName: string, baseF
 export function createDriveService(deps: DriveServiceDeps) {
   return {
     async saveQuotationToDrive(user: CrmContext, quoteNo: string, rev: number) {
-      const artifact = await deps.quoteService.getDownloadArtifact(user, quoteNo, rev);
       const quote = await deps.quoteRepository.getQuote(quoteNo, rev);
       if (!quote) throw new Error(`Quotation ${quoteNo} R${rev} was not found.`);
+      if (quote.source === 'External' && !quote.uploadDataB64) {
+        throw new Error(`Quotation ${quoteNo} R${rev} is already stored in Google Drive.`);
+      }
+
+      const artifact = await deps.quoteService.getDownloadArtifact(user, quoteNo, rev);
       const customer = await deps.quoteRepository.getCustomer(quote.customerId);
 
       // Generated quotes already have quoteNo/rev/customerName baked into
