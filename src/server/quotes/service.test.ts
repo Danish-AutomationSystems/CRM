@@ -740,7 +740,7 @@ describe('generateQuoteDoc', () => {
   });
 
   it('refuses to generate when Drive is not configured', async () => {
-    const { repo, service } = makeService();
+    const { repo, service } = makeService({ getDriveClient: undefined, getQuotationsFolderId: undefined });
     seedGenerated(repo);
 
     await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('not configured');
