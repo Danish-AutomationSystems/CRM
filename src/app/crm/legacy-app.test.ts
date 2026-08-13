@@ -339,6 +339,57 @@ describe('legacy CRM full client', () => {
     );
   });
 
+  test('a Drive-hosted upload shows only a View in Drive link', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_listCases') return [];
+      if (fn === 'api_getQuotation') {
+        return {
+          quote: {
+            quoteNo: 'QTN-2026-0001',
+            rev: 0,
+            caseId: 'CASE-2026-0001',
+            title: 'Vendor offer',
+            source: 'External',
+            fileName: 'vendor-offer.pdf',
+            templateId: '',
+            templateName: '',
+            status: 'Sent',
+            subtotal: '',
+            taxPct: '',
+            taxAmount: '',
+            total: 100,
+            currency: 'INR',
+            validUntil: '',
+            notes: '',
+            doc: '',
+            pdf: '',
+            driveViewLink: 'https://drive.google.com/file/d/drive-file-1/view',
+            by: 'Admin User',
+            date: '2026-08-13'
+          },
+          customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+          blocks: [],
+          revisions: [{ rev: 0, status: 'Sent', date: '2026-08-13', total: 100 }]
+        };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('mQuoteViewer("QTN-2026-0001", 0)');
+
+    expect(await screen.findByRole('link', { name: 'View in Drive' })).toHaveAttribute(
+      'href',
+      'https://drive.google.com/file/d/drive-file-1/view'
+    );
+
+    const body = document.getElementById('mbody')?.innerHTML ?? '';
+    expect(body).not.toContain('Download uploaded file');
+    expect(body).not.toContain('Save to Drive');
+  });
+
   test('hides Save to Drive for generated quotes already hosted in Drive', async () => {
     mockRpc((fn) => {
       if (fn === 'api_workspace') return workspace('L6');
