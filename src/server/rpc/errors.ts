@@ -16,7 +16,11 @@ const USER_FACING_PATTERNS = [
   /not configured/i,
   /template/i,
   /placeholder/i,
-  /external file/i
+  /external file/i,
+  // "This quotation is stored in Google Drive - use the "View in Drive" link to open it."
+  // Anchored on the whole phrase so it cannot match an arbitrary internal error
+  // that merely mentions Drive.
+  /stored in google drive/i
 ];
 
 export class RpcError extends Error {
