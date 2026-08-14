@@ -9,6 +9,11 @@
 -- doing so would commit before the schema_migrations bookkeeping row is
 -- written. Everything below is atomic.
 
+-- Fail fast rather than queueing for the ACCESS EXCLUSIVE lock behind a long
+-- read: every logActivity in the system (cases, customers, quotes, admin)
+-- would block behind us while we waited.
+set local lock_timeout = '3s';
+
 alter table public.activity_log
   add column if not exists note text not null default '';
 
@@ -36,7 +41,10 @@ begin
     raise exception 'activity_log.note must be NOT NULL';
   end if;
 
-  if exists (select 1 from public.activity_log where note is null) then
-    raise exception 'activity_log.note contains nulls after backfill';
-  end if;
+  -- Deliberately no `where note is null` probe here: the column is NOT NULL
+  -- three statements up, so the predicate can never be true, and because it
+  -- can never be true Postgres would still seq-scan the largest table to
+  -- prove it - inside this transaction, holding ACCESS EXCLUSIVE on
+  -- activity_log and blocking every writer. Without it,
+  -- `add column ... not null default ''` is metadata-only on PG 11+.
 end $$;
