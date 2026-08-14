@@ -235,6 +235,16 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   // Overloaded so this single implementation satisfies both CaseRepository's widened
   // logActivity (returns the new id) and CustomerRepository's unwidened logActivity
   // (returns void) - this class implements both at once.
+  //
+  // The implementation signature is typed `Promise<string | void>`, not `Promise<string>`,
+  // because TS rejects `Promise<string>` as an implementation for an overload set that
+  // includes a `Promise<void>` signature (TS2394: "This overload signature is not
+  // compatible with its implementation signature") - confirmed by trying it. This is NOT
+  // a loophole: TS does not check the function body against each overload signature
+  // independently, only against this implementation signature, so it will not catch a
+  // future edit that drops the `return` below. That gap is accepted here deliberately -
+  // it is a test fixture, and the real parity guard against a drifting `logActivity` is
+  // src/server/cases/repository.test.ts, not this fake's return type.
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
