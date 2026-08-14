@@ -399,14 +399,24 @@ export class PostgresCaseRepository implements CaseRepository {
 
   async listActivityByEntity(entity: string): Promise<CaseActivityRow[]> {
     const rows = (await this.db`
-      select created_at as when, who, action, details, note
+      select id, created_at as when, who, action, details, note
       from public.activity_log
       where entity = ${entity}
       order by created_at desc
       limit 40
-    `) as Array<{ when: string | Date; who: string; action: string; details: string; note: string | null }>;
+    `) as Array<{
+      id: string;
+      when: string | Date;
+      who: string;
+      action: string;
+      details: string;
+      note: string | null;
+    }>;
 
     return rows.map((row) => ({
+      // case_attachments.activity_id points at this; without it the read path
+      // cannot tell which handover an attachment belongs to.
+      id: String(row.id),
       when: dateString(row.when),
       who: normalizeEmail(row.who),
       action: row.action,

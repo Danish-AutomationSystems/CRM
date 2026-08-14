@@ -331,9 +331,14 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
   async listActivityByEntity(entity: string) {
     // Mirrors the real repository's `order by created_at desc limit 40`:
     // newest-first, capped at 40 rows.
+    // Each row carries its own activity id, derived from its position exactly
+    // as logActivity hands them out - a constant id would make attachments look
+    // grouped while collapsing every entry onto one.
     return this.logs
-      .filter((log) => log.entity === entity)
-      .map((log, index) => ({
+      .map((log, index) => ({ log, id: `LOG-${index + 1}` }))
+      .filter(({ log }) => log.entity === entity)
+      .map(({ log, id }, index) => ({
+        id,
         when: log.when ?? `2026-07-29T00:00:${index}.000Z`,
         who: log.who,
         action: log.action,

@@ -1,8 +1,13 @@
 import { registerRpc } from '../rpc/registry';
+import { createDriveClient } from '../drive/client';
+import { getDriveAttachmentsFolderId } from '../drive/attachments-folder';
 import { caseRepository } from './repository';
 import { createCaseService } from './service';
 
-const service = createCaseService(caseRepository);
+const service = createCaseService(caseRepository, {
+  getDriveClient: createDriveClient,
+  getAttachmentsFolderId: getDriveAttachmentsFolderId
+});
 
 registerRpc('api_listAssignableUsers', ({ context }) => service.listAssignableUsers(context));
 registerRpc(
@@ -37,7 +42,12 @@ registerRpc(
 );
 registerRpc(
   'api_assignTicket',
-  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2]),
+  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2], args[3]),
+  { read: false }
+);
+registerRpc(
+  'api_beginAttachmentUpload',
+  ({ args, context }) => service.beginAttachmentUpload(context, String(args[0] ?? ''), args[1]),
   { read: false }
 );
 registerRpc('api_getCase', ({ args, context }) => service.getCase(context, String(args[0] ?? '')));
