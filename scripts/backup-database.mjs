@@ -45,6 +45,11 @@ const TABLES = [
   'settings',
   'counters',
   'activity_log',
+  // Must stay in this list, and immediately after activity_log: it references
+  // activity_log(id) and users(email), both already above. Omitting it made the
+  // loss invisible at every stage - the backup simply had no such table, and
+  // verify-backup.mjs iterates dump.tables, so it could never notice.
+  'case_attachments',
   'import_customers',
   'import_contacts',
   'schema_migrations'

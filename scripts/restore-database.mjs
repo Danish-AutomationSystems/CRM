@@ -50,6 +50,13 @@ const INSERT_ORDER = [
   'settings',
   'counters',
   'activity_log',
+  // Parent-first: case_attachments references activity_log(id) and users(email),
+  // both already above. It must also be in this list for a second, sharper
+  // reason: the truncate below is `... restart identity cascade` and includes
+  // activity_log, so CASCADE truncates case_attachments whether it is listed or
+  // not. Left out, a restore wiped every attachment row and could put none back,
+  // leaving the Drive files as permanently unreferenced orphans.
+  'case_attachments',
   'import_customers',
   'import_contacts',
   'schema_migrations'
@@ -69,6 +76,15 @@ const sql = postgres(databaseUrl, { prepare: false });
 
 try {
   const present = INSERT_ORDER.filter((table) => Array.isArray(dump.tables?.[table]));
+
+  // The truncate below cascades, so a table the backup does not carry is still
+  // emptied - and this restore has nothing to put back into it. Say so loudly:
+  // that is exactly how case_attachments would have been lost silently.
+  const missing = INSERT_ORDER.filter((table) => !Array.isArray(dump.tables?.[table]));
+  if (missing.length > 0) {
+    console.warn(`WARNING: this backup carries no rows section for: ${missing.join(', ')}.`);
+    console.warn('The truncate cascades, so those tables are emptied and this restore cannot refill them.');
+  }
 
   await sql.begin(async (tx) => {
     // One statement, so ordering and foreign keys resolve together.
