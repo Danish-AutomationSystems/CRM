@@ -1298,6 +1298,9 @@ describe('legacy CRM full client', () => {
       fail() {
         this.onerror?.();
       }
+      progress(loaded: number, total: number) {
+        this.upload.onprogress?.({ lengthComputable: true, loaded, total });
+      }
     }
 
     beforeEach(() => {
@@ -1607,6 +1610,163 @@ describe('legacy CRM full client', () => {
       expect(main.querySelector('img')).toBeNull();
       expect(main.innerHTML).not.toContain(payload);
       expect(window.__AS_CRM_XSS__).not.toBe(true);
+    });
+
+    test('the Latest handover note card also renders its attachment links', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: 'Quoted, waiting on their PO.',
+                attachments: [
+                  {
+                    id: 'ATT-1',
+                    fileName: 'quote-annex.pdf',
+                    viewLink: 'https://drive.google.com/file/d/abc/view',
+                    mimeType: 'application/pdf',
+                    sizeBytes: 4096,
+                    uploadedBy: 'Admin User',
+                    uploadedOn: '2026-08-01'
+                  }
+                ]
+              }
+            ],
+            latestHandoverNote: 'Quoted, waiting on their PO.'
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      const noteCard = [...main.querySelectorAll('.card')].find((c) => c.textContent?.includes('Latest handover note'));
+      expect(noteCard).toBeTruthy();
+      const link = noteCard!.querySelector('a[href="https://drive.google.com/file/d/abc/view"]');
+      expect(link).toBeTruthy();
+      expect(link?.textContent).toBe('quote-annex.pdf');
+
+      // Present at both render sites - the history entry and the summary card.
+      expect(main.querySelectorAll('a[href="https://drive.google.com/file/d/abc/view"]').length).toBe(2);
+    });
+
+    test('an attachment filename is escaped at both the history and Latest handover note render sites', async () => {
+      const payload = '<img src=x onerror=window.__AS_CRM_XSS__=true>.pdf';
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: 'Quoted, waiting on their PO.',
+                attachments: [
+                  {
+                    id: 'ATT-1',
+                    fileName: payload,
+                    viewLink: 'https://drive.google.com/file/d/abc/view',
+                    mimeType: 'application/pdf',
+                    sizeBytes: 4096,
+                    uploadedBy: 'Admin User',
+                    uploadedOn: '2026-08-01'
+                  }
+                ]
+              }
+            ],
+            latestHandoverNote: 'Quoted, waiting on their PO.'
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      const html = main.innerHTML;
+      expect(main.querySelector('img')).toBeNull();
+      expect(html).not.toContain(payload);
+      // Escaped exactly twice - once per render site (history + summary card).
+      expect(html.split('&lt;img src=x onerror=window.__AS_CRM_XSS__=true&gt;.pdf').length - 1).toBe(2);
+      expect(window.__AS_CRM_XSS__).not.toBe(true);
+    });
+
+    test('shows upload progress per file while uploading', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        if (fn === 'api_beginAttachmentUpload') {
+          return [{ fileName: 'report.pdf', sessionUrl: 'https://upload.example/session-1' }];
+        }
+        if (fn === 'api_assignTicket') return { ok: true, assignee: 'Other User' };
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      await openReassignModalWithPick();
+
+      const input = document.getElementById('wk_files') as HTMLInputElement;
+      const file = new File(['x'.repeat(1000)], 'report.pdf', { type: 'application/pdf' });
+      setFiles(input, [file]);
+      window.eval('wkFilesPicked()');
+
+      const reassignButton = await screen.findByRole('button', { name: 'Reassign' });
+      window.eval(reassignButton.getAttribute('onclick') ?? '');
+
+      await waitFor(() => expect(FakeXhr.instances.length).toBe(1));
+      const xhr = FakeXhr.instances[0];
+
+      expect(document.getElementById('wk_filelist')?.textContent).not.toMatch(/%/);
+      xhr.progress(50, 100);
+      await waitFor(() => expect(document.getElementById('wk_filelist')?.textContent).toMatch(/50%/));
+
+      xhr.respond(200, { id: 'DRIVE-FILE-1' });
+      await waitFor(() => expect(document.getElementById('mwrap')?.className).not.toContain('on'));
     });
   });
 });

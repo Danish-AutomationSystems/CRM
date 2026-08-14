@@ -280,6 +280,21 @@ function fmtBytes(n){
   if(v < 1024*1024) return (v/1024).toFixed(1)+' KB';
   return (v/(1024*1024)).toFixed(1)+' MB';
 }
+function attachmentLinksHtml(list){
+  if(!list || !list.length) return '';
+  return '<div class="d" style="margin-top:4px">'+list.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>';
+}
+/* d.history is oldest-first (see repository.ts / service.ts), so the latest
+   activity carrying the current handover note is the LAST matching entry -
+   this deliberately keeps overwriting as it walks forward so it lands on
+   that one, not the first (oldest) note with matching text. */
+function latestNoteAttachments(d){
+  var found = [];
+  (d.history||[]).forEach(function(r){
+    if(r.note && d.latestHandoverNote && r.note===d.latestHandoverNote) found = r.attachments||[];
+  });
+  return found;
+}
 function moneyCell(cur,n){
   if(n===''||n===null||n===undefined) return '<span class="sub">—</span>';
   return '<span class="money">'+esc(cur||'INR')+' '+fmtMoney(n)+'</span>';
@@ -1421,7 +1436,7 @@ function renderCase(d){
       '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
-    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div></div>';
+    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div>'+attachmentLinksHtml(latestNoteAttachments(d))+'</div>';
 
     // status / stage controls
     html += '<div class="card"><div class="ovl">Status</div>';
@@ -1477,7 +1492,7 @@ function renderCase(d){
     if(!(d.history||[]).length) html += '<div class="empty">No activity logged yet.</div>';
     else{
       html += '<ul class="tlx">';
-      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+((r.attachments&&r.attachments.length)?'<div class="d" style="margin-top:4px">'+r.attachments.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>':'')+'</li>'; });
+      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+attachmentLinksHtml(r.attachments)+'</li>'; });
       html += '</ul>';
     }
     html += '</div>';
@@ -1525,12 +1540,19 @@ function mAssign(id, suggestions){
     el('wk_q').focus();
   }).catch(oops);
 }
+function wkFileRowHtml(f, i, pct){
+  return '<div id="wk_frow_'+i+'">'+esc(f.name)+' — '+fmtBytes(f.size)+(pct===undefined||pct===null?'':' — '+pct+'%')+'</div>';
+}
 function wkFilesPicked(){
   var input = el('wk_files');
   var files = input ? Array.prototype.slice.call(input.files) : [];
   el('wk_filelist').innerHTML = files.length
-    ? files.map(function(f){ return '<div>'+esc(f.name)+' — '+fmtBytes(f.size)+'</div>'; }).join('')
+    ? files.map(function(f,i){ return wkFileRowHtml(f,i); }).join('')
     : '';
+}
+function wkSetProgress(i, file, pct){
+  var row = el('wk_frow_'+i);
+  if(row) row.outerHTML = wkFileRowHtml(file, i, pct);
 }
 function wkSearch(){
   var q=low(v('wk_q'));
@@ -1576,12 +1598,15 @@ function wkCancelUpload(){
   wkSetUploading(false);
   toast('Upload cancelled.');
 }
-function wkUploadOne(sessionUrl, file, up){
+function wkUploadOne(sessionUrl, file, up, i){
   return new Promise(function(resolve, reject){
     var xhr = new XMLHttpRequest();
     up.xhrs.push(xhr);
     xhr.open('PUT', sessionUrl, true);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = function(ev){
+      if(ev && ev.lengthComputable) wkSetProgress(i, file, Math.round(ev.loaded/ev.total*100));
+    };
     xhr.onload = function(){
       if(xhr.status>=200 && xhr.status<300){
         var meta;
@@ -1603,7 +1628,7 @@ function wkUploadAndAssign(id, email, note, nm, files){
   gs('api_beginAttachmentUpload', id, files.map(function(f){ return { fileName:f.name, mimeType:f.type || 'application/octet-stream', sizeBytes:f.size }; }))
     .then(function(sessions){
       if(up.cancelled) return Promise.reject(new Error('cancelled'));
-      return Promise.all(files.map(function(f, i){ return wkUploadOne(sessions[i].sessionUrl, f, up); }));
+      return Promise.all(files.map(function(f, i){ return wkUploadOne(sessions[i].sessionUrl, f, up, i); }));
     })
     .then(function(uploaded){
       if(up.cancelled) return;
