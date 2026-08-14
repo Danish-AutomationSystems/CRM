@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCaseService, type CaseActivityLogEntry, type CaseRepository } from './service';
+import { createCaseService, type CaseActivityLogEntry, type CaseAttachmentRow, type CaseRepository } from './service';
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -24,9 +24,12 @@ class FakeCaseRepository implements CaseRepository {
   handlers: HandlerRow[] = [];
   quotes: QuoteRow[] = [];
   logs: CaseActivityLogEntry[] = [];
+  attachments: CaseAttachmentRow[] = [];
   lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
+  nextLogId = 1;
+  nextAttachmentId = 1;
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
 
@@ -126,8 +129,9 @@ class FakeCaseRepository implements CaseRepository {
       }, {});
   }
 
-  async logActivity(entry: CaseActivityLogEntry): Promise<void> {
+  async logActivity(entry: CaseActivityLogEntry): Promise<string> {
     this.logs.push(entry);
+    return `LOG-${this.nextLogId++}`;
   }
 
   async latestHandoverNote(caseId: string): Promise<string> {
@@ -135,6 +139,17 @@ class FakeCaseRepository implements CaseRepository {
       (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
     );
     return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.nextAttachmentId++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import type { CaseRepository } from '../cases/service';
+import type { CaseAttachmentRow, CaseRepository } from '../cases/service';
 import { createCaseService } from '../cases/service';
 import { createCustomerService, type CustomerRepository } from '../customers/service';
 import { createDashboardService, type DashboardRepository } from './service';
@@ -27,11 +27,14 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   contacts: Awaited<ReturnType<CustomerRepository['listContactsByCustomer']>> = [];
   quotes: Awaited<ReturnType<CaseRepository['listQuotesByCase']>> = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; when?: string; note?: string }> = [];
+  attachments: CaseAttachmentRow[] = [];
   failCustomers = false;
   failCases = false;
   nextCustomer = 10;
   nextCase = 10;
   nextContact = 1;
+  nextLogId = 1;
+  nextAttachmentId = 1;
   getCustomerCallCount = 0;
   getCustomersByIdsCalls: string[][] = [];
 
@@ -229,8 +232,14 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
       .slice(0, 40);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
+  // Overloaded so this single implementation satisfies both CaseRepository's widened
+  // logActivity (returns the new id) and CustomerRepository's unwidened logActivity
+  // (returns void) - this class implements both at once.
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
     this.logs.push(entry);
+    return `LOG-${this.nextLogId++}`;
   }
 
   async latestHandoverNote(caseId: string): Promise<string> {
@@ -238,6 +247,17 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
       (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
     );
     return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.nextAttachmentId++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import { createCustomerService, type CustomerRepository } from '../customers/service';
-import { createCaseService, type CaseRepository } from '../cases/service';
+import { createCaseService, type CaseAttachmentRow, type CaseRepository } from '../cases/service';
 import { createQuoteService, type QuoteRepository } from '../quotes/service';
 
 type CustomerRow = Awaited<ReturnType<CustomerRepository['listCustomers']>>[number];
@@ -48,11 +48,14 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; note?: string }> = [];
+  attachments: CaseAttachmentRow[] = [];
   private readonly txLock = new Mutex();
   private customerSeq = 1;
   private contactSeq = 1;
   private caseSeq = 1;
   private quoteSeq = 1;
+  private logSeq = 1;
+  private attachmentSeq = 1;
 
   constructor() {
     this.users = [
@@ -309,8 +312,14 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     return this.blocks.filter((block) => block.quoteNo === quoteNo && block.rev === rev);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
+  // Overloaded so this single implementation satisfies both CaseRepository's widened
+  // logActivity (returns the new id) and CustomerRepository/QuoteRepository's
+  // unwidened logActivity (returns void) - this class implements all three at once.
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
     this.logs.push(entry);
+    return `LOG-${this.logSeq++}`;
   }
 
   async latestHandoverNote(caseId: string): Promise<string> {
@@ -318,6 +327,17 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
       (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
     );
     return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.attachmentSeq++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 
   customer(overrides: Partial<CustomerRow> = {}): CustomerRow {

@@ -98,6 +98,19 @@ export type CaseActivityLogEntry = {
   note?: string;
 };
 
+export type CaseAttachmentRow = {
+  id: string;
+  activityId: string;
+  caseId: string;
+  driveFileId: string;
+  driveViewLink: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedBy: string;
+  createdAt: string;
+};
+
 export type CaseRepository = {
   withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T>;
   lockCustomerName(name: string): Promise<void>;
@@ -117,8 +130,10 @@ export type CaseRepository = {
   listQuotesByCase(caseId: string): Promise<CaseQuoteRow[]>;
   listActivityByEntity(entity: string): Promise<CaseActivityRow[]>;
   latestQuotedValueByCase(): Promise<Record<string, number>>;
-  logActivity(entry: CaseActivityLogEntry): Promise<void>;
+  logActivity(entry: CaseActivityLogEntry): Promise<string>;
   latestHandoverNote(caseId: string): Promise<string>;
+  createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void>;
+  listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]>;
 };
 
 export type CaseInput = Partial<{

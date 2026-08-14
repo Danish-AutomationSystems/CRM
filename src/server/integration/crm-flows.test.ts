@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import { createAdminService, type AdminRepository } from '../admin/service';
-import { createCaseService, type CaseRepository } from '../cases/service';
+import { createCaseService, type CaseAttachmentRow, type CaseRepository } from '../cases/service';
 import { createCustomerService, type CustomerRepository } from '../customers/service';
 import { createDashboardService, type DashboardRepository } from '../dashboard/service';
 import { createQuoteService, type QuoteRepository } from '../quotes/service';
@@ -61,10 +61,13 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; when?: string; note?: string }> = [];
+  attachments: CaseAttachmentRow[] = [];
   customerSeq = 1;
   contactSeq = 1;
   caseSeq = 1;
   quoteSeq = 1;
+  logSeq = 1;
+  attachmentSeq = 1;
 
   async withTransaction<T>(fn: (repo?: this) => Promise<T>): Promise<T> {
     return fn(this);
@@ -400,8 +403,26 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     this.recycle = this.recycle.filter((customer) => customer.id !== id);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
+  // Overloaded so this single implementation satisfies both CaseRepository's widened
+  // logActivity (returns the new id) and AdminRepository/CustomerRepository/
+  // QuoteRepository's unwidened logActivity (returns void) - this class implements
+  // all of them at once.
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
     this.logs.push(entry);
+    return `LOG-${this.logSeq++}`;
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.attachmentSeq++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 
   async latestHandoverNote(caseId: string): Promise<string> {

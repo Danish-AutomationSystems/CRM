@@ -7,6 +7,7 @@ import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
 import type {
   CaseActivityLogEntry,
   CaseActivityRow,
+  CaseAttachmentRow,
   CaseCustomerRow,
   CaseHandlerRow,
   CaseQuoteRow,
@@ -84,6 +85,19 @@ type QuoteDbRow = {
   created_by: string | null;
   doc_link: string | null;
   pdf_link: string | null;
+};
+
+type AttachmentDbRow = {
+  id: string;
+  activity_id: string;
+  case_id: string;
+  drive_file_id: string;
+  drive_view_link: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: string | number;
+  uploaded_by: string | null;
+  created_at: string | Date;
 };
 
 function dateString(value: string | Date | null | undefined): string {
@@ -172,6 +186,21 @@ function toQuote(row: QuoteDbRow): CaseQuoteRow {
     createdBy: normalizeEmail(row.created_by),
     doc: row.doc_link ?? '',
     pdf: row.pdf_link ?? ''
+  };
+}
+
+function toAttachment(row: AttachmentDbRow): CaseAttachmentRow {
+  return {
+    id: row.id,
+    activityId: row.activity_id,
+    caseId: row.case_id,
+    driveFileId: row.drive_file_id,
+    driveViewLink: row.drive_view_link,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes),
+    uploadedBy: normalizeEmail(row.uploaded_by ?? ''),
+    createdAt: dateString(row.created_at)
   };
 }
 
@@ -426,11 +455,14 @@ export class PostgresCaseRepository implements CaseRepository {
     }, {});
   }
 
-  async logActivity(entry: CaseActivityLogEntry): Promise<void> {
-    await this.db`
+  async logActivity(entry: CaseActivityLogEntry): Promise<string> {
+    const rows = (await this.db`
       insert into public.activity_log (who, action, entity, customer_id, details, note)
       values (${entry.who}, ${entry.action}, ${entry.entity}, ${entry.customerId || null}, ${entry.details}, ${entry.note ?? ''})
-    `;
+      returning id
+    `) as Array<{ id: string }>;
+
+    return rows[0].id;
   }
 
   async latestHandoverNote(caseId: string): Promise<string> {
@@ -445,6 +477,47 @@ export class PostgresCaseRepository implements CaseRepository {
     `) as Array<{ note: string }>;
 
     return rows[0]?.note ?? '';
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    if (rows.length === 0) return;
+    const values = rows.map((row) => ({
+      activity_id: row.activityId,
+      case_id: row.caseId,
+      drive_file_id: row.driveFileId,
+      drive_view_link: row.driveViewLink,
+      file_name: row.fileName,
+      mime_type: row.mimeType,
+      size_bytes: row.sizeBytes,
+      uploaded_by: dbEmail(row.uploadedBy)
+    }));
+
+    // A single multi-row insert - one round trip regardless of file count.
+    await this.db`
+      insert into public.case_attachments ${this.db(
+        values,
+        'activity_id',
+        'case_id',
+        'drive_file_id',
+        'drive_view_link',
+        'file_name',
+        'mime_type',
+        'size_bytes',
+        'uploaded_by'
+      )}
+    `;
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    const rows = (await this.db`
+      select id, activity_id, case_id, drive_file_id, drive_view_link, file_name, mime_type,
+             size_bytes, uploaded_by, created_at
+      from public.case_attachments
+      where case_id = ${caseId}
+      order by created_at asc
+    `) as AttachmentDbRow[];
+
+    return rows.map(toAttachment);
   }
 }
 
