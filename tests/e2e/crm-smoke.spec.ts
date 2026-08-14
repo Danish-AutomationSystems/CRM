@@ -751,6 +751,52 @@ test('generating a quotation surfaces real Drive document links and hides Save t
   await expect(page.getByRole('button', { name: 'Save to Drive' })).toHaveCount(0);
 });
 
+test('reassigning a ticket with a handover note shows it on the case page', async ({ context, page }) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  let getCaseCalls = 0;
+  let assignArgs: unknown[] | undefined;
+  await setUpAuthenticatedSession(context, page);
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_assignTicket') {
+      assignArgs = body.args;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { ok: true } }) });
+      return;
+    }
+    if (body.fn === 'api_getCase') {
+      getCaseCalls += 1;
+      const base = rpcData('api_getCase') as Record<string, unknown>;
+      const data =
+        getCaseCalls > 1
+          ? { ...base, latestHandoverNote: 'Quoted, waiting on their PO.' }
+          : base;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/cases');
+  await page.getByText('Panel upgrade').first().click();
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+  await expect(page.getByText('Latest handover note')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'reassign' }).click();
+  await page.locator('#wk_q').fill('Sales');
+  await page.locator('#wk_res').getByText('Sales User').click();
+  await page.locator('#wk_note').fill('Quoted, waiting on their PO.');
+  await page.locator('#wk_go').click();
+
+  await expect(page.getByText('Latest handover note')).toBeVisible();
+  await expect(page.getByText('Quoted, waiting on their PO.')).toBeVisible();
+
+  expect(assignArgs).toEqual(['CASE-2026-0001', 'sales@automationsystems.org', 'Quoted, waiting on their PO.']);
+});
+
 /* --------------------------------------------------------------------------
  * Manager-feedback points P5-P10 (workstream B, UI half).
  * ------------------------------------------------------------------------ */
