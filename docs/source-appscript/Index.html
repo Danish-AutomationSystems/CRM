@@ -1415,7 +1415,7 @@ function renderCase(d){
       '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
-    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d">'+esc(d.latestHandoverNote)+'</div></div>';
+    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div></div>';
 
     // status / stage controls
     html += '<div class="card"><div class="ovl">Status</div>';
@@ -1471,7 +1471,7 @@ function renderCase(d){
     if(!(d.history||[]).length) html += '<div class="empty">No activity logged yet.</div>';
     else{
       html += '<ul class="tlx">';
-      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic">'+esc(r.note)+'</div>':'')+'</li>'; });
+      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+'</li>'; });
       html += '</ul>';
     }
     html += '</div>';
