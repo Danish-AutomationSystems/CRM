@@ -76,7 +76,17 @@ export function createRpcRegistry(): RpcRegistry {
           metadata: { bustClientCache: !registered.options.read }
         };
       } catch (error) {
-        console.error('RPC error:', name, error);
+        // Message and stack only - NEVER the error object itself. Node prints an
+        // object's own enumerable properties, and a GaxiosError from googleapis
+        // carries the OAuth access token at .config.headers.Authorization, so
+        // `console.error(name, error)` writes "Bearer ya29..." into the Vercel
+        // logs. `stack` is a plain string and carries no request config, so it
+        // stays: it is the part that is actually useful for debugging.
+        console.error(
+          'RPC error:',
+          name,
+          error instanceof Error ? error.stack || error.message : String(error)
+        );
         throw normalizeRpcError(error);
       }
     },
