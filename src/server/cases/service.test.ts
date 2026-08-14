@@ -147,11 +147,14 @@ class FakeCaseRepository implements CaseRepository {
     return id;
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
-    const matches = this.logs.filter(
-      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
-    );
-    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
+    for (let i = this.logs.length - 1; i >= 0; i -= 1) {
+      const log = this.logs[i];
+      if (log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== '') {
+        return { note: log.note ?? '', activityId: this.logIds[i] ?? '' };
+      }
+    }
+    return { note: '', activityId: '' };
   }
 
   async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
@@ -1002,6 +1005,37 @@ describe('case service ownership and assignment', () => {
 
     expect(result.latestHandoverNote).toBe('The handover note.');
     expect(result.history.some((entry) => entry.details === 'Working on -> Other Sales')).toBe(false);
+  });
+
+  it('getCase returns the handover activity id, so the client need not match on note text', async () => {
+    const { drive, service } = makeAttachmentService();
+    const meta = drive.put({ id: 'DRIVE-1', name: 'CASE-2026-0001 - report.pdf', size: 11 });
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'The handover note.', [
+      { fileId: meta.id, fileName: 'report.pdf', sizeBytes: 11 }
+    ]);
+
+    const result = await service.getCase(sales, 'CASE-2026-0001');
+    const activityId = result.latestHandoverActivityId;
+
+    expect(activityId).toBeTruthy();
+    // The attachments map is keyed by activity id and is not capped, unlike
+    // history - which is why the client keys off this rather than the note text.
+    expect(result.attachments[activityId]).toHaveLength(1);
+    expect(result.attachments[activityId][0].fileName).toContain('report.pdf');
+    // The history mapper carries the id too, so both render sites agree.
+    const entry = result.history.find((item) => item.id === activityId);
+    expect(entry?.note).toBe('The handover note.');
+  });
+
+  it('getCase reports an empty handover activity id when the case has no handover note', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    const result = await service.getCase(sales, 'CASE-2026-0001');
+
+    expect(result.latestHandoverNote).toBe('');
+    expect(result.latestHandoverActivityId).toBe('');
   });
 });
 

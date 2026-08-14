@@ -135,7 +135,13 @@ export type CaseRepository = {
   listActivityByEntity(entity: string): Promise<CaseActivityRow[]>;
   latestQuotedValueByCase(): Promise<Record<string, number>>;
   logActivity(entry: CaseActivityLogEntry): Promise<string>;
-  latestHandoverNote(caseId: string): Promise<string>;
+  /**
+   * The newest handover note on this case, with the activity it was logged
+   * against. The id is what the client keys attachments off: matching on the
+   * note text instead broke silently once the case had more than 40 activity
+   * entries, because the history the client sees is capped and this is not.
+   */
+  latestHandover(caseId: string): Promise<{ note: string; activityId: string }>;
   createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void>;
   listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]>;
 };
@@ -985,11 +991,11 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async getCase(user: CrmContext, id: string) {
       const { row, customer, ownership } = await loadVisibleCase(repo, user, id);
-      const [users, quotes, history, latestHandoverNote, attachmentRows] = await Promise.all([
+      const [users, quotes, history, latestHandover, attachmentRows] = await Promise.all([
         repo.listUsers(),
         repo.listQuotesByCase(id),
         repo.listActivityByEntity(id),
-        repo.latestHandoverNote(id),
+        repo.latestHandover(id),
         repo.listAttachmentsByCase(id)
       ]);
       const idx = userIndex(users);
@@ -1031,6 +1037,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             by: nameOf(idx, quote.createdBy)
           })),
         history: history.slice().reverse().slice(0, 40).map((item) => ({
+          // The client keys the "Latest handover note" card's attachments off
+          // this, rather than matching on note text.
+          id: item.id,
           when: item.when,
           who: nameOf(idx, item.who),
           action: item.action,
@@ -1041,7 +1050,11 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         // The same rows keyed by the activity they belong to, for callers that
         // want them without walking the (40-entry capped) history.
         attachments: attachmentsByActivity,
-        latestHandoverNote
+        latestHandoverNote: latestHandover.note,
+        // Lets the client find that note's attachments by id. Deliberately not
+        // derived from `history`: that is capped at 40 entries and this is not,
+        // which is exactly how the old text match failed on a busy case.
+        latestHandoverActivityId: latestHandover.activityId
       };
     },
 

@@ -475,18 +475,20 @@ export class PostgresCaseRepository implements CaseRepository {
     return rows[0].id;
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
     const rows = (await this.db`
-      select note
+      select id, note
       from public.activity_log
       where entity = ${caseId}
         and action = 'CASE_ASSIGN'
         and note <> ''
       order by created_at desc
       limit 1
-    `) as Array<{ note: string }>;
+    `) as Array<{ id: string; note: string }>;
 
-    return rows[0]?.note ?? '';
+    // The id comes back with the note so the client can find that handover's
+    // attachments by activity id instead of matching on the note's text.
+    return { note: rows[0]?.note ?? '', activityId: rows[0] ? String(rows[0].id) : '' };
   }
 
   async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {

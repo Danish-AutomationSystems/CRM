@@ -284,16 +284,15 @@ function attachmentLinksHtml(list){
   if(!list || !list.length) return '';
   return '<div class="d" style="margin-top:4px">'+list.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>';
 }
-/* d.history is oldest-first (see repository.ts / service.ts), so the latest
-   activity carrying the current handover note is the LAST matching entry -
-   this deliberately keeps overwriting as it walks forward so it lands on
-   that one, not the first (oldest) note with matching text. */
+/* Keyed on the handover's activity id, which getCase returns alongside the
+   note itself. The attachments map is keyed by activity id and is NOT capped,
+   unlike d.history - matching on note text through history worked only while
+   the case had fewer than 40 activity entries, then silently rendered no
+   links at all. */
 function latestNoteAttachments(d){
-  var found = [];
-  (d.history||[]).forEach(function(r){
-    if(r.note && d.latestHandoverNote && r.note===d.latestHandoverNote) found = r.attachments||[];
-  });
-  return found;
+  var id = d.latestHandoverActivityId;
+  if(!id) return [];
+  return (d.attachments && d.attachments[id]) || [];
 }
 function moneyCell(cur,n){
   if(n===''||n===null||n===undefined) return '<span class="sub">—</span>';

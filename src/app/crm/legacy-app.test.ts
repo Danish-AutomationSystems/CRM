@@ -1635,6 +1635,7 @@ describe('legacy CRM full client', () => {
             quotes: [],
             history: [
               {
+                id: 'LOG-1',
                 when: '2026-08-01',
                 who: 'Admin User',
                 action: 'Reassigned',
@@ -1653,7 +1654,21 @@ describe('legacy CRM full client', () => {
                 ]
               }
             ],
-            latestHandoverNote: 'Quoted, waiting on their PO.'
+            attachments: {
+              'LOG-1': [
+                {
+                  id: 'ATT-1',
+                  fileName: 'quote-annex.pdf',
+                  viewLink: 'https://drive.google.com/file/d/abc/view',
+                  mimeType: 'application/pdf',
+                  sizeBytes: 4096,
+                  uploadedBy: 'Admin User',
+                  uploadedOn: '2026-08-01'
+                }
+              ]
+            },
+            latestHandoverNote: 'Quoted, waiting on their PO.',
+            latestHandoverActivityId: 'LOG-1'
           };
         }
         throw new Error(`Unexpected RPC ${fn}`);
@@ -1673,6 +1688,77 @@ describe('legacy CRM full client', () => {
 
       // Present at both render sites - the history entry and the summary card.
       expect(main.querySelectorAll('a[href="https://drive.google.com/file/d/abc/view"]').length).toBe(2);
+    });
+
+    test('the Latest handover note card still finds its attachments when the handover is outside the 40-entry history window', async () => {
+      // The card used to match on note TEXT, walking d.history - which the server
+      // caps at 40 entries while latestHandoverNote is uncapped. On a busy case
+      // the handover fell off the end of that window and the card silently
+      // rendered no links. Matching on the activity id removes the dependency.
+      const history = Array.from({ length: 40 }, (_, i) => ({
+        id: `LOG-${100 + i}`,
+        when: '2026-08-02',
+        who: 'Admin User',
+        action: 'Edited',
+        details: `edit ${i}`,
+        note: '',
+        attachments: []
+      }));
+
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            // The handover itself is NOT in history - it aged out of the window.
+            history,
+            attachments: {
+              'LOG-1': [
+                {
+                  id: 'ATT-1',
+                  fileName: 'quote-annex.pdf',
+                  viewLink: 'https://drive.google.com/file/d/abc/view',
+                  mimeType: 'application/pdf',
+                  sizeBytes: 4096,
+                  uploadedBy: 'Admin User',
+                  uploadedOn: '2026-08-01'
+                }
+              ]
+            },
+            latestHandoverNote: 'Quoted, waiting on their PO.',
+            latestHandoverActivityId: 'LOG-1'
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      const noteCard = [...main.querySelectorAll('.card')].find((c) => c.textContent?.includes('Latest handover note'));
+      const link = noteCard!.querySelector('a[href="https://drive.google.com/file/d/abc/view"]');
+      expect(link).toBeTruthy();
+      expect(link?.textContent).toBe('quote-annex.pdf');
+      // Only the card renders it: the handover activity is not in the window.
+      expect(main.querySelectorAll('a[href="https://drive.google.com/file/d/abc/view"]').length).toBe(1);
     });
 
     test('an attachment filename is escaped at both the history and Latest handover note render sites', async () => {
@@ -1699,6 +1785,7 @@ describe('legacy CRM full client', () => {
             quotes: [],
             history: [
               {
+                id: 'LOG-1',
                 when: '2026-08-01',
                 who: 'Admin User',
                 action: 'Reassigned',
@@ -1717,7 +1804,21 @@ describe('legacy CRM full client', () => {
                 ]
               }
             ],
-            latestHandoverNote: 'Quoted, waiting on their PO.'
+            attachments: {
+              'LOG-1': [
+                {
+                  id: 'ATT-1',
+                  fileName: payload,
+                  viewLink: 'https://drive.google.com/file/d/abc/view',
+                  mimeType: 'application/pdf',
+                  sizeBytes: 4096,
+                  uploadedBy: 'Admin User',
+                  uploadedOn: '2026-08-01'
+                }
+              ]
+            },
+            latestHandoverNote: 'Quoted, waiting on their PO.',
+            latestHandoverActivityId: 'LOG-1'
           };
         }
         throw new Error(`Unexpected RPC ${fn}`);

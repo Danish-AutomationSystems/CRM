@@ -67,6 +67,7 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
   caseSeq = 1;
   quoteSeq = 1;
   logSeq = 1;
+  logIds: string[] = [];
   attachmentSeq = 1;
 
   async withTransaction<T>(fn: (repo?: this) => Promise<T>): Promise<T> {
@@ -425,8 +426,10 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
+    const id = `LOG-${this.logSeq++}`;
     this.logs.push(entry);
-    return `LOG-${this.logSeq++}`;
+    this.logIds.push(id);
+    return id;
   }
 
   async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
@@ -440,11 +443,14 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     return this.attachments.filter((row) => row.caseId === caseId);
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
-    const matches = this.logs.filter(
-      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
-    );
-    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
+    for (let i = this.logs.length - 1; i >= 0; i -= 1) {
+      const log = this.logs[i];
+      if (log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== '') {
+        return { note: log.note ?? '', activityId: this.logIds[i] ?? '' };
+      }
+    }
+    return { note: '', activityId: '' };
   }
 }
 
