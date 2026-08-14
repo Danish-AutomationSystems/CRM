@@ -101,6 +101,10 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     return this.customers.find((customer) => customer.id === id) ?? null;
   }
 
+  async getCustomersByIds(ids: string[]): Promise<CustomerRow[]> {
+    return this.customers.filter((customer) => ids.includes(customer.id));
+  }
+
   async findCustomerByName(name: string): Promise<CustomerRow | null> {
     const key = name.trim().toLowerCase();
     return this.customers.find((customer) => customer.name.trim().toLowerCase() === key) ?? null;

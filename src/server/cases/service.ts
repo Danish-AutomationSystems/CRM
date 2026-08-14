@@ -104,6 +104,7 @@ export type CaseRepository = {
   nextCustomerId(): Promise<string>;
   nextCaseId(): Promise<string>;
   getCustomer(id: string): Promise<CaseCustomerRow | null>;
+  getCustomersByIds(ids: string[]): Promise<CaseCustomerRow[]>;
   findCustomerByName(name: string): Promise<CaseCustomerRow | null>;
   createCustomer(customer: CaseCustomerRow): Promise<void>;
   addHandler(handler: CaseHandlerRow): Promise<void>;
@@ -627,9 +628,10 @@ export function createCaseService(repo: CaseRepository) {
 
     async listCases(user: CrmContext, filter: CaseListFilter = {}) {
       const caseRows = await repo.listCases();
+      const customerIds = [...new Set(caseRows.map((row) => row.customerId).filter(Boolean))];
       const [cases, customers, handlers, users, quotedValues] = await Promise.all([
         Promise.resolve(caseRows),
-        Promise.all(caseRows.map((row) => repo.getCustomer(row.customerId))),
+        repo.getCustomersByIds(customerIds),
         repo.listHandlers(),
         repo.listUsers(),
         repo.latestQuotedValueByCase()
