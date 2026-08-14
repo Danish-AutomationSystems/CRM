@@ -565,9 +565,11 @@ export function createCaseService(repo: CaseRepository) {
       return { ok: true };
     },
 
-    async assignTicket(user: CrmContext, caseId: string, who: unknown) {
+    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      const note = asText(noteInput);
+      if (note.length > 2000) throw new Error('That handover note is too long - please keep it under 2000 characters.');
       const users = userIndex(await repo.listUsers());
       const email = resolveUser(users, who);
       await repo.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
@@ -576,17 +578,19 @@ export function createCaseService(repo: CaseRepository) {
         entity: caseId,
         customerId: row.customerId,
         details: `Working on -> ${nameOf(users, email)}`,
-        who: normalizeEmail(user.email)
+        who: normalizeEmail(user.email),
+        note
       });
       return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
     },
 
     async getCase(user: CrmContext, id: string) {
       const { row, customer, ownership } = await loadVisibleCase(repo, user, id);
-      const [users, quotes, history] = await Promise.all([
+      const [users, quotes, history, latestHandoverNote] = await Promise.all([
         repo.listUsers(),
         repo.listQuotesByCase(id),
-        repo.listActivityByEntity(id)
+        repo.listActivityByEntity(id),
+        repo.latestHandoverNote(id)
       ]);
       const idx = userIndex(users);
       return {
@@ -614,8 +618,10 @@ export function createCaseService(repo: CaseRepository) {
           when: item.when,
           who: nameOf(idx, item.who),
           action: item.action,
-          details: item.details
-        }))
+          details: item.details,
+          note: item.note
+        })),
+        latestHandoverNote
       };
     },
 
