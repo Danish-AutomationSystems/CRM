@@ -545,6 +545,43 @@ async function deleteOrphanedUploads(drive: DriveClient, fileIds: readonly strin
   }
 }
 
+/**
+ * Shared by both cleanup paths in assignTicket - verification failure and
+ * transaction failure alike. Both reach here holding a set of file ids that
+ * were ours as of an earlier, out-of-transaction read (the already-attached
+ * guard, or the pre-verification state); a concurrent reassignment reporting
+ * the same id(s) can commit a row between that read and this call. Deleting
+ * blindly would then delete the winner's now-referenced file and dangle its
+ * row - the exact defect the 9a808d7 rewrite eliminated for the client-supplied
+ * case. So re-read the current attachments and delete only what is still
+ * unreferenced.
+ *
+ * Fails safe: if the re-read itself throws, nothing is known to be safe, so
+ * nothing is deleted. A residual TOCTOU between this re-read and the
+ * subsequent deleteFile calls is not closable in application code and is
+ * accepted.
+ */
+async function deleteStillUnreferencedUploads(
+  repo: CaseRepository,
+  drive: DriveClient,
+  caseId: string,
+  candidateFileIds: readonly string[]
+): Promise<void> {
+  if (candidateFileIds.length === 0) return;
+  let stillUnreferenced: readonly string[] = candidateFileIds;
+  try {
+    const referenced = new Set((await repo.listAttachmentsByCase(caseId)).map((file) => file.driveFileId));
+    stillUnreferenced = candidateFileIds.filter((fileId) => !referenced.has(fileId));
+  } catch (recheckError) {
+    console.error(
+      'Case attachment cleanup skipped - could not confirm the files are unreferenced:',
+      recheckError instanceof Error ? recheckError.message : 'unknown error'
+    );
+    stillUnreferenced = [];
+  }
+  await deleteOrphanedUploads(drive, stillUnreferenced);
+}
+
 export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = {}) {
   function requireDrive(): { drive: DriveClient; folderId: () => Promise<string> } {
     if (!deps.getDriveClient || !deps.getAttachmentsFolderId) {
@@ -856,7 +893,12 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       // unverified file is never ours to touch.
       const verification = await verifyReportedUploads(drive, folderId, row.id, reported);
       if (!verification.ok) {
-        await deleteOrphanedUploads(drive, verification.deletable);
+        // Same re-read-before-delete guard as the transaction-failure path
+        // below: the already-attached guard above is a read outside any
+        // transaction, so a concurrent reassignment can commit a row for one
+        // of these ids while verification is still working through the rest
+        // of the batch.
+        await deleteStillUnreferencedUploads(repo, drive, caseId, verification.deletable);
         throw new Error(VERIFICATION_FAILED);
       }
       const verified = verification.verified;
@@ -933,19 +975,8 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         // same defect as deleting somebody else's file. So only delete what is
         // still unreferenced; if we cannot establish that, delete nothing and
         // leave a harmless orphan.
-        let stillOurs = ourFileIds;
-        try {
-          const referenced = new Set((await repo.listAttachmentsByCase(caseId)).map((file) => file.driveFileId));
-          stillOurs = ourFileIds.filter((fileId) => !referenced.has(fileId));
-        } catch (recheckError) {
-          console.error(
-            'Case attachment cleanup skipped - could not confirm the files are unreferenced:',
-            recheckError instanceof Error ? recheckError.message : 'unknown error'
-          );
-          stillOurs = [];
-        }
         // Best effort, and never masks the original error - the one the caller needs.
-        await deleteOrphanedUploads(drive, stillOurs);
+        await deleteStillUnreferencedUploads(repo, drive, caseId, ourFileIds);
         throw error;
       }
     },

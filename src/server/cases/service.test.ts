@@ -561,6 +561,71 @@ describe('assignTicket rejects every way a client can lie about an upload', () =
     expect(drive.deleted).toEqual([]);
   });
 
+  it('does not delete a genuine file that got committed between the guard and the cleanup', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-OURS', name: driveNameFor('a.pdf'), size: 10 });
+    drive.put({ id: 'FILE-THEIRS', name: 'Somebody elses quotation.pdf', size: 20, parents: ['FOLDER-quotations'] });
+
+    // The already-attached guard reads first and sees nothing. A concurrent
+    // reassignment then commits a row for FILE-OURS, so by the time this
+    // request gives up on the foreign file, its own id is referenced.
+    const real = repo.listAttachmentsByCase.bind(repo);
+    let reads = 0;
+    repo.listAttachmentsByCase = async (caseId: string) => {
+      reads += 1;
+      if (reads > 1) {
+        return [
+          {
+            id: 'ATT-9',
+            activityId: 'LOG-9',
+            caseId,
+            driveFileId: 'FILE-OURS',
+            driveViewLink: 'https://drive.example/FILE-OURS',
+            fileName: driveNameFor('a.pdf'),
+            mimeType: 'application/pdf',
+            sizeBytes: 10,
+            uploadedBy: sales.email,
+            createdAt: '2026-08-14T00:00:00.000Z'
+          }
+        ];
+      }
+      return real(caseId);
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-OURS', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileId: 'FILE-THEIRS', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+      ])
+    ).rejects.toThrow(/invalid/i);
+
+    expectNothingCommitted(repo);
+    // FILE-OURS now backs the winner's row; FILE-THEIRS was never ours.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-OURS')).toBe(true);
+    expect(drive.files.has('FILE-THEIRS')).toBe(true);
+  });
+
+  it('deletes nothing and commits nothing when Drive fails outright during verification', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    drive.getFileMeta = async () => {
+      // Not a 404/403 - getFileMeta rethrows those as a real error rather than
+      // mapping them to null, and nothing about the file has been established.
+      throw new Error('Drive could not return file metadata: backend error');
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+      ])
+    ).rejects.toThrow(/could not return file metadata/);
+
+    expectNothingCommitted(repo);
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
+  });
+
   it('rejects the same file id reported twice', async () => {
     const { repo, drive, service } = makeAttachmentService();
     drive.put({ id: 'FILE-1', name: driveNameFor('report.pdf'), size: 2048 });
