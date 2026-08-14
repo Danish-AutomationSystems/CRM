@@ -24,7 +24,15 @@ const USER_FACING_PATTERNS = [
   // "That handover note is too long - please keep it under 2000 characters."
   // Anchored on the whole phrase so it cannot match an arbitrary internal error
   // that merely mentions length or characters.
-  /keep it under \d+ characters/i
+  /keep it under \d+ characters/i,
+  // "You can attach at most 10 files per response."
+  // Anchored on the whole phrase so it cannot match an arbitrary internal error
+  // that merely mentions "files" or "response".
+  /you can attach at most \d+ files per response/i,
+  // "Attachment exceeds the 100 MB limit."
+  // Anchored on the whole phrase so it cannot match an arbitrary internal error
+  // that merely mentions megabytes.
+  /attachment exceeds the \d+(\.\d+)? ?mb limit/i
 ];
 
 export class RpcError extends Error {

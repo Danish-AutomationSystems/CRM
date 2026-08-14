@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCaseService, type CaseActivityLogEntry, type CaseRepository } from './service';
+import type { DriveClient, DriveFileMeta, ResumableSessionInput } from '../drive/client';
+import { MAX_ATTACHMENTS_PER_RESPONSE, MAX_ATTACHMENT_BYTES } from './attachments';
+import { createCaseService, type CaseActivityLogEntry, type CaseAttachmentRow, type CaseRepository } from './service';
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -24,9 +26,14 @@ class FakeCaseRepository implements CaseRepository {
   handlers: HandlerRow[] = [];
   quotes: QuoteRow[] = [];
   logs: CaseActivityLogEntry[] = [];
+  /** Ids handed out by logActivity, aligned by index with `logs`. */
+  logIds: string[] = [];
+  attachments: CaseAttachmentRow[] = [];
   lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
+  nextLogId = 1;
+  nextAttachmentId = 1;
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
 
@@ -100,12 +107,19 @@ class FakeCaseRepository implements CaseRepository {
     return this.quotes.filter((quote) => quote.caseId === caseId);
   }
 
-  async listActivityByEntity(entity: string): Promise<Array<{ when: string; who: string; action: string; details: string; note: string }>> {
+  async listActivityByEntity(
+    entity: string
+  ): Promise<Array<{ id: string; when: string; who: string; action: string; details: string; note: string }>> {
     // Mirrors the real repository's `order by created_at desc limit 40`:
-    // newest-first, capped at 40 rows.
+    // newest-first, capped at 40 rows. Each row carries the id logActivity
+    // handed out for it, exactly as the real `select id, ...` now does - a
+    // fake that returned a constant id would make attachments look grouped
+    // while silently collapsing every entry onto one.
     return this.logs
-      .filter((log) => log.entity === entity)
-      .map((log, index) => ({
+      .map((log, index) => ({ log, id: this.logIds[index] }))
+      .filter(({ log }) => log.entity === entity)
+      .map(({ log, id }, index) => ({
+        id,
         when: `2026-07-29T00:00:${index}.000Z`,
         who: log.who,
         action: log.action,
@@ -126,15 +140,32 @@ class FakeCaseRepository implements CaseRepository {
       }, {});
   }
 
-  async logActivity(entry: CaseActivityLogEntry): Promise<void> {
+  async logActivity(entry: CaseActivityLogEntry): Promise<string> {
+    const id = `LOG-${this.nextLogId++}`;
     this.logs.push(entry);
+    this.logIds.push(id);
+    return id;
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
-    const matches = this.logs.filter(
-      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
-    );
-    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
+    for (let i = this.logs.length - 1; i >= 0; i -= 1) {
+      const log = this.logs[i];
+      if (log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== '') {
+        return { note: log.note ?? '', activityId: this.logIds[i] ?? '' };
+      }
+    }
+    return { note: '', activityId: '' };
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.nextAttachmentId++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 }
 
@@ -194,6 +225,87 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
   };
 }
 
+const ATTACHMENTS_FOLDER = 'FOLDER-attachments';
+
+/**
+ * Every Drive method the attachment paths may legitimately use is recorded;
+ * every other method throws, so a test fails loudly if the service reaches
+ * for something it should not. No test ever contacts the real Google API.
+ */
+class FakeDriveClient implements DriveClient {
+  sessions: ResumableSessionInput[] = [];
+  files = new Map<string, DriveFileMeta>();
+  folderNames: string[] = [];
+  renames: Array<{ fileId: string; name: string }> = [];
+  deleted: string[] = [];
+  metaLookups: string[] = [];
+  listCalls = 0;
+  listedCaseIds: string[] = [];
+  failDelete = false;
+
+  put(meta: Partial<DriveFileMeta> & { id: string }): DriveFileMeta {
+    const full: DriveFileMeta = {
+      name: `${meta.id}-name`,
+      size: 0,
+      mimeType: 'application/pdf',
+      webViewLink: `https://drive.example/${meta.id}`,
+      parents: [ATTACHMENTS_FOLDER],
+      ...meta
+    };
+    this.files.set(full.id, full);
+    this.folderNames.push(full.name);
+    return full;
+  }
+
+  async createResumableSession(input: ResumableSessionInput): Promise<{ sessionUrl: string }> {
+    this.sessions.push(input);
+    return { sessionUrl: `https://upload.example/session/${this.sessions.length}` };
+  }
+
+  async getFileMeta(fileId: string): Promise<DriveFileMeta | null> {
+    this.metaLookups.push(fileId);
+    return this.files.get(fileId) ?? null;
+  }
+
+  async listFileNamesInFolder(_folderId: string, caseId: string): Promise<string[]> {
+    this.listCalls += 1;
+    this.listedCaseIds.push(caseId);
+    // Mirrors the real client, which now scopes the query to one case.
+    return this.folderNames.filter((name) => name.startsWith(`${caseId} - `));
+  }
+
+  async renameFile(fileId: string, name: string): Promise<void> {
+    this.renames.push({ fileId, name });
+    const existing = this.files.get(fileId);
+    if (existing) this.files.set(fileId, { ...existing, name });
+  }
+
+  async deleteFile(fileId: string): Promise<void> {
+    this.deleted.push(fileId);
+    if (this.failDelete) throw new Error('Drive delete blew up');
+  }
+
+  async uploadFile(): Promise<{ id: string; webViewLink: string }> {
+    throw new Error('uploadFile must never be used by the attachment path');
+  }
+
+  async listDocsInFolder(): Promise<Array<{ id: string; name: string }>> {
+    throw new Error('listDocsInFolder must never be used by the attachment path');
+  }
+
+  async copyFile(): Promise<{ id: string; webViewLink: string }> {
+    throw new Error('copyFile must never be used by the attachment path');
+  }
+
+  async exportPdf(): Promise<Buffer> {
+    throw new Error('exportPdf must never be used by the attachment path');
+  }
+
+  async shareDomainReadable(): Promise<void> {
+    throw new Error('shareDomainReadable must never be used by the attachment path');
+  }
+}
+
 function makeService() {
   const repo = new FakeCaseRepository();
   repo.customers = [customer()];
@@ -207,6 +319,517 @@ function makeService() {
   repo.handlers = [{ customerId: 'CUST-0001', email: sales.email, assignedBy: sales.email, assignedAt: 'now' }];
   return { repo, service: createCaseService(repo) };
 }
+
+function makeAttachmentService() {
+  const repo = new FakeCaseRepository();
+  repo.customers = [customer()];
+  repo.users = [
+    user({ email: sales.email, name: sales.name }),
+    user({ email: 'other@automationsystems.org', name: 'Other Sales', allowedTags: ['NCR'] }),
+    user({ email: 'worker@automationsystems.org', name: 'Ticket Worker', role: 'L1', allowedTags: [] })
+  ];
+  repo.handlers = [{ customerId: 'CUST-0001', email: sales.email, assignedBy: sales.email, assignedAt: 'now' }];
+  repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+  const drive = new FakeDriveClient();
+  const service = createCaseService(repo, {
+    getDriveClient: () => drive,
+    getAttachmentsFolderId: async () => ATTACHMENTS_FOLDER
+  });
+  return { repo, drive, service };
+}
+
+/** The UTC date buildDriveName stamps into the name, computed the same way. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function driveNameFor(fileName: string, uploader = 'Sales User'): string {
+  return `CASE-2026-0001 - ${todayUtc()} - ${uploader} - ${fileName}`;
+}
+
+describe('beginAttachmentUpload access and validation', () => {
+  it('refuses a user who cannot see the case and creates no upload session', async () => {
+    const { drive, service } = makeAttachmentService();
+    const stranger: CrmContext = {
+      ...sales,
+      email: 'other@automationsystems.org',
+      name: 'Other Sales',
+      allowedTags: ['NCR']
+    };
+
+    await expect(
+      service.beginAttachmentUpload(stranger, 'CASE-2026-0001', [
+        { fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 1024 }
+      ])
+    ).rejects.toThrow();
+
+    expect(drive.sessions).toEqual([]);
+  });
+
+  it('refuses a closed case and creates no upload session', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org', outcome: 'Won' })];
+
+    await expect(
+      service.beginAttachmentUpload(sales, 'CASE-2026-0001', [
+        { fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 1024 }
+      ])
+    ).rejects.toThrow(/closed/);
+
+    expect(drive.sessions).toEqual([]);
+  });
+
+  it('rejects a file over the size limit before creating any session', async () => {
+    const { drive, service } = makeAttachmentService();
+
+    await expect(
+      service.beginAttachmentUpload(sales, 'CASE-2026-0001', [
+        { fileName: 'small.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileName: 'huge.iso', mimeType: 'application/octet-stream', sizeBytes: MAX_ATTACHMENT_BYTES + 1 }
+      ])
+    ).rejects.toThrow(/exceeds the 100 MB limit/);
+
+    expect(drive.sessions).toEqual([]);
+  });
+
+  it('rejects more than the per-response maximum before creating any session', async () => {
+    const { drive, service } = makeAttachmentService();
+    const files = Array.from({ length: MAX_ATTACHMENTS_PER_RESPONSE + 1 }, (_, index) => ({
+      fileName: `file-${index}.pdf`,
+      mimeType: 'application/pdf',
+      sizeBytes: 100
+    }));
+
+    await expect(service.beginAttachmentUpload(sales, 'CASE-2026-0001', files)).rejects.toThrow(
+      /at most \d+ files per response/
+    );
+
+    expect(drive.sessions).toEqual([]);
+  });
+
+  it('names each session server-side and returns only the file name and session url', async () => {
+    const { drive, service } = makeAttachmentService();
+
+    const result = await service.beginAttachmentUpload(sales, 'CASE-2026-0001', [
+      { fileName: '../../etc/passwd', mimeType: 'text/plain', sizeBytes: 12 },
+      { fileName: 'quote.pdf', mimeType: 'application/pdf', sizeBytes: 2048 }
+    ]);
+
+    expect(result).toEqual([
+      { fileName: '../../etc/passwd', sessionUrl: 'https://upload.example/session/1' },
+      { fileName: 'quote.pdf', sessionUrl: 'https://upload.example/session/2' }
+    ]);
+    // Nothing beyond those two keys - no access token, no folder id.
+    expect(result.every((entry) => Object.keys(entry).sort().join(',') === 'fileName,sessionUrl')).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(ATTACHMENTS_FOLDER);
+
+    expect(drive.sessions).toEqual([
+      {
+        fileName: driveNameFor('etcpasswd'),
+        mimeType: 'text/plain',
+        sizeBytes: 12,
+        folderId: ATTACHMENTS_FOLDER
+      },
+      {
+        fileName: driveNameFor('quote.pdf'),
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+        folderId: ATTACHMENTS_FOLDER
+      }
+    ]);
+  });
+
+  it('refuses when Drive is not configured', async () => {
+    const { repo } = makeAttachmentService();
+    const service = createCaseService(repo);
+
+    await expect(
+      service.beginAttachmentUpload(sales, 'CASE-2026-0001', [
+        { fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+      ])
+    ).rejects.toThrow(/not configured/);
+  });
+});
+
+describe('assignTicket rejects every way a client can lie about an upload', () => {
+  const declared = [{ fileId: 'FILE-1', fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 2048 }];
+
+  function expectNothingCommitted(repo: FakeCaseRepository) {
+    expect(repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN')).toHaveLength(0);
+    expect(repo.attachments).toEqual([]);
+    expect(repo.cases[0].assignee).toBe('worker@automationsystems.org');
+  }
+
+  it('rejects a file id Drive does not know, writes nothing, and deletes nothing', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    // FILE-1 was never created (or the app cannot see it) - getFileMeta is null.
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', declared)).rejects.toThrow(
+      /invalid/i
+    );
+
+    expectNothingCommitted(repo);
+    // Unresolvable means unprovable: we cannot show this file is ours, so we
+    // must not delete it. There is nothing to clean up anyway.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.renames).toEqual([]);
+  });
+
+  it('rejects a file whose real size differs from the declared size', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('report.pdf'), size: 999_999, parents: [ATTACHMENTS_FOLDER] });
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', declared)).rejects.toThrow(
+      /invalid/i
+    );
+
+    expectNothingCommitted(repo);
+    expect(drive.deleted).toEqual(['FILE-1']);
+    expect(drive.renames).toEqual([]);
+  });
+
+  it('rejects a file that does not live in our attachments folder, however real it is', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    // A quotation belonging to another customer: it exists, the size matches,
+    // the app's credentials can read it - only its parent gives it away.
+    drive.put({
+      id: 'FILE-1',
+      name: driveNameFor('report.pdf'),
+      size: 2048,
+      parents: ['FOLDER-quotations']
+    });
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', declared)).rejects.toThrow(
+      /invalid/i
+    );
+
+    expectNothingCommitted(repo);
+    // The whole point: this file is NOT ours. Deleting it here would hand any
+    // authenticated user a way to destroy quotations, templates, or any other
+    // file the app's credentials can reach.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
+    expect(drive.renames).toEqual([]);
+  });
+
+  it('rejects an attachment that belongs to a different case, even inside our own folder', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({
+      id: 'FILE-1',
+      name: `CASE-2026-0999 - ${todayUtc()} - Other Sales - report.pdf`,
+      size: 2048,
+      parents: [ATTACHMENTS_FOLDER]
+    });
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', declared)).rejects.toThrow(
+      /invalid/i
+    );
+
+    expectNothingCommitted(repo);
+    // Another case's live attachment: deleting it would leave that case with a
+    // row pointing at nothing.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
+  });
+
+  it('cleans up only the files it proved are ours when a batch mixes ours with a foreign one', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    // A genuine upload for this case, sitting unreferenced in our folder...
+    drive.put({ id: 'FILE-OURS', name: driveNameFor('a.pdf'), size: 10 });
+    // ...smuggled alongside somebody else's quotation.
+    drive.put({ id: 'FILE-THEIRS', name: 'Quotation for another customer.pdf', size: 20, parents: ['FOLDER-quotations'] });
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-OURS', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileId: 'FILE-THEIRS', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+      ])
+    ).rejects.toThrow(/invalid/i);
+
+    expectNothingCommitted(repo);
+    expect(drive.deleted).toEqual(['FILE-OURS']);
+    expect(drive.files.has('FILE-THEIRS')).toBe(true);
+  });
+
+  it('refuses a file already attached to this case, and does not delete the live file', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    const upload = [{ fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }];
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'first handover', upload);
+    expect(repo.attachments).toHaveLength(1);
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'worker', 'second handover', upload)
+    ).rejects.toThrow(/invalid/i);
+
+    expect(repo.attachments).toHaveLength(1);
+    // The file backs a committed row: cleanup must not have touched it.
+    expect(drive.deleted).toEqual([]);
+  });
+
+  it('does not delete a genuine file that got committed between the guard and the cleanup', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-OURS', name: driveNameFor('a.pdf'), size: 10 });
+    drive.put({ id: 'FILE-THEIRS', name: 'Somebody elses quotation.pdf', size: 20, parents: ['FOLDER-quotations'] });
+
+    // The already-attached guard reads first and sees nothing. A concurrent
+    // reassignment then commits a row for FILE-OURS, so by the time this
+    // request gives up on the foreign file, its own id is referenced.
+    const real = repo.listAttachmentsByCase.bind(repo);
+    let reads = 0;
+    repo.listAttachmentsByCase = async (caseId: string) => {
+      reads += 1;
+      if (reads > 1) {
+        return [
+          {
+            id: 'ATT-9',
+            activityId: 'LOG-9',
+            caseId,
+            driveFileId: 'FILE-OURS',
+            driveViewLink: 'https://drive.example/FILE-OURS',
+            fileName: driveNameFor('a.pdf'),
+            mimeType: 'application/pdf',
+            sizeBytes: 10,
+            uploadedBy: sales.email,
+            createdAt: '2026-08-14T00:00:00.000Z'
+          }
+        ];
+      }
+      return real(caseId);
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-OURS', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileId: 'FILE-THEIRS', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+      ])
+    ).rejects.toThrow(/invalid/i);
+
+    expectNothingCommitted(repo);
+    // FILE-OURS now backs the winner's row; FILE-THEIRS was never ours.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-OURS')).toBe(true);
+    expect(drive.files.has('FILE-THEIRS')).toBe(true);
+  });
+
+  it('deletes nothing and commits nothing when Drive fails outright during verification', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    drive.getFileMeta = async () => {
+      // Not a 404/403 - getFileMeta rethrows those as a real error rather than
+      // mapping them to null, and nothing about the file has been established.
+      throw new Error('Drive could not return file metadata: backend error');
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+      ])
+    ).rejects.toThrow(/could not return file metadata/);
+
+    expectNothingCommitted(repo);
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
+  });
+
+  it('rejects the same file id reported twice', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('report.pdf'), size: 2048 });
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [...declared, ...declared])
+    ).rejects.toThrow(/invalid/i);
+
+    expectNothingCommitted(repo);
+    expect(drive.metaLookups).toEqual([]);
+  });
+});
+
+describe('assignTicket commits verified attachments', () => {
+  it('writes one activity row and two attachment rows bound to that activity id', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({
+      id: 'FILE-1',
+      name: driveNameFor('report.pdf'),
+      size: 2048,
+      mimeType: 'application/pdf',
+      webViewLink: 'https://drive.example/FILE-1'
+    });
+    drive.put({
+      id: 'FILE-2',
+      name: driveNameFor('photo.jpg'),
+      size: 4096,
+      mimeType: 'image/jpeg',
+      webViewLink: 'https://drive.example/FILE-2'
+    });
+
+    const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'Two documents attached.', [
+      { fileId: 'FILE-1', fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 2048 },
+      { fileId: 'FILE-2', fileName: 'photo.jpg', mimeType: 'image/jpeg', sizeBytes: 4096 }
+    ]);
+
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
+
+    const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
+    expect(assignLogs).toHaveLength(1);
+    expect(assignLogs[0].details).toBe('Working on -> Other Sales');
+    expect(assignLogs[0].note).toBe('Two documents attached.');
+
+    const activityId = repo.logIds[repo.logs.indexOf(assignLogs[0])];
+    expect(repo.attachments).toHaveLength(2);
+    expect(repo.attachments.map((row) => row.activityId)).toEqual([activityId, activityId]);
+    expect(repo.attachments[0]).toMatchObject({
+      caseId: 'CASE-2026-0001',
+      driveFileId: 'FILE-1',
+      driveViewLink: 'https://drive.example/FILE-1',
+      fileName: driveNameFor('report.pdf'),
+      mimeType: 'application/pdf',
+      // The size Drive reports, never the size the client declared.
+      sizeBytes: 2048,
+      uploadedBy: sales.email
+    });
+    expect(repo.attachments[1]).toMatchObject({ driveFileId: 'FILE-2', sizeBytes: 4096, mimeType: 'image/jpeg' });
+  });
+
+  it('stores a server-built name, ignoring the name the client claims, and disambiguates collisions', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    // Someone else already parked a file under the very name this one will get.
+    drive.folderNames.push(driveNameFor('etcpasswd'));
+    drive.put({ id: 'FILE-1', name: driveNameFor('etcpasswd'), size: 12, mimeType: 'text/plain' });
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', '', [
+      { fileId: 'FILE-1', fileName: '../../etc/passwd', mimeType: 'text/plain', sizeBytes: 12 }
+    ]);
+
+    const stored = repo.attachments[0].fileName;
+    expect(stored).toBe(`${driveNameFor('etcpasswd')} (2)`);
+    expect(stored).not.toContain('..');
+    expect(stored).not.toContain('/');
+    // Uploader name comes from the users table, not from anything the client sent.
+    expect(stored).toContain(' - Sales User - ');
+    expect(drive.renames).toEqual([{ fileId: 'FILE-1', name: stored }]);
+  });
+
+  it('deletes the uploaded files and surfaces the original error when the transaction fails', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    drive.put({ id: 'FILE-2', name: driveNameFor('b.pdf'), size: 20 });
+    repo.createAttachments = async () => {
+      throw new Error('insert exploded');
+    };
+    // Even a failing cleanup must not replace the error the caller needs.
+    drive.failDelete = true;
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', '', [
+        { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileId: 'FILE-2', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+      ])
+    ).rejects.toThrow('insert exploded');
+
+    expect(drive.deleted).toEqual(['FILE-1', 'FILE-2']);
+  });
+
+  it('losing a race to the unique index does not delete the file the winner committed', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    repo.createAttachments = async () => {
+      // A concurrent reassignment reporting the same file id got there first;
+      // its row is committed and case_attachments_drive_file_id_key rejects us.
+      repo.attachments.push({
+        id: 'ATT-9',
+        activityId: 'LOG-9',
+        caseId: 'CASE-2026-0001',
+        driveFileId: 'FILE-1',
+        driveViewLink: 'https://drive.example/FILE-1',
+        fileName: driveNameFor('a.pdf'),
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        uploadedBy: sales.email,
+        createdAt: '2026-08-14T00:00:00.000Z'
+      });
+      throw new Error('duplicate key value violates unique constraint "case_attachments_drive_file_id_key"');
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', '', [
+        { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+      ])
+    ).rejects.toThrow(/duplicate key/);
+
+    // The file now backs the winner's row. Deleting it would leave that row
+    // dangling - the same defect as deleting somebody else's file.
+    expect(drive.deleted).toEqual([]);
+  });
+
+  it('getCase hangs each activity entry its own attachments', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    drive.put({ id: 'FILE-2', name: driveNameFor('b.pdf'), size: 20 });
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'first handover', [
+      { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+    ]);
+    await service.assignTicket(sales, 'CASE-2026-0001', 'worker', 'second handover', [
+      { fileId: 'FILE-2', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+    ]);
+
+    const full = await service.getCase(sales, 'CASE-2026-0001');
+    const entries = full.history.filter((entry) => entry.action === 'CASE_ASSIGN');
+
+    expect(entries).toHaveLength(2);
+    // getCase returns the (newest-40) window oldest-first, and each entry
+    // carries only its own file - not the other handover's.
+    expect(entries[0].attachments.map((file) => file.fileName)).toEqual([driveNameFor('a.pdf')]);
+    expect(entries[1].attachments.map((file) => file.fileName)).toEqual([driveNameFor('b.pdf')]);
+    expect(entries[1].attachments[0]).toMatchObject({
+      viewLink: 'https://drive.example/FILE-2',
+      sizeBytes: 20,
+      uploadedBy: 'Sales User'
+    });
+    expect(Object.keys(full.attachments)).toHaveLength(2);
+  });
+});
+
+describe('assignTicket without attachments is unchanged', () => {
+  it('produces the same details, the same return value, and touches Drive not at all', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+
+    const withUndefined = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
+    const withEmptyList = await service.assignTicket(sales, 'CASE-2026-0001', 'worker', 'A note.', []);
+
+    expect(withUndefined).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(withEmptyList).toEqual({
+      ok: true,
+      assignee: 'Ticket Worker',
+      assigneeEmail: 'worker@automationsystems.org'
+    });
+
+    const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
+    expect(assignLogs.map((entry) => entry.details)).toEqual([
+      'Working on -> Other Sales',
+      'Working on -> Ticket Worker'
+    ]);
+    expect(assignLogs.every((entry) => entry.note === 'A note.')).toBe(true);
+    expect(repo.attachments).toEqual([]);
+
+    expect(drive.sessions).toEqual([]);
+    expect(drive.metaLookups).toEqual([]);
+    expect(drive.renames).toEqual([]);
+    expect(drive.deleted).toEqual([]);
+    expect(drive.listCalls).toBe(0);
+  });
+
+  it('still reassigns with no attachments when Drive is not configured at all', async () => {
+    const { repo } = makeAttachmentService();
+    const service = createCaseService(repo);
+
+    const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
+
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+  });
+});
 
 describe('case service ownership and assignment', () => {
   it('P11: seeds owners from the real handlers at creation and stores them on the case', async () => {
@@ -382,6 +1005,37 @@ describe('case service ownership and assignment', () => {
 
     expect(result.latestHandoverNote).toBe('The handover note.');
     expect(result.history.some((entry) => entry.details === 'Working on -> Other Sales')).toBe(false);
+  });
+
+  it('getCase returns the handover activity id, so the client need not match on note text', async () => {
+    const { drive, service } = makeAttachmentService();
+    const meta = drive.put({ id: 'DRIVE-1', name: 'CASE-2026-0001 - report.pdf', size: 11 });
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'The handover note.', [
+      { fileId: meta.id, fileName: 'report.pdf', sizeBytes: 11 }
+    ]);
+
+    const result = await service.getCase(sales, 'CASE-2026-0001');
+    const activityId = result.latestHandoverActivityId;
+
+    expect(activityId).toBeTruthy();
+    // The attachments map is keyed by activity id and is not capped, unlike
+    // history - which is why the client keys off this rather than the note text.
+    expect(result.attachments[activityId]).toHaveLength(1);
+    expect(result.attachments[activityId][0].fileName).toContain('report.pdf');
+    // The history mapper carries the id too, so both render sites agree.
+    const entry = result.history.find((item) => item.id === activityId);
+    expect(entry?.note).toBe('The handover note.');
+  });
+
+  it('getCase reports an empty handover activity id when the case has no handover note', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    const result = await service.getCase(sales, 'CASE-2026-0001');
+
+    expect(result.latestHandoverNote).toBe('');
+    expect(result.latestHandoverActivityId).toBe('');
   });
 });
 

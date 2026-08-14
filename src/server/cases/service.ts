@@ -12,6 +12,8 @@ import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
 import { joinPipe, normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
 import type { CustomerRecord } from '../domain/types';
+import type { DriveClient, DriveFileMeta } from '../drive/client';
+import { buildDriveName, disambiguate, validateRequestedUploads } from './attachments';
 
 export type CaseCustomerRow = {
   id: string;
@@ -82,6 +84,8 @@ export type CaseQuoteRow = {
 };
 
 export type CaseActivityRow = {
+  /** activity_log.id - what case_attachments.activity_id points at. */
+  id: string;
   when: string;
   who: string;
   action: string;
@@ -96,6 +100,19 @@ export type CaseActivityLogEntry = {
   details: string;
   who: string;
   note?: string;
+};
+
+export type CaseAttachmentRow = {
+  id: string;
+  activityId: string;
+  caseId: string;
+  driveFileId: string;
+  driveViewLink: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedBy: string;
+  createdAt: string;
 };
 
 export type CaseRepository = {
@@ -117,8 +134,16 @@ export type CaseRepository = {
   listQuotesByCase(caseId: string): Promise<CaseQuoteRow[]>;
   listActivityByEntity(entity: string): Promise<CaseActivityRow[]>;
   latestQuotedValueByCase(): Promise<Record<string, number>>;
-  logActivity(entry: CaseActivityLogEntry): Promise<void>;
-  latestHandoverNote(caseId: string): Promise<string>;
+  logActivity(entry: CaseActivityLogEntry): Promise<string>;
+  /**
+   * The newest handover note on this case, with the activity it was logged
+   * against. The id is what the client keys attachments off: matching on the
+   * note text instead broke silently once the case had more than 40 activity
+   * entries, because the history the client sees is capped and this is not.
+   */
+  latestHandover(caseId: string): Promise<{ note: string; activityId: string }>;
+  createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void>;
+  listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]>;
 };
 
 export type CaseInput = Partial<{
@@ -345,7 +370,239 @@ function sortableUpdated(row: CaseRow): string {
   return String(row.updatedAt || row.createdAt || '');
 }
 
-export function createCaseService(repo: CaseRepository) {
+export type CaseServiceDeps = {
+  getDriveClient?: () => DriveClient;
+  getAttachmentsFolderId?: () => Promise<string>;
+};
+
+/** What the client claims it uploaded. Every field of it is untrusted. */
+type ReportedUpload = { fileId: string; fileName: string; mimeType: string; sizeBytes: number };
+
+type VerifiedUpload = { reported: ReportedUpload; meta: DriveFileMeta };
+
+/**
+ * The single message every verification failure produces. Deliberately uniform:
+ * telling the client *which* check failed would turn this endpoint into an
+ * oracle for whether a given Drive file id exists and what size it is. The
+ * detail an operator needs goes to the server log instead.
+ *
+ * Contains "invalid" so `normalizeRpcError` classifies it as a 400 rather than
+ * flattening it to a generic 500.
+ */
+const VERIFICATION_FAILED = 'That upload could not be verified in Google Drive - the file is missing or invalid. Please upload it again.';
+
+const UPLOAD_DETAILS_INVALID = 'Attachment upload details are invalid.';
+
+/**
+ * Normalises what the client reported about its uploads. Returns an empty list
+ * for "no attachments" so the caller can keep the untouched pre-attachment path
+ * byte for byte.
+ *
+ * Reuses `validateRequestedUploads` so the per-response count cap and the 100 MB
+ * cap are enforced identically on both the session and the commit path.
+ */
+function parseReportedUploads(value: unknown): ReportedUpload[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(UPLOAD_DETAILS_INVALID);
+  if (value.length === 0) return [];
+
+  const records = value.map((item) => {
+    if (typeof item !== 'object' || item === null) throw new Error(UPLOAD_DETAILS_INVALID);
+    return item as Record<string, unknown>;
+  });
+
+  const files = validateRequestedUploads(
+    records.map((record) => ({
+      fileName: record.fileName,
+      mimeType: record.mimeType,
+      sizeBytes: record.sizeBytes
+    }))
+  );
+
+  const fileIds = records.map((record) => (typeof record.fileId === 'string' ? record.fileId.trim() : ''));
+  if (fileIds.some((fileId) => fileId.length === 0)) throw new Error(UPLOAD_DETAILS_INVALID);
+  // A repeated id would write two rows for one file - and would let a client
+  // pad a response with copies of a single upload.
+  if (new Set(fileIds).size !== fileIds.length) throw new Error(UPLOAD_DETAILS_INVALID);
+
+  return files.map((file, index) => ({ ...file, fileId: fileIds[index] }));
+}
+
+/**
+ * The outcome of verification. On failure it carries the ids that were *proved*
+ * to be ours, because those - and only those - may be deleted afterwards.
+ */
+type VerificationResult =
+  | { ok: true; verified: VerifiedUpload[] }
+  | { ok: false; deletable: string[] };
+
+/**
+ * Independently confirms, against Drive itself, that every reported file is one
+ * this response is actually allowed to attach. The client is never believed:
+ *
+ *  1. the file must exist and be reachable by our credentials;
+ *  2. its parents must include our attachments folder - without this a client
+ *     could name any file the app's credentials can read, including another
+ *     customer's quotation;
+ *  3. its name must carry this case's id prefix. Names are built server-side by
+ *     `beginAttachmentUpload`, so this proves the file was created by a session
+ *     issued for *this* case, and stops a file id borrowed from another case's
+ *     handover - which does sit in the shared attachments folder, and so passes
+ *     check 2 - from being re-attached here.
+ *  4. its real size must match the declared size (a truncated or abandoned
+ *     resumable upload fails here).
+ *
+ * Checks 2 and 3 together are what makes a file "ours": in our folder, named
+ * for this case. They are evaluated for *every* reported file, and evaluated
+ * before the size check, because the answer decides what the caller is allowed
+ * to delete. A file that fails either one is never touched again - deleting it
+ * would let any authenticated user destroy arbitrary Drive files.
+ *
+ * Never writes and never deletes; the caller decides both.
+ */
+async function verifyReportedUploads(
+  drive: DriveClient,
+  folderId: string,
+  caseId: string,
+  reported: readonly ReportedUpload[]
+): Promise<VerificationResult> {
+  const metas = await Promise.all(reported.map((upload) => drive.getFileMeta(upload.fileId)));
+
+  const checked = reported.map((upload, index) => {
+    const meta = metas[index];
+    // Unresolvable is unprovable: without metadata we cannot show the file is
+    // ours, so it is not deletable either.
+    const ours = meta !== null && meta.parents.includes(folderId) && meta.name.startsWith(`${caseId} - `);
+    return { upload, meta, ours };
+  });
+  // Every id we are entitled to delete, whatever else went wrong below.
+  const deletable = checked.filter((file) => file.ours).map((file) => file.upload.fileId);
+
+  // getFileMeta maps 403 and 404 both to null - fail-closed, and correct, but it
+  // makes a credential/scope misconfiguration look exactly like a deleted file.
+  // Every id failing at once is the signature of the former; one of several is
+  // the signature of the latter. Say which, so an operator can tell them apart
+  // from the log alone. The user still sees only the uniform message above.
+  const unresolved = checked.filter((file) => file.meta === null).map((file) => file.upload.fileId);
+  if (unresolved.length > 0) {
+    console.error(
+      unresolved.length === reported.length && reported.length > 1
+        ? `Case attachment verification: all ${reported.length} reported files were unresolvable (${unresolved.join(', ')}) - either every upload failed, or the CRM's Drive credentials/scope can no longer read the attachments folder.`
+        : `Case attachment verification: file id(s) ${unresolved.join(', ')} could not be resolved - the file does not exist, or our Drive credentials cannot see it (Drive reports 403 and 404 identically here). ${reported.length - unresolved.length} of ${reported.length} resolved fine, so the credentials themselves are working.`
+    );
+    return { ok: false, deletable };
+  }
+
+  const foreign = checked.filter((file) => !file.ours);
+  if (foreign.length > 0) {
+    for (const file of foreign) {
+      const meta = file.meta;
+      console.error(
+        meta && !meta.parents.includes(folderId)
+          ? `Case attachment verification: ${file.upload.fileId} is not in the configured attachments folder (it has ${meta.parents.length} parent(s), none of them ours) - a client pointed at a file it did not upload here. Left untouched.`
+          : `Case attachment verification: ${file.upload.fileId} was not named for ${caseId} - it belongs to another case's handover. Left untouched.`
+      );
+    }
+    return { ok: false, deletable };
+  }
+
+  const verified: VerifiedUpload[] = [];
+  for (const file of checked) {
+    const meta = file.meta;
+    // Unreachable: `unresolved` returned above. Narrows the type without a cast.
+    if (!meta) return { ok: false, deletable };
+
+    if (meta.size !== file.upload.sizeBytes) {
+      console.error(
+        `Case attachment verification: ${file.upload.fileId} is ${meta.size} bytes but ${file.upload.sizeBytes} was declared - incomplete upload, or a substituted file id.`
+      );
+      return { ok: false, deletable };
+    }
+
+    verified.push({ reported: file.upload, meta });
+  }
+
+  return { ok: true, verified };
+}
+
+/**
+ * Best effort, and deliberately silent about its own failures: the caller is
+ * about to rethrow the error the user actually needs, and a cleanup failure
+ * must never replace it. A file left behind is one orphan in the attachments
+ * folder - no data loss, no database impact, identifiable by having no row.
+ *
+ * THE RULE: only ever pass ids this request both created and verified as ours -
+ * in our attachments folder, named for this case, and not already attached.
+ * Anything else is somebody else's file, and this function is a delete.
+ */
+async function deleteOrphanedUploads(drive: DriveClient, fileIds: readonly string[]): Promise<void> {
+  for (const fileId of fileIds) {
+    try {
+      await drive.deleteFile(fileId);
+    } catch (cleanupError) {
+      // Message only: a GaxiosError carries the bearer token in
+      // .config.headers.Authorization and must never be logged whole.
+      console.error(
+        'Case attachment orphan cleanup failed:',
+        fileId,
+        cleanupError instanceof Error ? cleanupError.message : 'unknown error'
+      );
+    }
+  }
+}
+
+/**
+ * Shared by both cleanup paths in assignTicket - verification failure and
+ * transaction failure alike. Both reach here holding a set of file ids that
+ * were ours as of an earlier, out-of-transaction read (the already-attached
+ * guard, or the pre-verification state); a concurrent reassignment reporting
+ * the same id(s) can commit a row between that read and this call. Deleting
+ * blindly would then delete the winner's now-referenced file and dangle its
+ * row - the exact defect the 9a808d7 rewrite eliminated for the client-supplied
+ * case. So re-read the current attachments and delete only what is still
+ * unreferenced.
+ *
+ * Fails safe: if the re-read itself throws, nothing is known to be safe, so
+ * nothing is deleted. A residual TOCTOU between this re-read and the
+ * subsequent deleteFile calls is not closable in application code and is
+ * accepted.
+ */
+async function deleteStillUnreferencedUploads(
+  repo: CaseRepository,
+  drive: DriveClient,
+  caseId: string,
+  candidateFileIds: readonly string[]
+): Promise<void> {
+  if (candidateFileIds.length === 0) return;
+  let stillUnreferenced: readonly string[] = candidateFileIds;
+  try {
+    const referenced = new Set((await repo.listAttachmentsByCase(caseId)).map((file) => file.driveFileId));
+    stillUnreferenced = candidateFileIds.filter((fileId) => !referenced.has(fileId));
+  } catch (recheckError) {
+    console.error(
+      'Case attachment cleanup skipped - could not confirm the files are unreferenced:',
+      recheckError instanceof Error ? recheckError.message : 'unknown error'
+    );
+    stillUnreferenced = [];
+  }
+  await deleteOrphanedUploads(drive, stillUnreferenced);
+}
+
+export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = {}) {
+  function requireDrive(): { drive: DriveClient; folderId: () => Promise<string> } {
+    if (!deps.getDriveClient || !deps.getAttachmentsFolderId) {
+      throw new Error('Google Drive is not configured. Run the one-time Drive setup first.');
+    }
+    const getFolderId = deps.getAttachmentsFolderId;
+    return { drive: deps.getDriveClient(), folderId: () => getFolderId() };
+  }
+
+  async function uploaderNameFor(user: CrmContext): Promise<string> {
+    // Server-derived, from the users table - buildDriveName does not sanitise
+    // this field, so it must never be anything the client sent.
+    return nameOf(userIndex(await repo.listUsers()), user.email);
+  }
+
   return {
     async listAssignableUsers(_user: CrmContext) {
       return (await repo.listUsers())
@@ -566,34 +823,198 @@ export function createCaseService(repo: CaseRepository) {
       return { ok: true };
     },
 
-    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown) {
+    /**
+     * Issues one Drive resumable upload session per requested file so the
+     * browser can send the bytes straight to Google - 100 MB cannot pass
+     * through Vercel's 4.5 MB request body limit.
+     *
+     * Access is checked first, before any session exists, so a user who cannot
+     * see the case learns nothing and consumes nothing. Only `{ fileName,
+     * sessionUrl }` crosses back: never the access token, never the folder id.
+     */
+    async beginAttachmentUpload(user: CrmContext, caseId: string, files: unknown) {
+      const { row } = await loadVisibleCase(repo, user, caseId);
+      if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      const requested = validateRequestedUploads(files);
+
+      const { drive, folderId: resolveFolderId } = requireDrive();
+      const folderId = await resolveFolderId();
+      const uploaderName = await uploaderNameFor(user);
+      const when = new Date();
+
+      const sessions: Array<{ fileName: string; sessionUrl: string }> = [];
+      for (const file of requested) {
+        const { sessionUrl } = await drive.createResumableSession({
+          // Server-built name: the client's file name is only ever an input to
+          // buildDriveName, which sanitises it.
+          fileName: buildDriveName({ caseId: row.id, uploaderName, fileName: file.fileName, when }),
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          folderId
+        });
+        sessions.push({ fileName: file.fileName, sessionUrl });
+      }
+      return sessions;
+    },
+
+    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown, uploadsInput?: unknown) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
       const note = asText(noteInput);
       if (note.length > 2000) throw new Error('That handover note is too long - please keep it under 2000 characters.');
       const users = userIndex(await repo.listUsers());
       const email = resolveUser(users, who);
-      await repo.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
-      await repo.logActivity({
-        action: 'CASE_ASSIGN',
-        entity: caseId,
-        customerId: row.customerId,
-        details: `Working on -> ${nameOf(users, email)}`,
-        who: normalizeEmail(user.email),
-        note
-      });
-      return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+      const reported = parseReportedUploads(uploadsInput);
+
+      if (reported.length === 0) {
+        // Unchanged path: no transaction, no Drive call, identical details and
+        // return value to before attachments existed.
+        await repo.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
+        await repo.logActivity({
+          action: 'CASE_ASSIGN',
+          entity: caseId,
+          customerId: row.customerId,
+          details: `Working on -> ${nameOf(users, email)}`,
+          who: normalizeEmail(user.email),
+          note
+        });
+        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+      }
+
+      // Checked before the cleanup-guarded block on purpose: these files back
+      // rows that already exist, so failing inside that block would delete a
+      // live attachment out from under an earlier handover.
+      const alreadyAttached = new Set((await repo.listAttachmentsByCase(caseId)).map((file) => file.driveFileId));
+      if (reported.some((upload) => alreadyAttached.has(upload.fileId))) {
+        throw new Error(UPLOAD_DETAILS_INVALID);
+      }
+
+      const { drive, folderId: resolveFolderId } = requireDrive();
+      const folderId = await resolveFolderId();
+
+      // Verification runs outside the cleanup-guarded block on purpose. It
+      // decides which ids are ours, and only it can say so; a catch-all around
+      // it would be cleaning up files it had just proved belong to someone
+      // else. If getFileMeta throws outright, nothing is deleted at all - an
+      // unverified file is never ours to touch.
+      const verification = await verifyReportedUploads(drive, folderId, row.id, reported);
+      if (!verification.ok) {
+        // Same re-read-before-delete guard as the transaction-failure path
+        // below: the already-attached guard above is a read outside any
+        // transaction, so a concurrent reassignment can commit a row for one
+        // of these ids while verification is still working through the rest
+        // of the batch.
+        await deleteStillUnreferencedUploads(repo, drive, caseId, verification.deletable);
+        throw new Error(VERIFICATION_FAILED);
+      }
+      const verified = verification.verified;
+      // Past this point every id has been proved ours, so the whole set is safe
+      // to clean up if the rename or the transaction fails.
+      const ourFileIds = verified.map((file) => file.meta.id);
+
+      try {
+        // Give each file its final name. The base name is rebuilt server-side
+        // rather than taken from Drive, and disambiguated against the folder so
+        // two identically named uploads stay distinguishable. Each file's own
+        // provisional name is removed from the taken set first, so a file never
+        // collides with itself.
+        // Scoped to this case: the folder holds every case's attachments and the
+        // listing is a single page, so an unscoped read could miss collisions.
+        const taken = await drive.listFileNamesInFolder(folderId, row.id);
+        for (const file of verified) {
+          const index = taken.indexOf(file.meta.name);
+          if (index >= 0) taken.splice(index, 1);
+        }
+        const when = new Date();
+        const uploaderName = nameOf(users, user.email);
+        const named = verified.map((file) => {
+          const finalName = disambiguate(
+            buildDriveName({ caseId: row.id, uploaderName, fileName: file.reported.fileName, when }),
+            taken
+          );
+          taken.push(finalName);
+          return { ...file, finalName };
+        });
+        for (const file of named) {
+          await drive.renameFile(file.meta.id, file.finalName);
+        }
+
+        // Every Drive call is finished before the transaction opens: holding one
+        // of only ten pool connections across a Google round trip is not
+        // something this app can afford.
+        return await repo.withTransaction(async (tx) => {
+          const trx = tx ?? repo;
+          await trx.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
+          const activityId = await trx.logActivity({
+            action: 'CASE_ASSIGN',
+            entity: caseId,
+            customerId: row.customerId,
+            details: `Working on -> ${nameOf(users, email)}`,
+            who: normalizeEmail(user.email),
+            note
+          });
+          await trx.createAttachments(
+            named.map((file) => ({
+              activityId,
+              caseId,
+              driveFileId: file.meta.id,
+              // Drive normally returns webViewLink, but the field is optional in
+              // the API response; the canonical URL is derivable from the id.
+              driveViewLink: file.meta.webViewLink || `https://drive.google.com/file/d/${file.meta.id}/view`,
+              fileName: file.finalName,
+              mimeType: file.meta.mimeType,
+              // Drive's size, never the client's declared one.
+              sizeBytes: file.meta.size,
+              uploadedBy: normalizeEmail(user.email)
+            }))
+          );
+          return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+        });
+      } catch (error) {
+        // The rename failed, or the database rolled back: these files are ours
+        // and, in the ordinary case, now unreferenced.
+        //
+        // One exception, and it is the reason for the re-read: the
+        // case_attachments_drive_file_id_key unique index. The already-attached
+        // guard above is a read outside the transaction, so a concurrent
+        // reassignment reporting the same file id can commit between that read
+        // and this insert. We lose on the index - and the file now backs the
+        // winner's row. Deleting it would leave that row dangling, which is the
+        // same defect as deleting somebody else's file. So only delete what is
+        // still unreferenced; if we cannot establish that, delete nothing and
+        // leave a harmless orphan.
+        // Best effort, and never masks the original error - the one the caller needs.
+        await deleteStillUnreferencedUploads(repo, drive, caseId, ourFileIds);
+        throw error;
+      }
     },
 
     async getCase(user: CrmContext, id: string) {
       const { row, customer, ownership } = await loadVisibleCase(repo, user, id);
-      const [users, quotes, history, latestHandoverNote] = await Promise.all([
+      const [users, quotes, history, latestHandover, attachmentRows] = await Promise.all([
         repo.listUsers(),
         repo.listQuotesByCase(id),
         repo.listActivityByEntity(id),
-        repo.latestHandoverNote(id)
+        repo.latestHandover(id),
+        repo.listAttachmentsByCase(id)
       ]);
       const idx = userIndex(users);
+      const formatAttachment = (attachment: CaseAttachmentRow) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        viewLink: attachment.driveViewLink,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.sizeBytes,
+        uploadedBy: nameOf(idx, attachment.uploadedBy),
+        uploadedOn: attachment.createdAt
+      });
+      const attachmentsByActivity = attachmentRows.reduce<Record<string, ReturnType<typeof formatAttachment>[]>>(
+        (map, attachment) => {
+          (map[attachment.activityId] = map[attachment.activityId] ?? []).push(formatAttachment(attachment));
+          return map;
+        },
+        {}
+      );
       return {
         canEdit: true,
         canAssign: roleLevel(user) >= 2,
@@ -616,13 +1037,24 @@ export function createCaseService(repo: CaseRepository) {
             by: nameOf(idx, quote.createdBy)
           })),
         history: history.slice().reverse().slice(0, 40).map((item) => ({
+          // The client keys the "Latest handover note" card's attachments off
+          // this, rather than matching on note text.
+          id: item.id,
           when: item.when,
           who: nameOf(idx, item.who),
           action: item.action,
           details: item.details,
-          note: item.note
+          note: item.note,
+          attachments: attachmentsByActivity[item.id] ?? []
         })),
-        latestHandoverNote
+        // The same rows keyed by the activity they belong to, for callers that
+        // want them without walking the (40-entry capped) history.
+        attachments: attachmentsByActivity,
+        latestHandoverNote: latestHandover.note,
+        // Lets the client find that note's attachments by id. Deliberately not
+        // derived from `history`: that is capped at 40 entries and this is not,
+        // which is exactly how the old text match failed on a busy case.
+        latestHandoverActivityId: latestHandover.activityId
       };
     },
 

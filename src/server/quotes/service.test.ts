@@ -226,7 +226,10 @@ function makeService(deps: QuoteServiceDeps = {}) {
       exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
       shareDomainReadable: vi.fn().mockResolvedValue(undefined),
       renameFile: vi.fn().mockResolvedValue(undefined),
-      deleteFile: vi.fn().mockResolvedValue(undefined)
+      deleteFile: vi.fn().mockResolvedValue(undefined),
+      createResumableSession: vi.fn().mockResolvedValue({ sessionUrl: 'https://upload.example/session' }),
+      getFileMeta: vi.fn().mockResolvedValue(null),
+      listFileNamesInFolder: vi.fn().mockResolvedValue([])
     }),
     getQuotationsFolderId: async () => 'folder-out',
     ...deps
@@ -870,7 +873,10 @@ describe('generateQuoteDoc', () => {
       exportPdf: vi.fn().mockResolvedValue(Buffer.from('%PDF-1.4')),
       shareDomainReadable: vi.fn().mockResolvedValue(undefined),
       renameFile: vi.fn().mockResolvedValue(undefined),
-      deleteFile: vi.fn().mockResolvedValue(undefined)
+      deleteFile: vi.fn().mockResolvedValue(undefined),
+      createResumableSession: vi.fn().mockResolvedValue({ sessionUrl: 'https://upload.example/session' }),
+      getFileMeta: vi.fn().mockResolvedValue(null),
+      listFileNamesInFolder: vi.fn().mockResolvedValue([])
     };
     const docsClient = {
       getDocument: vi.fn().mockResolvedValueOnce(firstDoc).mockResolvedValueOnce(tablesDoc),

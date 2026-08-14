@@ -14,6 +14,9 @@ function fakeDriveClient(overrides: Partial<DriveClient> = {}): DriveClient {
     shareDomainReadable: vi.fn(),
     renameFile: vi.fn(),
     deleteFile: vi.fn(),
+    createResumableSession: vi.fn(),
+    getFileMeta: vi.fn(),
+    listFileNamesInFolder: vi.fn(),
     ...overrides
   };
 }

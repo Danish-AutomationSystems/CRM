@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import { createCustomerService, type CustomerRepository } from '../customers/service';
-import { createCaseService, type CaseRepository } from '../cases/service';
+import { createCaseService, type CaseAttachmentRow, type CaseRepository } from '../cases/service';
 import { createQuoteService, type QuoteRepository } from '../quotes/service';
 
 type CustomerRow = Awaited<ReturnType<CustomerRepository['listCustomers']>>[number];
@@ -48,11 +48,15 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; note?: string }> = [];
+  attachments: CaseAttachmentRow[] = [];
   private readonly txLock = new Mutex();
   private customerSeq = 1;
   private contactSeq = 1;
   private caseSeq = 1;
   private quoteSeq = 1;
+  private logSeq = 1;
+  private logIds: string[] = [];
+  private attachmentSeq = 1;
 
   constructor() {
     this.users = [
@@ -309,15 +313,47 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     return this.blocks.filter((block) => block.quoteNo === quoteNo && block.rev === rev);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
+  // Overloaded so this single implementation satisfies both CaseRepository's widened
+  // logActivity (returns the new id) and CustomerRepository/QuoteRepository's
+  // unwidened logActivity (returns void) - this class implements all three at once.
+  //
+  // The implementation signature is typed `Promise<string | void>`, not `Promise<string>`,
+  // because TS rejects `Promise<string>` as an implementation for an overload set that
+  // includes a `Promise<void>` signature (TS2394: "This overload signature is not
+  // compatible with its implementation signature") - confirmed by trying it. This is NOT
+  // a loophole: TS does not check the function body against each overload signature
+  // independently, only against this implementation signature, so it will not catch a
+  // future edit that drops the `return` below. That gap is accepted here deliberately -
+  // it is a test fixture, and the real parity guard against a drifting `logActivity` is
+  // src/server/cases/repository.test.ts, not this fake's return type.
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
+    const id = `LOG-${this.logSeq++}`;
     this.logs.push(entry);
+    this.logIds.push(id);
+    return id;
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
-    const matches = this.logs.filter(
-      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
-    );
-    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
+    for (let i = this.logs.length - 1; i >= 0; i -= 1) {
+      const log = this.logs[i];
+      if (log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== '') {
+        return { note: log.note ?? '', activityId: this.logIds[i] ?? '' };
+      }
+    }
+    return { note: '', activityId: '' };
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.attachmentSeq++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 
   customer(overrides: Partial<CustomerRow> = {}): CustomerRow {

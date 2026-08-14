@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import type { CaseRepository } from '../cases/service';
+import type { CaseAttachmentRow, CaseRepository } from '../cases/service';
 import { createCaseService } from '../cases/service';
 import { createCustomerService, type CustomerRepository } from '../customers/service';
 import { createDashboardService, type DashboardRepository } from './service';
@@ -27,11 +27,18 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   contacts: Awaited<ReturnType<CustomerRepository['listContactsByCustomer']>> = [];
   quotes: Awaited<ReturnType<CaseRepository['listQuotesByCase']>> = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; when?: string; note?: string }> = [];
+  attachments: CaseAttachmentRow[] = [];
   failCustomers = false;
   failCases = false;
   nextCustomer = 10;
   nextCase = 10;
   nextContact = 1;
+  // Parallel to `logs`, so the fake can answer latestHandover with an id.
+  // Tests that assign `logs` wholesale leave this empty on purpose: those cases
+  // have no meaningful activity id.
+  logIds: string[] = [];
+  nextLogId = 1;
+  nextAttachmentId = 1;
   getCustomerCallCount = 0;
   getCustomersByIdsCalls: string[][] = [];
 
@@ -215,9 +222,14 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   async listActivityByEntity(entity: string) {
     // Mirrors the real repository's `order by created_at desc limit 40`:
     // newest-first, capped at 40 rows.
+    // Each row carries its own activity id, derived from its position exactly
+    // as logActivity hands them out - a constant id would make attachments look
+    // grouped while collapsing every entry onto one.
     return this.logs
-      .filter((log) => log.entity === entity)
-      .map((log, index) => ({
+      .map((log, index) => ({ log, id: `LOG-${index + 1}` }))
+      .filter(({ log }) => log.entity === entity)
+      .map(({ log, id }, index) => ({
+        id,
         when: log.when ?? `2026-07-29T00:00:${index}.000Z`,
         who: log.who,
         action: log.action,
@@ -229,15 +241,47 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
       .slice(0, 40);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
+  // Overloaded so this single implementation satisfies both CaseRepository's widened
+  // logActivity (returns the new id) and CustomerRepository's unwidened logActivity
+  // (returns void) - this class implements both at once.
+  //
+  // The implementation signature is typed `Promise<string | void>`, not `Promise<string>`,
+  // because TS rejects `Promise<string>` as an implementation for an overload set that
+  // includes a `Promise<void>` signature (TS2394: "This overload signature is not
+  // compatible with its implementation signature") - confirmed by trying it. This is NOT
+  // a loophole: TS does not check the function body against each overload signature
+  // independently, only against this implementation signature, so it will not catch a
+  // future edit that drops the `return` below. That gap is accepted here deliberately -
+  // it is a test fixture, and the real parity guard against a drifting `logActivity` is
+  // src/server/cases/repository.test.ts, not this fake's return type.
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void>;
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<string | void> {
+    const id = `LOG-${this.nextLogId++}`;
     this.logs.push(entry);
+    this.logIds.push(id);
+    return id;
   }
 
-  async latestHandoverNote(caseId: string): Promise<string> {
-    const matches = this.logs.filter(
-      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
-    );
-    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
+  async latestHandover(caseId: string): Promise<{ note: string; activityId: string }> {
+    for (let i = this.logs.length - 1; i >= 0; i -= 1) {
+      const log = this.logs[i];
+      if (log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== '') {
+        return { note: log.note ?? '', activityId: this.logIds[i] ?? '' };
+      }
+    }
+    return { note: '', activityId: '' };
+  }
+
+  async createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void> {
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.attachments.push({ ...row, id: `ATT-${this.nextAttachmentId++}`, createdAt: now });
+    }
+  }
+
+  async listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]> {
+    return this.attachments.filter((row) => row.caseId === caseId);
   }
 }
 

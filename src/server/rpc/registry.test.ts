@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { RpcError, callRpc, createRpcRegistry } from './registry';
 import { normalizeRpcError } from './errors';
@@ -94,6 +94,42 @@ describe('RPC registry', () => {
     expect(rpcError.status).toBe(400);
     expect(rpcError.code).toBe('bad_request');
     expect(rpcError.message).toBe(message);
+  });
+
+  it('never writes an OAuth access token to the error log', async () => {
+    // A GaxiosError carries the bearer token as an own enumerable property, so
+    // console.error(error) - Node prints those - would put it in the Vercel log.
+    const gaxiosLike = Object.assign(new Error('Invalid Credentials'), {
+      code: 401,
+      config: {
+        url: 'https://www.googleapis.com/drive/v3/files/file-1',
+        headers: { Authorization: 'Bearer ya29.a0AfB_leak_me_not', 'Content-Type': 'application/json' }
+      },
+      response: { status: 401 }
+    });
+
+    const logged: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+
+    const registry = createRpcRegistry();
+    registry.registerRpc('api_assignTicket', () => {
+      throw gaxiosLike;
+    });
+
+    const thrown = await registry.callRpc('api_assignTicket', [], request, user).catch((err: unknown) => err);
+    spy.mockRestore();
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(String((thrown as RpcError).message)).not.toContain('ya29');
+
+    expect(logged).toHaveLength(1);
+    const transcript = logged.flat().map((part) => String(part)).join(' ');
+    expect(transcript).toContain('RPC error: api_assignTicket');
+    expect(transcript).not.toContain('Bearer');
+    expect(transcript).not.toContain('Authorization');
+    expect(transcript).not.toContain('ya29');
   });
 
   it('still hides unrelated internal errors that merely mention Drive', () => {

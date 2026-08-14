@@ -58,7 +58,9 @@ function migrationAddedActivityLogColumns(): string[] {
 
 function insertValueCount(): number {
   const body = methodBody('logActivity');
-  const match = body.match(/values \(([\s\S]*?)\)\s*`/);
+  // Non-greedy up to the closing paren of the VALUES tuple, then anything up to the
+  // closing backtick (e.g. a trailing `returning id`) - the widened logActivity adds one.
+  const match = body.match(/values \(([\s\S]*?)\)[\s\S]*?`/);
   if (!match) throw new Error('logActivity values list not found');
   let depth = 0;
   let count = 1;
@@ -69,6 +71,81 @@ function insertValueCount(): number {
   }
   return count;
 }
+
+/**
+ * Columns of public.case_attachments, as declared by the migration that creates it.
+ *
+ * Derived rather than hardcoded, for the same reason as migrationAddedActivityLogColumns
+ * above: the defect this guards against is an INSERT/SELECT drifting from the table shape,
+ * and a hardcoded list would only ever catch that drift for columns known in advance.
+ *
+ * `id` and `created_at` are excluded from the "insertable" set below - they are
+ * generated defaults (uuid default gen_random_uuid(), timestamptz default now()) that an
+ * INSERT should not name - but are kept in the "selectable" set since listAttachmentsByCase
+ * returns them as part of CaseAttachmentRow.
+ */
+function caseAttachmentsColumns(): { all: string[]; insertable: string[] } {
+  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
+  const file = fs.readdirSync(dir).find((f) => f.endsWith('.sql') && f.includes('case_attachments'));
+  if (!file) throw new Error('case_attachments migration file not found');
+  const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
+  const match = migrationSql.match(/create table if not exists public\.case_attachments \(([\s\S]*?)\n\);/);
+  if (!match) throw new Error('case_attachments CREATE TABLE not found');
+
+  const all = match[1]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/)[0].replace(/,$/, ''))
+    .filter(Boolean);
+
+  const generated = new Set(['id', 'created_at']);
+  return { all, insertable: all.filter((c) => !generated.has(c)) };
+}
+
+function dbHelperColumns(method: string): string[] {
+  const body = methodBody(method);
+  // Matches the postgres.js multi-row insert helper: this.db(rows, 'col_a', 'col_b', ...)
+  const match = body.match(/this\.db\(\s*\w+,\s*([\s\S]*?)\)/);
+  if (!match) throw new Error(`${method} multi-row insert helper call not found`);
+  return match[1]
+    .split(',')
+    .map((c) => c.trim().replace(/^['"]|['"]$/g, ''))
+    .filter(Boolean);
+}
+
+describe('cases repository case_attachments statements', () => {
+  it('parses a plausible column list from the migration, so a failed regex cannot pass vacuously', () => {
+    const { all } = caseAttachmentsColumns();
+    expect(all.length).toBeGreaterThan(3);
+    expect(all).toContain('activity_id');
+  });
+
+  it('parses a plausible column list from createAttachments, so a failed regex cannot pass vacuously', () => {
+    expect(dbHelperColumns('createAttachments').length).toBeGreaterThan(3);
+  });
+
+  it('createAttachments writes every insertable case_attachments column', () => {
+    const written = dbHelperColumns('createAttachments');
+    const { insertable } = caseAttachmentsColumns();
+    const missing = insertable.filter((c) => !written.includes(c));
+    expect(missing, `createAttachments does not write case_attachments column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('createAttachments writes no column outside the table (typo guard)', () => {
+    const written = dbHelperColumns('createAttachments');
+    const { insertable } = caseAttachmentsColumns();
+    const unknown = written.filter((c) => !insertable.includes(c));
+    expect(unknown, `createAttachments writes unknown column(s): ${unknown.join(', ')}`).toEqual([]);
+  });
+
+  it('listAttachmentsByCase selects every case_attachments column', () => {
+    const selected = selectColumns('listAttachmentsByCase', 'case_attachments');
+    const { all } = caseAttachmentsColumns();
+    const missing = all.filter((c) => !selected.includes(c));
+    expect(missing, `listAttachmentsByCase does not select case_attachments column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+});
 
 describe('cases repository activity_log statements', () => {
   it('parses a plausible column list, so a failed regex cannot pass vacuously', () => {

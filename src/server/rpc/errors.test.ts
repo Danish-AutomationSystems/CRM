@@ -13,6 +13,26 @@ describe('normalizeRpcError', () => {
     expect(normalized.status).toBeLessThan(500);
   });
 
+  it('surfaces the too-many-attachments message to the user with a 400-class status', () => {
+    const error = new Error('You can attach at most 10 files per response.');
+
+    const normalized = normalizeRpcError(error);
+
+    expect(normalized.message).toBe('You can attach at most 10 files per response.');
+    expect(normalized.status).toBe(400);
+    expect(normalized.status).toBeLessThan(500);
+  });
+
+  it('surfaces the attachment-too-large message to the user with a 400-class status', () => {
+    const error = new Error('Attachment exceeds the 100 MB limit.');
+
+    const normalized = normalizeRpcError(error);
+
+    expect(normalized.message).toBe('Attachment exceeds the 100 MB limit.');
+    expect(normalized.status).toBe(400);
+    expect(normalized.status).toBeLessThan(500);
+  });
+
   it('does not leak unrelated internal error text', () => {
     const error = new Error('connection terminated unexpectedly at db pool');
 

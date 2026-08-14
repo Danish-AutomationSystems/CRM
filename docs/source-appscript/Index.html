@@ -274,6 +274,26 @@ function fmtShort(n){
   var v = Number(n||0);
   try{ return v.toLocaleString('en-IN',{maximumFractionDigits:0}); }catch(e){ return String(Math.round(v)); }
 }
+function fmtBytes(n){
+  var v = Number(n||0);
+  if(v < 1024) return v+' B';
+  if(v < 1024*1024) return (v/1024).toFixed(1)+' KB';
+  return (v/(1024*1024)).toFixed(1)+' MB';
+}
+function attachmentLinksHtml(list){
+  if(!list || !list.length) return '';
+  return '<div class="d" style="margin-top:4px">'+list.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>';
+}
+/* Keyed on the handover's activity id, which getCase returns alongside the
+   note itself. The attachments map is keyed by activity id and is NOT capped,
+   unlike d.history - matching on note text through history worked only while
+   the case had fewer than 40 activity entries, then silently rendered no
+   links at all. */
+function latestNoteAttachments(d){
+  var id = d.latestHandoverActivityId;
+  if(!id) return [];
+  return (d.attachments && d.attachments[id]) || [];
+}
 function moneyCell(cur,n){
   if(n===''||n===null||n===undefined) return '<span class="sub">—</span>';
   return '<span class="money">'+esc(cur||'INR')+' '+fmtMoney(n)+'</span>';
@@ -1415,7 +1435,7 @@ function renderCase(d){
       '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
-    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div></div>';
+    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div>'+attachmentLinksHtml(latestNoteAttachments(d))+'</div>';
 
     // status / stage controls
     html += '<div class="card"><div class="ovl">Status</div>';
@@ -1471,7 +1491,7 @@ function renderCase(d){
     if(!(d.history||[]).length) html += '<div class="empty">No activity logged yet.</div>';
     else{
       html += '<ul class="tlx">';
-      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+'</li>'; });
+      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+attachmentLinksHtml(r.attachments)+'</li>'; });
       html += '</ul>';
     }
     html += '</div>';
@@ -1508,12 +1528,30 @@ function mAssign(id, suggestions){
       '<div id="wk_sel" class="hint" style="margin-top:8px">No one selected yet.</div>'+
       '<div class="frow" style="margin-top:10px"><div><label>Handover note <span class="sub">(optional)</span></label>'+
       '<textarea id="wk_note" maxlength="2000" placeholder="What has been done so far, and what the next person needs to know."></textarea></div></div>'+
+      '<div class="frow" style="margin-top:10px"><div><label>Attachments <span class="sub">(optional, any type, up to 100 MB each)</span></label>'+
+      '<input id="wk_files" type="file" multiple onchange="wkFilesPicked()">'+
+      '<div id="wk_filelist" class="hint"></div></div></div>'+
       '<p class="hint">Any CRM user can hold this ticket; ownership is unchanged.</p>',
+      '<button class="btn ghost" id="wk_cancel" style="display:none" onclick="wkCancelUpload()">Cancel upload</button>'+
       '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
       '<button class="btn" id="wk_go" disabled onclick="doAssign()">Reassign</button>');
     wkSearch();
     el('wk_q').focus();
   }).catch(oops);
+}
+function wkFileRowHtml(f, i, pct){
+  return '<div id="wk_frow_'+i+'">'+esc(f.name)+' — '+fmtBytes(f.size)+(pct===undefined||pct===null?'':' — '+pct+'%')+'</div>';
+}
+function wkFilesPicked(){
+  var input = el('wk_files');
+  var files = input ? Array.prototype.slice.call(input.files) : [];
+  el('wk_filelist').innerHTML = files.length
+    ? files.map(function(f,i){ return wkFileRowHtml(f,i); }).join('')
+    : '';
+}
+function wkSetProgress(i, file, pct){
+  var row = el('wk_frow_'+i);
+  if(row) row.outerHTML = wkFileRowHtml(file, i, pct);
 }
 function wkSearch(){
   var q=low(v('wk_q'));
@@ -1528,10 +1566,80 @@ function wkPick(email,name){
   el('wk_go').disabled=false;
   wkSearch();
 }
+var MAX_ATTACHMENT_BYTES = 100*1024*1024;
 function doAssign(){
   if(!S._wk || !S._wk.pick){ toast('Pick a user first.', true); return; }
-  var id=S._wk.id, nm=S._wk.pick.name;
-  gs('api_assignTicket', id, S._wk.pick.email, v('wk_note')).then(function(){ closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash(); }).catch(oops);
+  var id=S._wk.id, nm=S._wk.pick.name, email=S._wk.pick.email, note=v('wk_note');
+  var input = el('wk_files');
+  var files = input ? Array.prototype.slice.call(input.files) : [];
+  for(var i=0;i<files.length;i++){
+    if(files[i].size > MAX_ATTACHMENT_BYTES){
+      toast('"'+files[i].name+'" is larger than 100 MB — please split or compress it first.', true);
+      return;
+    }
+  }
+  if(!files.length){
+    gs('api_assignTicket', id, email, note).then(function(){ closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash(); }).catch(oops);
+    return;
+  }
+  wkUploadAndAssign(id, email, note, nm, files);
+}
+function wkSetUploading(on){
+  var go = el('wk_go'), cancel = el('wk_cancel');
+  if(go) go.disabled = on || !(S._wk && S._wk.pick);
+  if(cancel) cancel.style.display = on ? '' : 'none';
+}
+function wkCancelUpload(){
+  if(!S._wk || !S._wk.upload) return;
+  var up = S._wk.upload;
+  up.cancelled = true;
+  up.xhrs.forEach(function(x){ try{ x.abort(); }catch(e){} });
+  wkSetUploading(false);
+  toast('Upload cancelled.');
+}
+function wkUploadOne(sessionUrl, file, up, i){
+  return new Promise(function(resolve, reject){
+    var xhr = new XMLHttpRequest();
+    up.xhrs.push(xhr);
+    xhr.open('PUT', sessionUrl, true);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = function(ev){
+      if(ev && ev.lengthComputable) wkSetProgress(i, file, Math.round(ev.loaded/ev.total*100));
+    };
+    xhr.onload = function(){
+      if(xhr.status>=200 && xhr.status<300){
+        var meta;
+        try{ meta = JSON.parse(xhr.responseText); }catch(e){ reject(new Error('Upload of "'+file.name+'" did not return file details.')); return; }
+        resolve({ fileId:meta.id, fileName:file.name, mimeType:file.type || 'application/octet-stream', sizeBytes:file.size });
+      }else{
+        reject(new Error('Could not upload "'+file.name+'" ('+xhr.status+').'));
+      }
+    };
+    xhr.onerror = function(){ reject(new Error('Could not upload "'+file.name+'".')); };
+    xhr.onabort = function(){ reject(new Error('cancelled')); };
+    xhr.send(file);
+  });
+}
+function wkUploadAndAssign(id, email, note, nm, files){
+  var up = { cancelled:false, xhrs:[] };
+  S._wk.upload = up;
+  wkSetUploading(true);
+  gs('api_beginAttachmentUpload', id, files.map(function(f){ return { fileName:f.name, mimeType:f.type || 'application/octet-stream', sizeBytes:f.size }; }))
+    .then(function(sessions){
+      if(up.cancelled) return Promise.reject(new Error('cancelled'));
+      return Promise.all(files.map(function(f, i){ return wkUploadOne(sessions[i].sessionUrl, f, up, i); }));
+    })
+    .then(function(uploaded){
+      if(up.cancelled) return;
+      return gs('api_assignTicket', id, email, note, uploaded).then(function(){
+        closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash();
+      });
+    })
+    .catch(function(e){
+      wkSetUploading(false);
+      if(up.cancelled || (e && e.message==='cancelled')) return;
+      oops(e);
+    });
 }
 function doStage(id){
   gs('api_setCaseStage', id, v('stSel'), v('stNote')).then(function(){ toast('Stage updated.'); vCase(id); }).catch(oops);
