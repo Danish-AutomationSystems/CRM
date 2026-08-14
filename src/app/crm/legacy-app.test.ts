@@ -1248,4 +1248,365 @@ describe('legacy CRM full client', () => {
       expect(window.__AS_CRM_XSS__).not.toBe(true);
     });
   });
+
+  describe('Task 6 - reassignment attachments', () => {
+    function setFiles(input: HTMLInputElement, files: File[]) {
+      Object.defineProperty(input, 'files', {
+        configurable: true,
+        value: files
+      });
+    }
+
+    class FakeXhrUpload {
+      onprogress: ((ev: unknown) => void) | null = null;
+    }
+
+    class FakeXhr {
+      static instances: FakeXhr[] = [];
+      method = '';
+      url = '';
+      status = 0;
+      responseText = '';
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      upload = new FakeXhrUpload();
+      aborted = false;
+      sentBody: unknown = null;
+      constructor() {
+        FakeXhr.instances.push(this);
+      }
+      open(method: string, url: string) {
+        this.method = method;
+        this.url = url;
+      }
+      setRequestHeader() {
+        // no-op
+      }
+      send(body: unknown) {
+        this.sentBody = body;
+      }
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+      respond(status: number, body: unknown) {
+        this.status = status;
+        this.responseText = JSON.stringify(body);
+        this.onload?.();
+      }
+      fail() {
+        this.onerror?.();
+      }
+    }
+
+    beforeEach(() => {
+      FakeXhr.instances = [];
+      vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    });
+
+    async function openReassignModalWithPick() {
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('mAssign("CASE-1", [])');
+      await screen.findByPlaceholderText('type a name or username…');
+      window.eval('wkPick("other@automationsystems.org", "Other User")');
+      await screen.findByRole('button', { name: 'Reassign' });
+    }
+
+    test('selecting files lists their names and sizes', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      await openReassignModalWithPick();
+
+      const input = document.getElementById('wk_files') as HTMLInputElement;
+      expect(input).toBeTruthy();
+      const file = new File(['x'.repeat(2048)], 'report.pdf', { type: 'application/pdf' });
+      setFiles(input, [file]);
+      window.eval('wkFilesPicked()');
+
+      const list = document.getElementById('wk_filelist')!;
+      expect(list.textContent).toContain('report.pdf');
+      expect(list.textContent).toContain('2.0 KB');
+    });
+
+    test('submitting uploads files via XHR then calls api_assignTicket with the uploaded file objects', async () => {
+      let beginArgs: unknown[] = [];
+      let assignArgs: unknown[] = [];
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        if (fn === 'api_beginAttachmentUpload') {
+          beginArgs = args;
+          return [{ fileName: 'report.pdf', sessionUrl: 'https://upload.example/session-1' }];
+        }
+        if (fn === 'api_assignTicket') {
+          assignArgs = args;
+          return { ok: true, assignee: 'Other User' };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      await openReassignModalWithPick();
+
+      const input = document.getElementById('wk_files') as HTMLInputElement;
+      const file = new File(['hello world'], 'report.pdf', { type: 'application/pdf' });
+      setFiles(input, [file]);
+      window.eval('wkFilesPicked()');
+
+      const reassignButton = await screen.findByRole('button', { name: 'Reassign' });
+      window.eval(reassignButton.getAttribute('onclick') ?? '');
+
+      await waitFor(() => expect(beginArgs.length).toBeGreaterThan(0));
+      expect(beginArgs[0]).toBe('CASE-1');
+      expect(beginArgs[1]).toEqual([{ fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: file.size }]);
+
+      await waitFor(() => expect(FakeXhr.instances.length).toBe(1));
+      const xhr = FakeXhr.instances[0];
+      expect(xhr.method).toBe('PUT');
+      expect(xhr.url).toBe('https://upload.example/session-1');
+      expect(xhr.sentBody).toBe(file);
+
+      xhr.respond(200, { id: 'DRIVE-FILE-1' });
+
+      await waitFor(() => expect(assignArgs.length).toBeGreaterThan(0));
+      expect(assignArgs[0]).toBe('CASE-1');
+      expect(assignArgs[1]).toBe('other@automationsystems.org');
+      expect(assignArgs[3]).toEqual([
+        { fileId: 'DRIVE-FILE-1', fileName: 'report.pdf', mimeType: 'application/pdf', sizeBytes: file.size }
+      ]);
+    });
+
+    test('a file over 100 MB is rejected client-side with no RPC call', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        if (fn === 'api_beginAttachmentUpload' || fn === 'api_assignTicket') {
+          throw new Error(`Should not call ${fn} for an oversized file`);
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      await openReassignModalWithPick();
+
+      const input = document.getElementById('wk_files') as HTMLInputElement;
+      const bigFile = new File(['x'], 'huge.zip', { type: 'application/zip' });
+      Object.defineProperty(bigFile, 'size', { value: 101 * 1024 * 1024 });
+      setFiles(input, [bigFile]);
+      window.eval('wkFilesPicked()');
+
+      const reassignButton = await screen.findByRole('button', { name: 'Reassign' });
+      window.eval(reassignButton.getAttribute('onclick') ?? '');
+
+      await waitFor(() => {
+        const toast = document.getElementById('toast');
+        expect(toast?.className).toContain('err');
+      });
+      expect(document.getElementById('toast')?.textContent).toMatch(/100 ?MB/i);
+      expect(FakeXhr.instances.length).toBe(0);
+    });
+
+    test('submit is disabled while uploading, and cancel stops the in-flight upload', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        if (fn === 'api_beginAttachmentUpload') {
+          return [{ fileName: 'report.pdf', sessionUrl: 'https://upload.example/session-1' }];
+        }
+        if (fn === 'api_assignTicket') {
+          throw new Error('api_assignTicket must not be called once the upload is cancelled');
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      await openReassignModalWithPick();
+
+      const input = document.getElementById('wk_files') as HTMLInputElement;
+      const file = new File(['hello world'], 'report.pdf', { type: 'application/pdf' });
+      setFiles(input, [file]);
+      window.eval('wkFilesPicked()');
+
+      const reassignButton = (await screen.findByRole('button', { name: 'Reassign' })) as HTMLButtonElement;
+      window.eval(reassignButton.getAttribute('onclick') ?? '');
+
+      await waitFor(() => expect(FakeXhr.instances.length).toBe(1));
+      expect((document.getElementById('wk_go') as HTMLButtonElement).disabled).toBe(true);
+
+      const cancelButton = document.getElementById('wk_cancel') as HTMLButtonElement;
+      expect(cancelButton).toBeTruthy();
+      expect(cancelButton.style.display).not.toBe('none');
+      window.eval(cancelButton.getAttribute('onclick') ?? '');
+
+      expect(FakeXhr.instances[0].aborted).toBe(true);
+      await waitFor(() => expect((document.getElementById('wk_go') as HTMLButtonElement).disabled).toBe(false));
+      expect(cancelButton.style.display).toBe('none');
+    });
+
+    test('history renders attachment links', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: '',
+                attachments: [
+                  {
+                    id: 'ATT-1',
+                    fileName: 'quote-annex.pdf',
+                    viewLink: 'https://drive.google.com/file/d/abc/view',
+                    mimeType: 'application/pdf',
+                    sizeBytes: 4096,
+                    uploadedBy: 'Admin User',
+                    uploadedOn: '2026-08-01'
+                  }
+                ]
+              }
+            ],
+            latestHandoverNote: ''
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      const link = main.querySelector('a[href="https://drive.google.com/file/d/abc/view"]');
+      expect(link).toBeTruthy();
+      expect(link?.textContent).toBe('quote-annex.pdf');
+    });
+
+    test('a response with no attachments renders exactly as before', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Created',
+                details: 'Case created',
+                note: ''
+              }
+            ],
+            latestHandoverNote: ''
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      expect(main.querySelectorAll('a[target="_blank"]').length).toBe(0);
+      expect(main.innerHTML).not.toContain('undefined');
+    });
+
+    test('an attachment filename containing HTML is escaped and does not execute', async () => {
+      const payload = "Bad'\"><img src=x onerror=window.__AS_CRM_XSS__=true>.pdf";
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: '',
+                attachments: [
+                  {
+                    id: 'ATT-1',
+                    fileName: payload,
+                    viewLink: 'https://drive.google.com/file/d/abc/view',
+                    mimeType: 'application/pdf',
+                    sizeBytes: 4096,
+                    uploadedBy: 'Admin User',
+                    uploadedOn: '2026-08-01'
+                  }
+                ]
+              }
+            ],
+            latestHandoverNote: ''
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      expect(main.querySelector('img')).toBeNull();
+      expect(main.innerHTML).not.toContain(payload);
+      expect(window.__AS_CRM_XSS__).not.toBe(true);
+    });
+  });
 });
