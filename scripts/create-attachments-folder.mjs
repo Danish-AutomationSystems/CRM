@@ -77,6 +77,14 @@ try {
   `;
 
   console.log(`Created "${FOLDER_NAME}" and saved to settings. Folder id: ${folderId}`);
+} catch (err) {
+  // Never log the raw error object: Drive/Postgres client errors (e.g. a
+  // GaxiosError from drive.files.create) can carry an Authorization bearer
+  // token or other request internals as enumerable properties, and both
+  // console.error(err) and an uncaught throw would print those to stderr.
+  // Only the message is safe to surface.
+  console.error(`Failed to set up the attachments folder: ${err?.message ?? 'unknown error'}`);
+  process.exitCode = 1;
 } finally {
   await sql.end();
 }
