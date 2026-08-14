@@ -797,6 +797,122 @@ test('reassigning a ticket with a handover note shows it on the case page', asyn
   expect(assignArgs).toEqual(['CASE-2026-0001', 'sales@automationsystems.org', 'Quoted, waiting on their PO.']);
 });
 
+test('reassigning a ticket with an attachment uploads it to Drive and shows the link on the case page', async ({
+  context,
+  page
+}) => {
+  test.skip(
+    !isFakeSupabaseConfigured(),
+    `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
+  );
+
+  const fakeSessionUrl = 'https://fake-upload.example.com/session/abc123';
+  const noteText = 'Quoted, attaching the signed PO for reference.';
+  const fileName = 'handover.pdf';
+  const fileContents = Buffer.from('fake pdf bytes for e2e upload test');
+
+  let getCaseCalls = 0;
+  let assignArgs: unknown[] | undefined;
+  let beginUploadArgs: unknown[] | undefined;
+  let uploadPutCount = 0;
+
+  await setUpAuthenticatedSession(context, page);
+
+  // Intercept the resumable-upload PUT itself: it must never reach a real
+  // Google Drive session URL. Respond the way Drive's resumable upload
+  // endpoint does - 200 with the created file's JSON metadata.
+  await page.route(fakeSessionUrl, async (route) => {
+    uploadPutCount += 1;
+    expect(route.request().method()).toBe('PUT');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'file-999' })
+    });
+  });
+
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+
+    if (body.fn === 'api_beginAttachmentUpload') {
+      beginUploadArgs = body.args;
+      const files = (body.args?.[1] ?? []) as Array<{ fileName: string }>;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: files.map((f) => ({ fileName: f.fileName, sessionUrl: fakeSessionUrl }))
+        })
+      });
+      return;
+    }
+    if (body.fn === 'api_assignTicket') {
+      assignArgs = body.args;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { ok: true } }) });
+      return;
+    }
+    if (body.fn === 'api_getCase') {
+      getCaseCalls += 1;
+      const base = rpcData('api_getCase') as Record<string, unknown>;
+      const data =
+        getCaseCalls > 1
+          ? {
+              ...base,
+              latestHandoverNote: noteText,
+              history: [
+                {
+                  when: '2026-07-29',
+                  who: 'Playwright Admin',
+                  action: 'Reassigned',
+                  note: noteText,
+                  attachments: [{ fileName, viewLink: 'https://drive.google.com/file/d/file-999/view' }]
+                }
+              ]
+            }
+          : base;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/cases');
+  await page.getByText('Panel upgrade').first().click();
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+  await expect(page.getByText('Latest handover note')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'reassign' }).click();
+  await page.locator('#wk_q').fill('Sales');
+  await page.locator('#wk_res').getByText('Sales User').click();
+  await page.locator('#wk_files').setInputFiles({
+    name: fileName,
+    mimeType: 'application/pdf',
+    buffer: fileContents
+  });
+  await page.locator('#wk_note').fill(noteText);
+  await page.locator('#wk_go').click();
+
+  await expect(page.getByText('Latest handover note')).toBeVisible();
+  await expect(page.getByText(noteText).first()).toBeVisible();
+
+  const attachmentLink = page.getByRole('link', { name: fileName }).first();
+  await expect(attachmentLink).toBeVisible();
+  await expect(attachmentLink).toHaveAttribute('href', 'https://drive.google.com/file/d/file-999/view');
+
+  expect(uploadPutCount).toBe(1);
+  expect(beginUploadArgs).toEqual([
+    'CASE-2026-0001',
+    [{ fileName, mimeType: 'application/pdf', sizeBytes: fileContents.length }]
+  ]);
+  expect(assignArgs).toEqual([
+    'CASE-2026-0001',
+    'sales@automationsystems.org',
+    noteText,
+    [{ fileId: 'file-999', fileName, mimeType: 'application/pdf', sizeBytes: fileContents.length }]
+  ]);
+});
+
 /* --------------------------------------------------------------------------
  * Manager-feedback points P5-P10 (workstream B, UI half).
  * ------------------------------------------------------------------------ */
