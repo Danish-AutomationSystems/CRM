@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCaseService, type CaseRepository } from './service';
+import { createCaseService, type CaseActivityLogEntry, type CaseRepository } from './service';
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -23,7 +23,7 @@ class FakeCaseRepository implements CaseRepository {
   users: UserRow[] = [];
   handlers: HandlerRow[] = [];
   quotes: QuoteRow[] = [];
-  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  logs: CaseActivityLogEntry[] = [];
   lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
@@ -91,10 +91,16 @@ class FakeCaseRepository implements CaseRepository {
     return this.quotes.filter((quote) => quote.caseId === caseId);
   }
 
-  async listActivityByEntity(entity: string): Promise<Array<{ when: string; who: string; action: string; details: string }>> {
+  async listActivityByEntity(entity: string): Promise<Array<{ when: string; who: string; action: string; details: string; note: string }>> {
     return this.logs
       .filter((log) => log.entity === entity)
-      .map((log, index) => ({ when: `2026-07-29T00:00:${index}.000Z`, who: log.who, action: log.action, details: log.details }));
+      .map((log, index) => ({
+        when: `2026-07-29T00:00:${index}.000Z`,
+        who: log.who,
+        action: log.action,
+        details: log.details,
+        note: log.note ?? ''
+      }));
   }
 
   async latestQuotedValueByCase(): Promise<Record<string, number>> {
@@ -106,8 +112,15 @@ class FakeCaseRepository implements CaseRepository {
       }, {});
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string }): Promise<void> {
+  async logActivity(entry: CaseActivityLogEntry): Promise<void> {
     this.logs.push(entry);
+  }
+
+  async latestHandoverNote(caseId: string): Promise<string> {
+    const matches = this.logs.filter(
+      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
+    );
+    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
   }
 }
 

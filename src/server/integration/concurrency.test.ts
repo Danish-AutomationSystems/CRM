@@ -47,7 +47,7 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
   cases: CaseRow[] = [];
   quotes: QuoteRow[] = [];
   blocks: BoqBlock[] = [];
-  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; note?: string }> = [];
   private readonly txLock = new Mutex();
   private customerSeq = 1;
   private contactSeq = 1;
@@ -305,8 +305,15 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     return this.blocks.filter((block) => block.quoteNo === quoteNo && block.rev === rev);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string }): Promise<void> {
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
     this.logs.push(entry);
+  }
+
+  async latestHandoverNote(caseId: string): Promise<string> {
+    const matches = this.logs.filter(
+      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
+    );
+    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
   }
 
   customer(overrides: Partial<CustomerRow> = {}): CustomerRow {

@@ -86,6 +86,7 @@ export type CaseActivityRow = {
   who: string;
   action: string;
   details: string;
+  note: string;
 };
 
 export type CaseActivityLogEntry = {
@@ -94,6 +95,7 @@ export type CaseActivityLogEntry = {
   customerId: string;
   details: string;
   who: string;
+  note?: string;
 };
 
 export type CaseRepository = {
@@ -115,6 +117,7 @@ export type CaseRepository = {
   listActivityByEntity(entity: string): Promise<CaseActivityRow[]>;
   latestQuotedValueByCase(): Promise<Record<string, number>>;
   logActivity(entry: CaseActivityLogEntry): Promise<void>;
+  latestHandoverNote(caseId: string): Promise<string>;
 };
 
 export type CaseInput = Partial<{
