@@ -326,6 +326,8 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
   }
 
   async listActivityByEntity(entity: string) {
+    // Mirrors the real repository's `order by created_at desc limit 40`:
+    // newest-first, capped at 40 rows.
     return this.logs
       .filter((log) => log.entity === entity)
       .map((log, index) => ({
@@ -334,7 +336,10 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
         action: log.action,
         details: log.details,
         note: log.note ?? ''
-      }));
+      }))
+      .slice()
+      .reverse()
+      .slice(0, 40);
   }
 
   async listTemplates(): Promise<Array<{ id: string; name: string }>> {

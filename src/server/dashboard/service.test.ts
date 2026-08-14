@@ -213,6 +213,8 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   }
 
   async listActivityByEntity(entity: string) {
+    // Mirrors the real repository's `order by created_at desc limit 40`:
+    // newest-first, capped at 40 rows.
     return this.logs
       .filter((log) => log.entity === entity)
       .map((log, index) => ({
@@ -221,7 +223,10 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
         action: log.action,
         details: log.details,
         note: log.note ?? ''
-      }));
+      }))
+      .slice()
+      .reverse()
+      .slice(0, 40);
   }
 
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
