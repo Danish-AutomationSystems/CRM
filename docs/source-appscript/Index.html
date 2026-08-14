@@ -1415,6 +1415,8 @@ function renderCase(d){
       '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
+    if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d">'+esc(d.latestHandoverNote)+'</div></div>';
+
     // status / stage controls
     html += '<div class="card"><div class="ovl">Status</div>';
     if(o.outcome==='Won'){
@@ -1469,7 +1471,7 @@ function renderCase(d){
     if(!(d.history||[]).length) html += '<div class="empty">No activity logged yet.</div>';
     else{
       html += '<ul class="tlx">';
-      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div></li>'; });
+      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic">'+esc(r.note)+'</div>':'')+'</li>'; });
       html += '</ul>';
     }
     html += '</div>';
@@ -1504,6 +1506,8 @@ function mAssign(id, suggestions){
       '<input id="wk_q" placeholder="type a name or username…" autocomplete="off" oninput="wkSearch()">'+
       '<div id="wk_res" class="reslist"></div>'+
       '<div id="wk_sel" class="hint" style="margin-top:8px">No one selected yet.</div>'+
+      '<div class="frow" style="margin-top:10px"><div><label>Handover note <span class="sub">(optional)</span></label>'+
+      '<textarea id="wk_note" maxlength="2000" placeholder="What has been done so far, and what the next person needs to know."></textarea></div></div>'+
       '<p class="hint">Any CRM user can hold this ticket; ownership is unchanged.</p>',
       '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
       '<button class="btn" id="wk_go" disabled onclick="doAssign()">Reassign</button>');
@@ -1527,7 +1531,7 @@ function wkPick(email,name){
 function doAssign(){
   if(!S._wk || !S._wk.pick){ toast('Pick a user first.', true); return; }
   var id=S._wk.id, nm=S._wk.pick.name;
-  gs('api_assignTicket', id, S._wk.pick.email).then(function(){ closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash(); }).catch(oops);
+  gs('api_assignTicket', id, S._wk.pick.email, v('wk_note')).then(function(){ closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash(); }).catch(oops);
 }
 function doStage(id){
   gs('api_setCaseStage', id, v('stSel'), v('stNote')).then(function(){ toast('Stage updated.'); vCase(id); }).catch(oops);
