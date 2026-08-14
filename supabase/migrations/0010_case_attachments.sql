@@ -22,6 +22,15 @@ create table if not exists public.case_attachments (
 create index if not exists case_attachments_activity_id_idx on public.case_attachments(activity_id);
 create index if not exists case_attachments_case_id_idx on public.case_attachments(case_id);
 
+-- One row per Drive file, enforced by the database.
+--
+-- The service refuses a file id that is already attached, but that is a read
+-- taken outside the transaction: two concurrent reassignments reporting the
+-- same file id can both pass it and both insert. This index makes the second
+-- one fail instead. It also keeps a single Drive file from being claimed by two
+-- different handovers, which would make cleanup on rollback destructive.
+create unique index if not exists case_attachments_drive_file_id_key on public.case_attachments(drive_file_id);
+
 alter table public.case_attachments enable row level security;
 revoke all on table public.case_attachments from anon, authenticated;
 
@@ -49,5 +58,17 @@ begin
      where table_schema = 'public' and table_name = 'case_attachments' and column_name = 'activity_id'
   ) then
     raise exception 'case_attachments.activity_id is missing';
+  end if;
+
+  -- The uniqueness of drive_file_id is a correctness guarantee the service
+  -- relies on, not an optimisation: without it two concurrent reassignments can
+  -- attach the same Drive file twice.
+  if not exists (
+    select 1 from pg_indexes
+     where schemaname = 'public'
+       and tablename = 'case_attachments'
+       and indexname = 'case_attachments_drive_file_id_key'
+  ) then
+    raise exception 'case_attachments_drive_file_id_key is missing';
   end if;
 end $$;

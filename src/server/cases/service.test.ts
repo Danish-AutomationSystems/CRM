@@ -454,7 +454,7 @@ describe('assignTicket rejects every way a client can lie about an upload', () =
     expect(repo.cases[0].assignee).toBe('worker@automationsystems.org');
   }
 
-  it('rejects a file id Drive does not know, writes nothing, and cleans up', async () => {
+  it('rejects a file id Drive does not know, writes nothing, and deletes nothing', async () => {
     const { repo, drive, service } = makeAttachmentService();
     // FILE-1 was never created (or the app cannot see it) - getFileMeta is null.
 
@@ -463,7 +463,9 @@ describe('assignTicket rejects every way a client can lie about an upload', () =
     );
 
     expectNothingCommitted(repo);
-    expect(drive.deleted).toEqual(['FILE-1']);
+    // Unresolvable means unprovable: we cannot show this file is ours, so we
+    // must not delete it. There is nothing to clean up anyway.
+    expect(drive.deleted).toEqual([]);
     expect(drive.renames).toEqual([]);
   });
 
@@ -496,7 +498,11 @@ describe('assignTicket rejects every way a client can lie about an upload', () =
     );
 
     expectNothingCommitted(repo);
-    expect(drive.deleted).toEqual(['FILE-1']);
+    // The whole point: this file is NOT ours. Deleting it here would hand any
+    // authenticated user a way to destroy quotations, templates, or any other
+    // file the app's credentials can reach.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
     expect(drive.renames).toEqual([]);
   });
 
@@ -514,7 +520,29 @@ describe('assignTicket rejects every way a client can lie about an upload', () =
     );
 
     expectNothingCommitted(repo);
-    expect(drive.deleted).toEqual(['FILE-1']);
+    // Another case's live attachment: deleting it would leave that case with a
+    // row pointing at nothing.
+    expect(drive.deleted).toEqual([]);
+    expect(drive.files.has('FILE-1')).toBe(true);
+  });
+
+  it('cleans up only the files it proved are ours when a batch mixes ours with a foreign one', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    // A genuine upload for this case, sitting unreferenced in our folder...
+    drive.put({ id: 'FILE-OURS', name: driveNameFor('a.pdf'), size: 10 });
+    // ...smuggled alongside somebody else's quotation.
+    drive.put({ id: 'FILE-THEIRS', name: 'Quotation for another customer.pdf', size: 20, parents: ['FOLDER-quotations'] });
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'handover', [
+        { fileId: 'FILE-OURS', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 },
+        { fileId: 'FILE-THEIRS', fileName: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 20 }
+      ])
+    ).rejects.toThrow(/invalid/i);
+
+    expectNothingCommitted(repo);
+    expect(drive.deleted).toEqual(['FILE-OURS']);
+    expect(drive.files.has('FILE-THEIRS')).toBe(true);
   });
 
   it('refuses a file already attached to this case, and does not delete the live file', async () => {
@@ -630,6 +658,38 @@ describe('assignTicket commits verified attachments', () => {
     ).rejects.toThrow('insert exploded');
 
     expect(drive.deleted).toEqual(['FILE-1', 'FILE-2']);
+  });
+
+  it('losing a race to the unique index does not delete the file the winner committed', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    drive.put({ id: 'FILE-1', name: driveNameFor('a.pdf'), size: 10 });
+    repo.createAttachments = async () => {
+      // A concurrent reassignment reporting the same file id got there first;
+      // its row is committed and case_attachments_drive_file_id_key rejects us.
+      repo.attachments.push({
+        id: 'ATT-9',
+        activityId: 'LOG-9',
+        caseId: 'CASE-2026-0001',
+        driveFileId: 'FILE-1',
+        driveViewLink: 'https://drive.example/FILE-1',
+        fileName: driveNameFor('a.pdf'),
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        uploadedBy: sales.email,
+        createdAt: '2026-08-14T00:00:00.000Z'
+      });
+      throw new Error('duplicate key value violates unique constraint "case_attachments_drive_file_id_key"');
+    };
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', '', [
+        { fileId: 'FILE-1', fileName: 'a.pdf', mimeType: 'application/pdf', sizeBytes: 10 }
+      ])
+    ).rejects.toThrow(/duplicate key/);
+
+    // The file now backs the winner's row. Deleting it would leave that row
+    // dangling - the same defect as deleting somebody else's file.
+    expect(drive.deleted).toEqual([]);
   });
 
   it('getCase hangs each activity entry its own attachments', async () => {

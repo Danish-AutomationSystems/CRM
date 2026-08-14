@@ -423,73 +423,100 @@ function parseReportedUploads(value: unknown): ReportedUpload[] {
 }
 
 /**
+ * The outcome of verification. On failure it carries the ids that were *proved*
+ * to be ours, because those - and only those - may be deleted afterwards.
+ */
+type VerificationResult =
+  | { ok: true; verified: VerifiedUpload[] }
+  | { ok: false; deletable: string[] };
+
+/**
  * Independently confirms, against Drive itself, that every reported file is one
  * this response is actually allowed to attach. The client is never believed:
  *
  *  1. the file must exist and be reachable by our credentials;
- *  2. its real size must match the declared size (a truncated or abandoned
- *     resumable upload fails here);
- *  3. its parents must include our attachments folder - without this a client
+ *  2. its parents must include our attachments folder - without this a client
  *     could name any file the app's credentials can read, including another
  *     customer's quotation;
- *  4. defence in depth: its name must carry this case's id prefix. Names are
- *     built server-side by `beginAttachmentUpload`, so this proves the file was
- *     created by a session issued for *this* case, and stops a file id borrowed
- *     from another case's handover - which does sit in the shared attachments
- *     folder, and so passes check 3 - from being re-attached here.
+ *  3. its name must carry this case's id prefix. Names are built server-side by
+ *     `beginAttachmentUpload`, so this proves the file was created by a session
+ *     issued for *this* case, and stops a file id borrowed from another case's
+ *     handover - which does sit in the shared attachments folder, and so passes
+ *     check 2 - from being re-attached here.
+ *  4. its real size must match the declared size (a truncated or abandoned
+ *     resumable upload fails here).
  *
- * Throws before the caller writes anything.
+ * Checks 2 and 3 together are what makes a file "ours": in our folder, named
+ * for this case. They are evaluated for *every* reported file, and evaluated
+ * before the size check, because the answer decides what the caller is allowed
+ * to delete. A file that fails either one is never touched again - deleting it
+ * would let any authenticated user destroy arbitrary Drive files.
+ *
+ * Never writes and never deletes; the caller decides both.
  */
 async function verifyReportedUploads(
   drive: DriveClient,
   folderId: string,
   caseId: string,
   reported: readonly ReportedUpload[]
-): Promise<VerifiedUpload[]> {
+): Promise<VerificationResult> {
   const metas = await Promise.all(reported.map((upload) => drive.getFileMeta(upload.fileId)));
+
+  const checked = reported.map((upload, index) => {
+    const meta = metas[index];
+    // Unresolvable is unprovable: without metadata we cannot show the file is
+    // ours, so it is not deletable either.
+    const ours = meta !== null && meta.parents.includes(folderId) && meta.name.startsWith(`${caseId} - `);
+    return { upload, meta, ours };
+  });
+  // Every id we are entitled to delete, whatever else went wrong below.
+  const deletable = checked.filter((file) => file.ours).map((file) => file.upload.fileId);
 
   // getFileMeta maps 403 and 404 both to null - fail-closed, and correct, but it
   // makes a credential/scope misconfiguration look exactly like a deleted file.
   // Every id failing at once is the signature of the former; one of several is
   // the signature of the latter. Say which, so an operator can tell them apart
   // from the log alone. The user still sees only the uniform message above.
-  const unresolved = reported.filter((_, index) => metas[index] === null).map((upload) => upload.fileId);
+  const unresolved = checked.filter((file) => file.meta === null).map((file) => file.upload.fileId);
   if (unresolved.length > 0) {
     console.error(
       unresolved.length === reported.length && reported.length > 1
         ? `Case attachment verification: all ${reported.length} reported files were unresolvable (${unresolved.join(', ')}) - either every upload failed, or the CRM's Drive credentials/scope can no longer read the attachments folder.`
         : `Case attachment verification: file id(s) ${unresolved.join(', ')} could not be resolved - the file does not exist, or our Drive credentials cannot see it (Drive reports 403 and 404 identically here). ${reported.length - unresolved.length} of ${reported.length} resolved fine, so the credentials themselves are working.`
     );
-    throw new Error(VERIFICATION_FAILED);
+    return { ok: false, deletable };
   }
 
-  return reported.map((upload, index) => {
-    const meta = metas[index];
-    if (!meta) throw new Error(VERIFICATION_FAILED);
-
-    if (meta.size !== upload.sizeBytes) {
+  const foreign = checked.filter((file) => !file.ours);
+  if (foreign.length > 0) {
+    for (const file of foreign) {
+      const meta = file.meta;
       console.error(
-        `Case attachment verification: ${upload.fileId} is ${meta.size} bytes but ${upload.sizeBytes} was declared - incomplete upload, or a substituted file id.`
+        meta && !meta.parents.includes(folderId)
+          ? `Case attachment verification: ${file.upload.fileId} is not in the configured attachments folder (it has ${meta.parents.length} parent(s), none of them ours) - a client pointed at a file it did not upload here. Left untouched.`
+          : `Case attachment verification: ${file.upload.fileId} was not named for ${caseId} - it belongs to another case's handover. Left untouched.`
       );
-      throw new Error(VERIFICATION_FAILED);
+    }
+    return { ok: false, deletable };
+  }
+
+  const verified: VerifiedUpload[] = [];
+  for (const file of checked) {
+    const meta = file.meta;
+    // Unreachable: `unresolved` returned above. Narrows the type without a cast.
+    if (!meta) return { ok: false, deletable };
+
+    if (meta.size !== file.upload.sizeBytes) {
+      console.error(
+        `Case attachment verification: ${file.upload.fileId} is ${meta.size} bytes but ${file.upload.sizeBytes} was declared - incomplete upload, or a substituted file id.`
+      );
+      return { ok: false, deletable };
     }
 
-    if (!meta.parents.includes(folderId)) {
-      console.error(
-        `Case attachment verification: ${upload.fileId} is not in the configured attachments folder (it has ${meta.parents.length} parent(s), none of them ours) - a client pointed at a file it did not upload here.`
-      );
-      throw new Error(VERIFICATION_FAILED);
-    }
+    verified.push({ reported: file.upload, meta });
+  }
 
-    if (!meta.name.startsWith(`${caseId} - `)) {
-      console.error(
-        `Case attachment verification: ${upload.fileId} was not named for ${caseId} - it belongs to another case's handover.`
-      );
-      throw new Error(VERIFICATION_FAILED);
-    }
-
-    return { reported: upload, meta };
-  });
+  return { ok: true, verified };
 }
 
 /**
@@ -497,6 +524,10 @@ async function verifyReportedUploads(
  * about to rethrow the error the user actually needs, and a cleanup failure
  * must never replace it. A file left behind is one orphan in the attachments
  * folder - no data loss, no database impact, identifiable by having no row.
+ *
+ * THE RULE: only ever pass ids this request both created and verified as ours -
+ * in our attachments folder, named for this case, and not already attached.
+ * Anything else is somebody else's file, and this function is a delete.
  */
 async function deleteOrphanedUploads(drive: DriveClient, fileIds: readonly string[]): Promise<void> {
   for (const fileId of fileIds) {
@@ -817,11 +848,23 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
       const { drive, folderId: resolveFolderId } = requireDrive();
       const folderId = await resolveFolderId();
-      const fileIds = reported.map((upload) => upload.fileId);
+
+      // Verification runs outside the cleanup-guarded block on purpose. It
+      // decides which ids are ours, and only it can say so; a catch-all around
+      // it would be cleaning up files it had just proved belong to someone
+      // else. If getFileMeta throws outright, nothing is deleted at all - an
+      // unverified file is never ours to touch.
+      const verification = await verifyReportedUploads(drive, folderId, row.id, reported);
+      if (!verification.ok) {
+        await deleteOrphanedUploads(drive, verification.deletable);
+        throw new Error(VERIFICATION_FAILED);
+      }
+      const verified = verification.verified;
+      // Past this point every id has been proved ours, so the whole set is safe
+      // to clean up if the rename or the transaction fails.
+      const ourFileIds = verified.map((file) => file.meta.id);
 
       try {
-        const verified = await verifyReportedUploads(drive, folderId, row.id, reported);
-
         // Give each file its final name. The base name is rebuilt server-side
         // rather than taken from Drive, and disambiguated against the folder so
         // two identically named uploads stay distinguishable. Each file's own
@@ -878,10 +921,31 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
         });
       } catch (error) {
-        // Verification refused, or the database rolled back: either way these
-        // files are now unreferenced. Cleanup is best effort and never masks
-        // the original error, which is the one the caller needs.
-        await deleteOrphanedUploads(drive, fileIds);
+        // The rename failed, or the database rolled back: these files are ours
+        // and, in the ordinary case, now unreferenced.
+        //
+        // One exception, and it is the reason for the re-read: the
+        // case_attachments_drive_file_id_key unique index. The already-attached
+        // guard above is a read outside the transaction, so a concurrent
+        // reassignment reporting the same file id can commit between that read
+        // and this insert. We lose on the index - and the file now backs the
+        // winner's row. Deleting it would leave that row dangling, which is the
+        // same defect as deleting somebody else's file. So only delete what is
+        // still unreferenced; if we cannot establish that, delete nothing and
+        // leave a harmless orphan.
+        let stillOurs = ourFileIds;
+        try {
+          const referenced = new Set((await repo.listAttachmentsByCase(caseId)).map((file) => file.driveFileId));
+          stillOurs = ourFileIds.filter((fileId) => !referenced.has(fileId));
+        } catch (recheckError) {
+          console.error(
+            'Case attachment cleanup skipped - could not confirm the files are unreferenced:',
+            recheckError instanceof Error ? recheckError.message : 'unknown error'
+          );
+          stillOurs = [];
+        }
+        // Best effort, and never masks the original error - the one the caller needs.
+        await deleteOrphanedUploads(drive, stillOurs);
         throw error;
       }
     },
