@@ -708,12 +708,36 @@ Vercel deploys `main` automatically. Wait for the deployment to report ready.
 3. Confirm the column is being written:
 
 ```sql
-select count(*) as assigns, count(nullif(note,'')) as with_note
+select
+  count(*)                                              as assigns,
+  count(nullif(note, ''))                               as with_note,
+  count(*) filter (where details like 'Working on ->%') as details_ok,
+  count(*) filter (where note    like 'Working on ->%') as note_looks_like_details,
+  count(*) filter (where details = note and note <> '') as details_equals_note
 from public.activity_log
 where action = 'CASE_ASSIGN';
 ```
 
-Expected: `with_note` is at least 1 after step 1. **If it is 0, stop** — the insert is not writing the column, which is exactly the defect class Task 2's guard exists to catch.
+Expected, all four together:
+
+- `with_note` is **at least 1** after step 1. **If it is 0, stop** — the insert is not writing the column, which is exactly the defect class Task 2's guard exists to catch.
+- `details_ok` **equals `assigns`** — every reassignment still records `Working on -> <name>` in `details`.
+- `note_looks_like_details` is **0** — no handover note begins with `Working on ->`.
+- `details_equals_note` is **0**.
+
+The last three exist because `details` and `note` are both `text` and adjacent in the INSERT's VALUES list, so transposing them is type-correct and no source-parsing guard or in-memory fake can catch it — the columns would simply swap contents in production. `details_ok < assigns` together with `note_looks_like_details > 0` is the signature of exactly that swap. **If either shows, stop and roll back:** the rows written since deploy have the two columns reversed and need correcting before more accumulate.
+
+Then eyeball one row to confirm the values landed the right way round:
+
+```sql
+select details, note
+from public.activity_log
+where action = 'CASE_ASSIGN'
+order by created_at desc
+limit 3;
+```
+
+Expected: `details` reads `Working on -> <name>`; `note` is either empty or the free text typed into the handover field.
 
 - [ ] **Step 6: Update CONTEXT.md**
 
