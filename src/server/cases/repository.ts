@@ -370,18 +370,19 @@ export class PostgresCaseRepository implements CaseRepository {
 
   async listActivityByEntity(entity: string): Promise<CaseActivityRow[]> {
     const rows = (await this.db`
-      select created_at as when, who, action, details
+      select created_at as when, who, action, details, note
       from public.activity_log
       where entity = ${entity}
       order by created_at desc
       limit 40
-    `) as Array<{ when: string | Date; who: string; action: string; details: string }>;
+    `) as Array<{ when: string | Date; who: string; action: string; details: string; note: string | null }>;
 
     return rows.map((row) => ({
       when: dateString(row.when),
       who: normalizeEmail(row.who),
       action: row.action,
-      details: row.details
+      details: row.details,
+      note: row.note ?? ''
     }));
   }
 
@@ -427,9 +428,23 @@ export class PostgresCaseRepository implements CaseRepository {
 
   async logActivity(entry: CaseActivityLogEntry): Promise<void> {
     await this.db`
-      insert into public.activity_log (who, action, entity, customer_id, details)
-      values (${entry.who}, ${entry.action}, ${entry.entity}, ${entry.customerId || null}, ${entry.details})
+      insert into public.activity_log (who, action, entity, customer_id, details, note)
+      values (${entry.who}, ${entry.action}, ${entry.entity}, ${entry.customerId || null}, ${entry.details}, ${entry.note ?? ''})
     `;
+  }
+
+  async latestHandoverNote(caseId: string): Promise<string> {
+    const rows = (await this.db`
+      select note
+      from public.activity_log
+      where entity = ${caseId}
+        and action = 'CASE_ASSIGN'
+        and note <> ''
+      order by created_at desc
+      limit 1
+    `) as Array<{ note: string }>;
+
+    return rows[0]?.note ?? '';
   }
 }
 

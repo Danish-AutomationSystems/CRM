@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCaseService, type CaseRepository } from './service';
+import { createCaseService, type CaseActivityLogEntry, type CaseRepository } from './service';
 
 const sales: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -23,7 +23,7 @@ class FakeCaseRepository implements CaseRepository {
   users: UserRow[] = [];
   handlers: HandlerRow[] = [];
   quotes: QuoteRow[] = [];
-  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  logs: CaseActivityLogEntry[] = [];
   lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
@@ -91,10 +91,21 @@ class FakeCaseRepository implements CaseRepository {
     return this.quotes.filter((quote) => quote.caseId === caseId);
   }
 
-  async listActivityByEntity(entity: string): Promise<Array<{ when: string; who: string; action: string; details: string }>> {
+  async listActivityByEntity(entity: string): Promise<Array<{ when: string; who: string; action: string; details: string; note: string }>> {
+    // Mirrors the real repository's `order by created_at desc limit 40`:
+    // newest-first, capped at 40 rows.
     return this.logs
       .filter((log) => log.entity === entity)
-      .map((log, index) => ({ when: `2026-07-29T00:00:${index}.000Z`, who: log.who, action: log.action, details: log.details }));
+      .map((log, index) => ({
+        when: `2026-07-29T00:00:${index}.000Z`,
+        who: log.who,
+        action: log.action,
+        details: log.details,
+        note: log.note ?? ''
+      }))
+      .slice()
+      .reverse()
+      .slice(0, 40);
   }
 
   async latestQuotedValueByCase(): Promise<Record<string, number>> {
@@ -106,8 +117,15 @@ class FakeCaseRepository implements CaseRepository {
       }, {});
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string }): Promise<void> {
+  async logActivity(entry: CaseActivityLogEntry): Promise<void> {
     this.logs.push(entry);
+  }
+
+  async latestHandoverNote(caseId: string): Promise<string> {
+    const matches = this.logs.filter(
+      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
+    );
+    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
   }
 }
 
@@ -278,6 +296,83 @@ describe('case service ownership and assignment', () => {
     expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'inactive')).rejects.toThrow('not an active CRM user');
+  });
+
+  it('stores a handover note against the reassignment', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'Quoted, waiting on their PO.');
+
+    const logged = repo.logs.find((entry) => entry.action === 'CASE_ASSIGN')!;
+    expect(logged.note).toBe('Quoted, waiting on their PO.');
+    expect(logged.details).toBe('Working on -> Other Sales');
+  });
+
+  it('reassigning without a note behaves exactly as before', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other');
+
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    const logged = repo.logs.find((entry) => entry.action === 'CASE_ASSIGN')!;
+    expect(logged.note ?? '').toBe('');
+    expect(logged.details).toBe('Working on -> Other Sales');
+  });
+
+  it('treats a whitespace-only handover note as no note', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', '   \n\t  ');
+
+    const logged = repo.logs.find((entry) => entry.action === 'CASE_ASSIGN')!;
+    expect(logged.note ?? '').toBe('');
+  });
+
+  it('rejects a handover note over 2000 characters without writing anything', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'x'.repeat(2001))
+    ).rejects.toThrow(/2000 characters/);
+
+    expect(repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN')).toHaveLength(0);
+    expect(repo.cases[0].assignee).toBe('worker@automationsystems.org');
+  });
+
+  it('still refuses to reassign a closed case, note or not', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org', outcome: 'Won' })];
+
+    await expect(
+      service.assignTicket(sales, 'CASE-2026-0001', 'other', 'a handover note')
+    ).rejects.toThrow(/closed/);
+
+    expect(repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN')).toHaveLength(0);
+  });
+
+  it('getCase returns the latest handover note even when it falls outside the 40-entry history window', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
+
+    await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'The handover note.');
+    for (let i = 0; i < 45; i += 1) {
+      await repo.logActivity({
+        action: 'CASE_NOTE',
+        entity: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        details: `filler ${i}`,
+        who: sales.email
+      });
+    }
+
+    const result = await service.getCase(sales, 'CASE-2026-0001');
+
+    expect(result.latestHandoverNote).toBe('The handover note.');
+    expect(result.history.some((entry) => entry.details === 'Working on -> Other Sales')).toBe(false);
   });
 });
 

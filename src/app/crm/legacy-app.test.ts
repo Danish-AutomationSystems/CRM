@@ -1065,4 +1065,187 @@ describe('legacy CRM full client', () => {
       expect(rows[2]).toMatch(/remove/i);
     });
   });
+
+  describe('Task 4 - handover notes', () => {
+    test('the reassign modal sends the handover note', async () => {
+      let sentArgs: unknown[] = [];
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User' }];
+        if (fn === 'api_assignTicket') {
+          sentArgs = args;
+          return { ok: true, assignee: 'Other User' };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+
+      window.eval('mAssign("CASE-1", [])');
+      await screen.findByPlaceholderText('type a name or username…');
+      window.eval('wkPick("other@automationsystems.org", "Other User")');
+
+      const noteField = await screen.findByPlaceholderText(
+        'What has been done so far, and what the next person needs to know.'
+      );
+      window.eval(
+        `document.getElementById('wk_note').value = ${JSON.stringify('Quoted, waiting on their PO.')};`
+      );
+      expect(noteField).toHaveValue('Quoted, waiting on their PO.');
+
+      const reassignButton = await screen.findByRole('button', { name: 'Reassign' });
+      window.eval(reassignButton.getAttribute('onclick') ?? '');
+
+      await waitFor(() => expect(sentArgs[2]).toBe('Quoted, waiting on their PO.'));
+    });
+
+    test('the case page shows the latest handover note', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: 'Quoted, waiting on their PO.'
+              }
+            ],
+            latestHandoverNote: 'Quoted, waiting on their PO.'
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      expect(document.getElementById('main')!.innerHTML).toContain('Quoted, waiting on their PO.');
+    });
+
+    test('a case with no handover note renders no note block', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Created',
+                details: 'Case created',
+                note: ''
+              }
+            ],
+            latestHandoverNote: ''
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      expect(document.getElementById('main')!.innerHTML).not.toContain('Handover note');
+    });
+
+    test('escapes HTML in the handover note at both render sites', async () => {
+      // Both the history note and the "Latest handover note" block go through
+      // esc(). Pin that: a refactor that drops esc() from either site must fail
+      // here rather than ship an injection.
+      const payload = '<img src=x onerror=alert(1)>';
+
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCase') {
+          return {
+            customer: { id: 'CUST-1', name: 'Acme Controls' },
+            case: {
+              id: 'CASE-1',
+              title: 'Panel upgrade',
+              customerId: 'CUST-1',
+              stage: 'Lead',
+              outcome: '',
+              details: '',
+              orderValue: '',
+              wonCategories: [],
+              owners: ['Admin User'],
+              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+            },
+            canEdit: true,
+            canAssignTicket: true,
+            quotes: [],
+            history: [
+              {
+                when: '2026-08-01',
+                who: 'Admin User',
+                action: 'Reassigned',
+                details: 'to Other User',
+                note: payload
+              }
+            ],
+            latestHandoverNote: payload
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("case", "CASE-1")');
+      await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+      const main = document.getElementById('main')!;
+      const html = main.innerHTML;
+
+      // The "Latest handover note" block and the history entry are the two
+      // render sites; both must have escaped the payload.
+      expect(html).toContain('Latest handover note');
+      expect(html).not.toContain(payload);
+      expect(html).not.toContain('<img');
+      expect(main.querySelector('img')).toBeNull();
+      // Escaped exactly twice - once per render site.
+      expect(html.split('&lt;img src=x onerror=alert(1)&gt;').length - 1).toBe(2);
+      expect(window.__AS_CRM_XSS__).not.toBe(true);
+    });
+  });
 });

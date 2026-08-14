@@ -26,7 +26,7 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   handlers: HandlerRow[] = [];
   contacts: Awaited<ReturnType<CustomerRepository['listContactsByCustomer']>> = [];
   quotes: Awaited<ReturnType<CaseRepository['listQuotesByCase']>> = [];
-  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; when?: string }> = [];
+  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string; when?: string; note?: string }> = [];
   failCustomers = false;
   failCases = false;
   nextCustomer = 10;
@@ -213,11 +213,31 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   }
 
   async listActivityByEntity(entity: string) {
-    return (await this.listActivity()).filter((log) => log.entity === entity);
+    // Mirrors the real repository's `order by created_at desc limit 40`:
+    // newest-first, capped at 40 rows.
+    return this.logs
+      .filter((log) => log.entity === entity)
+      .map((log, index) => ({
+        when: log.when ?? `2026-07-29T00:00:${index}.000Z`,
+        who: log.who,
+        action: log.action,
+        details: log.details,
+        note: log.note ?? ''
+      }))
+      .slice()
+      .reverse()
+      .slice(0, 40);
   }
 
-  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string }): Promise<void> {
+  async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string; note?: string }): Promise<void> {
     this.logs.push(entry);
+  }
+
+  async latestHandoverNote(caseId: string): Promise<string> {
+    const matches = this.logs.filter(
+      (log) => log.entity === caseId && log.action === 'CASE_ASSIGN' && (log.note ?? '') !== ''
+    );
+    return matches.length ? (matches[matches.length - 1].note ?? '') : '';
   }
 }
 

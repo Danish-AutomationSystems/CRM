@@ -37,7 +37,7 @@ registerRpc(
 );
 registerRpc(
   'api_assignTicket',
-  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1]),
+  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2]),
   { read: false }
 );
 registerRpc('api_getCase', ({ args, context }) => service.getCase(context, String(args[0] ?? '')));

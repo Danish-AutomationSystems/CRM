@@ -20,7 +20,11 @@ const USER_FACING_PATTERNS = [
   // "This quotation is stored in Google Drive - use the "View in Drive" link to open it."
   // Anchored on the whole phrase so it cannot match an arbitrary internal error
   // that merely mentions Drive.
-  /stored in google drive/i
+  /stored in google drive/i,
+  // "That handover note is too long - please keep it under 2000 characters."
+  // Anchored on the whole phrase so it cannot match an arbitrary internal error
+  // that merely mentions length or characters.
+  /keep it under \d+ characters/i
 ];
 
 export class RpcError extends Error {
