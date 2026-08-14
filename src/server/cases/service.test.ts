@@ -27,6 +27,8 @@ class FakeCaseRepository implements CaseRepository {
   lockedNames: string[] = [];
   nextCustomer = 2;
   nextCase = 1;
+  getCustomerCalls = 0;
+  getCustomersByIdsCalls: string[][] = [];
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
@@ -45,7 +47,14 @@ class FakeCaseRepository implements CaseRepository {
   }
 
   async getCustomer(id: string): Promise<NonNullable<CustomerRow> | null> {
+    this.getCustomerCalls++;
     return this.customers.find((customer) => customer.id === id) ?? null;
+  }
+
+  async getCustomersByIds(ids: string[]): Promise<NonNullable<CustomerRow>[]> {
+    this.getCustomersByIdsCalls.push([...ids]);
+    if (ids.length === 0) return [];
+    return this.customers.filter((customer) => ids.includes(customer.id));
   }
 
   async findCustomerByName(name: string): Promise<NonNullable<CustomerRow> | null> {
@@ -475,6 +484,45 @@ describe('case service outcomes and stage rules', () => {
 });
 
 describe('case reads, lists, and quick log', () => {
+  it('fetches every case customer in one batched query rather than one per case', async () => {
+    const { repo, service } = makeService();
+    repo.customers.push(customer({ id: 'CUST-0002', name: 'Second Customer' }));
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', customerId: 'CUST-0001' }),
+      caseRow({ id: 'CASE-2026-0002', customerId: 'CUST-0001' }),
+      caseRow({ id: 'CASE-2026-0003', customerId: 'CUST-0002' })
+    ];
+
+    await service.listCases(sales);
+
+    expect(repo.getCustomersByIdsCalls).toHaveLength(1);
+    expect([...repo.getCustomersByIdsCalls[0]].sort()).toEqual(['CUST-0001', 'CUST-0002']);
+    expect(repo.getCustomerCalls).toBe(0);
+  });
+
+  it('still lists cases whose customer no longer exists exactly as before', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', customerId: 'CUST-0001' }),
+      caseRow({ id: 'CASE-2026-0002', customerId: 'CUST-GONE' })
+    ];
+
+    const listed = await service.listCases(sales);
+
+    expect(listed.map((row) => row.id)).toEqual(['CASE-2026-0001']);
+  });
+
+  it('issues no customer query at all when there are no cases', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [];
+
+    const listed = await service.listCases(sales);
+
+    expect(listed).toEqual([]);
+    expect(repo.getCustomersByIdsCalls.flat()).toEqual([]);
+    expect(repo.getCustomerCalls).toBe(0);
+  });
+
   it('returns only minimal customer data to assignee-only users', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ assignee: 'worker@automationsystems.org' })];
