@@ -237,6 +237,7 @@ class FakeDriveClient implements DriveClient {
   deleted: string[] = [];
   metaLookups: string[] = [];
   listCalls = 0;
+  listedCaseIds: string[] = [];
   failDelete = false;
 
   put(meta: Partial<DriveFileMeta> & { id: string }): DriveFileMeta {
@@ -263,9 +264,11 @@ class FakeDriveClient implements DriveClient {
     return this.files.get(fileId) ?? null;
   }
 
-  async listFileNamesInFolder(_folderId: string): Promise<string[]> {
+  async listFileNamesInFolder(_folderId: string, caseId: string): Promise<string[]> {
     this.listCalls += 1;
-    return [...this.folderNames];
+    this.listedCaseIds.push(caseId);
+    // Mirrors the real client, which now scopes the query to one case.
+    return this.folderNames.filter((name) => name.startsWith(`${caseId} - `));
   }
 
   async renameFile(fileId: string, name: string): Promise<void> {

@@ -32,7 +32,14 @@ export type DriveClient = {
   deleteFile(fileId: string): Promise<void>;
   createResumableSession(input: ResumableSessionInput): Promise<{ sessionUrl: string }>;
   getFileMeta(fileId: string): Promise<DriveFileMeta | null>;
-  listFileNamesInFolder(folderId: string): Promise<string[]>;
+  /**
+   * Names of this case's files in the attachments folder. Scoped to one case on
+   * purpose: the folder is shared by every case, and an unscoped listing is
+   * capped at one page - past 1000 files the caller would stop seeing the
+   * collisions it disambiguates against and two attachments could end up with
+   * identical names.
+   */
+  listFileNamesInFolder(folderId: string, caseId: string): Promise<string[]>;
 };
 
 const RESUMABLE_UPLOAD_URL =
@@ -51,6 +58,43 @@ function httpStatusOf(error: unknown): number | null {
     if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
   }
   return null;
+}
+
+/**
+ * Turn a Google API rejection into an error that is safe to propagate.
+ *
+ * A GaxiosError carries `.config.headers.Authorization = "Bearer ya29..."` as an
+ * own enumerable property, so anything that prints the object - `console.error(err)`,
+ * an uncaught throw, a serialiser - prints the access token. Every Drive call that
+ * can reject must funnel through here: the detail is logged as a message only, and
+ * the caller receives a brand new Error carrying nothing but an operation name and
+ * an HTTP status.
+ *
+ * The returned message is deliberately fixed wording. `normalizeRpcError`
+ * (src/server/rpc/errors.ts) forwards any message matching USER_FACING_PATTERNS
+ * straight to the browser, and Google's classic failures ("Invalid Credentials",
+ * "Login Required") match /invalid/i and /required/i - embedding them would leak
+ * internal auth state to the user.
+ */
+function safeDriveError(operation: string, error: unknown): Error {
+  const status = httpStatusOf(error);
+  console.error(
+    `Drive ${operation} failed:`,
+    error instanceof Error ? error.message : String(status ?? 'unknown error')
+  );
+  return new Error(
+    status === null ? `Drive ${operation} did not succeed.` : `Drive ${operation} did not succeed (HTTP ${status}).`
+  );
+}
+
+/**
+ * Escape a value for interpolation into a Drive `q` search string. Drive query
+ * literals are single-quoted, and a backslash escapes the next character - so a
+ * value containing a quote or a backslash would otherwise change the meaning of
+ * the query. Order matters: backslashes first, or the escapes get double-escaped.
+ */
+function escapeDriveQueryValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function requireEnv(name: string): string {
@@ -156,12 +200,22 @@ export function createDriveClient(): DriveClient {
 
     async renameFile(fileId: string, name: string) {
       const drive = await driveApi();
-      await drive.files.update({ fileId, requestBody: { name } });
+      try {
+        await drive.files.update({ fileId, requestBody: { name }, supportsAllDrives: true });
+      } catch (err) {
+        // assignTicket rethrows whatever this rejects with, and the RPC layer
+        // logs it: a raw GaxiosError would put the bearer token in the logs.
+        throw safeDriveError('rename', err);
+      }
     },
 
     async deleteFile(fileId: string) {
       const drive = await driveApi();
-      await drive.files.delete({ fileId });
+      try {
+        await drive.files.delete({ fileId, supportsAllDrives: true });
+      } catch (err) {
+        throw safeDriveError('delete', err);
+      }
     },
 
     /**
@@ -207,11 +261,16 @@ export function createDriveClient(): DriveClient {
       try {
         const response = await drive.files.get({
           fileId,
-          fields: 'id, name, size, mimeType, webViewLink, parents'
+          fields: 'id, name, size, mimeType, webViewLink, parents, trashed',
+          supportsAllDrives: true
         });
         const file = response.data;
         const id = file.id;
         if (!id) return null;
+        // files.get still returns a trashed file, parents intact, so a file
+        // trashed between upload and commit would pass every verification check
+        // and leave a row pointing at a link that 404s. Unconfirmable = null.
+        if (file.trashed === true) return null;
 
         return {
           id,
@@ -227,20 +286,29 @@ export function createDriveClient(): DriveClient {
         const status = httpStatusOf(err);
         if (status === 404 || status === 403) return null;
 
-        // Rethrow the message only. The original GaxiosError holds the bearer
-        // token in .config.headers.Authorization; it must never propagate.
-        const message = err instanceof Error ? err.message : String(status ?? 'unknown error');
-        throw new Error(`Drive could not return file metadata: ${message}`);
+        // Fixed wording, Google's message logged rather than embedded: the RPC
+        // layer forwards any message matching USER_FACING_PATTERNS to the
+        // browser, and "Invalid Credentials"/"Login Required" match /invalid/i
+        // and /required/i - which would tell a user about our auth state.
+        throw safeDriveError('file metadata lookup', err);
       }
     },
 
-    async listFileNamesInFolder(folderId: string) {
+    async listFileNamesInFolder(folderId: string, caseId: string) {
       const drive = await driveApi();
-      const response = await drive.files.list({
-        q: `'${folderId}' in parents and trashed=false`,
-        fields: 'files(name)',
-        pageSize: 1000
-      });
+      let response;
+      try {
+        response = await drive.files.list({
+          q: `'${folderId}' in parents and trashed=false and name contains '${escapeDriveQueryValue(`${caseId} - `)}'`,
+          fields: 'files(name)',
+          pageSize: 1000,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true
+        });
+      } catch (err) {
+        // Same reason as renameFile: this rejection reaches the RPC error log.
+        throw safeDriveError('folder listing', err);
+      }
       return (response.data.files ?? [])
         .map((file) => String(file.name ?? ''))
         .filter((name) => name.length > 0);

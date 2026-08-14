@@ -169,8 +169,56 @@ describe('createDriveClient', () => {
 
     expect(filesUpdate).toHaveBeenCalledWith({
       fileId: 'file-123',
-      requestBody: { name: 'QTN-2026-0001 R0 - Acme Controls - offer.pdf' }
+      requestBody: { name: 'QTN-2026-0001 R0 - Acme Controls - offer.pdf' },
+      supportsAllDrives: true
     });
+  });
+
+  it('does not rethrow the raw Google error when a rename fails', async () => {
+    const gaxiosLike = Object.assign(new Error('Invalid Credentials'), {
+      code: 401,
+      config: { headers: { Authorization: 'Bearer ya29.test-access-token' } }
+    });
+    filesUpdate.mockRejectedValue(gaxiosLike);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { createDriveClient } = await import('./client');
+    const error = await createDriveClient()
+      .renameFile('file-123', 'new name.pdf')
+      .catch((err: unknown) => err);
+    const logged = errorLog.mock.calls.flat().map((part) => String(part)).join(' ');
+    errorLog.mockRestore();
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBe(gaxiosLike);
+    // Fixed wording: no Google message, and nothing matching USER_FACING_PATTERNS.
+    expect((error as Error).message).toBe('Drive rename did not succeed (HTTP 401).');
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain('ya29.test-access-token');
+    expect(logged).not.toContain('ya29.test-access-token');
+    expect(logged).not.toContain('Bearer');
+  });
+
+  it('does not rethrow the raw Google error when a folder listing fails', async () => {
+    const gaxiosLike = Object.assign(new Error('Login Required'), {
+      code: 403,
+      config: { headers: { Authorization: 'Bearer ya29.test-access-token' } }
+    });
+    filesList.mockRejectedValue(gaxiosLike);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { createDriveClient } = await import('./client');
+    const error = await createDriveClient()
+      .listFileNamesInFolder('folder-att', 'CASE-2026-0001')
+      .catch((err: unknown) => err);
+    const logged = errorLog.mock.calls.flat().map((part) => String(part)).join(' ');
+    errorLog.mockRestore();
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBe(gaxiosLike);
+    expect((error as Error).message).toBe('Drive folder listing did not succeed (HTTP 403).');
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain('ya29.test-access-token');
+    expect(logged).not.toContain('ya29.test-access-token');
+    expect(logged).not.toContain('Bearer');
   });
 
   it('deletes a file', async () => {
@@ -179,7 +227,7 @@ describe('createDriveClient', () => {
     const { createDriveClient } = await import('./client');
     await createDriveClient().deleteFile('file-123');
 
-    expect(filesDelete).toHaveBeenCalledWith({ fileId: 'file-123' });
+    expect(filesDelete).toHaveBeenCalledWith({ fileId: 'file-123', supportsAllDrives: true });
   });
 
   describe('createResumableSession', () => {
@@ -326,8 +374,41 @@ describe('createDriveClient', () => {
       });
       expect(typeof meta?.size).toBe('number');
       expect(filesGet).toHaveBeenCalledWith(
-        expect.objectContaining({ fileId: 'file-999', fields: 'id, name, size, mimeType, webViewLink, parents' })
+        expect.objectContaining({
+          fileId: 'file-999',
+          fields: 'id, name, size, mimeType, webViewLink, parents, trashed',
+          supportsAllDrives: true
+        })
       );
+    });
+
+    it('returns null for a trashed file, which Drive still answers in full', async () => {
+      // A file trashed between upload and commit keeps its parents and its name,
+      // so without this it passes every verification check and the row that gets
+      // written points at a link that 404s.
+      filesGet.mockResolvedValue({
+        data: {
+          id: 'file-999',
+          name: 'CASE-2026-0001 - spec.pdf',
+          size: '10',
+          mimeType: 'application/pdf',
+          webViewLink: 'https://drive.google.com/file/d/file-999/view',
+          parents: ['folder-att'],
+          trashed: true
+        }
+      });
+
+      const { createDriveClient } = await import('./client');
+      await expect(createDriveClient().getFileMeta('file-999')).resolves.toBeNull();
+    });
+
+    it('still returns metadata when Drive reports trashed: false', async () => {
+      filesGet.mockResolvedValue({
+        data: { id: 'file-999', name: 'a.pdf', size: '10', mimeType: 'application/pdf', webViewLink: '', parents: ['folder-att'], trashed: false }
+      });
+
+      const { createDriveClient } = await import('./client');
+      await expect(createDriveClient().getFileMeta('file-999')).resolves.toMatchObject({ id: 'file-999' });
     });
 
     it('returns null when Drive answers 404', async () => {
@@ -350,40 +431,87 @@ describe('createDriveClient', () => {
         config: { headers: { Authorization: 'Bearer ya29.test-access-token' } }
       });
       filesGet.mockRejectedValue(gaxiosLike);
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const { createDriveClient } = await import('./client');
       const error = await createDriveClient()
         .getFileMeta('file-999')
         .catch((err: unknown) => err);
+      const logged = errorLog.mock.calls.flat().map(String).join(' ');
+      errorLog.mockRestore();
 
       expect(error).toBeInstanceOf(Error);
       expect(error).not.toBe(gaxiosLike);
-      expect(String(error)).toContain('Rate limit exceeded');
+      expect((error as Error).message).toBe('Drive file metadata lookup did not succeed (HTTP 429).');
       expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain('ya29.test-access-token');
+      // The detail is kept for operators, as a message - never the object.
+      expect(logged).toContain('Rate limit exceeded');
+      expect(logged).not.toContain('ya29.test-access-token');
+    });
+
+    it('never embeds a Google auth message that the RPC layer would show the user', async () => {
+      const { normalizeRpcError } = await import('../rpc/errors');
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { createDriveClient } = await import('./client');
+
+      for (const googleMessage of ['Invalid Credentials', 'Login Required']) {
+        filesGet.mockRejectedValue(
+          Object.assign(new Error(googleMessage), {
+            code: 401,
+            config: { headers: { Authorization: 'Bearer ya29.test-access-token' } }
+          })
+        );
+
+        const error = await createDriveClient()
+          .getFileMeta('file-999')
+          .catch((err: unknown) => err);
+
+        expect((error as Error).message).not.toContain(googleMessage);
+        // /invalid/i and /required/i are USER_FACING_PATTERNS: a message carrying
+        // Google's wording would be forwarded verbatim to the browser.
+        const rpcError = normalizeRpcError(error);
+        expect(rpcError.status).toBe(500);
+        expect(rpcError.message).toBe('Something went wrong.');
+      }
+
+      errorLog.mockRestore();
     });
   });
 
   describe('listFileNamesInFolder', () => {
-    it('returns the names of non-trashed files in the folder', async () => {
+    it('returns the names of this case\'s non-trashed files in the folder', async () => {
       filesList.mockResolvedValue({ data: { files: [{ name: 'spec.pdf' }, { name: 'photo.jpg' }] } });
 
       const { createDriveClient } = await import('./client');
-      const names = await createDriveClient().listFileNamesInFolder('folder-att');
+      const names = await createDriveClient().listFileNamesInFolder('folder-att', 'CASE-2026-0001');
 
       expect(names).toEqual(['spec.pdf', 'photo.jpg']);
       expect(filesList).toHaveBeenCalledWith(
         expect.objectContaining({
-          q: "'folder-att' in parents and trashed=false",
-          fields: 'files(name)'
+          q: "'folder-att' in parents and trashed=false and name contains 'CASE-2026-0001 - '",
+          fields: 'files(name)',
+          supportsAllDrives: true
         })
       );
     });
 
-    it('returns an empty list when the folder is empty', async () => {
+    it('escapes quotes and backslashes in the case id before building the query', async () => {
+      filesList.mockResolvedValue({ data: { files: [] } });
+
+      const { createDriveClient } = await import('./client');
+      await createDriveClient().listFileNamesInFolder('folder-att', "CASE' or '1'='1\\");
+
+      const [args] = filesList.mock.calls[0] as [{ q: string }];
+      expect(args.q).toBe(
+        "'folder-att' in parents and trashed=false and name contains 'CASE\\' or \\'1\\'=\\'1\\\\ - '"
+      );
+    });
+
+    it('returns an empty list when the folder holds nothing for this case', async () => {
       filesList.mockResolvedValue({ data: {} });
 
       const { createDriveClient } = await import('./client');
-      await expect(createDriveClient().listFileNamesInFolder('folder-att')).resolves.toEqual([]);
+      await expect(createDriveClient().listFileNamesInFolder('folder-att', 'CASE-2026-0001')).resolves.toEqual([]);
     });
   });
 });

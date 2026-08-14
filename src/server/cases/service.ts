@@ -912,7 +912,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         // two identically named uploads stay distinguishable. Each file's own
         // provisional name is removed from the taken set first, so a file never
         // collides with itself.
-        const taken = await drive.listFileNamesInFolder(folderId);
+        // Scoped to this case: the folder holds every case's attachments and the
+        // listing is a single page, so an unscoped read could miss collisions.
+        const taken = await drive.listFileNamesInFolder(folderId, row.id);
         for (const file of verified) {
           const index = taken.indexOf(file.meta.name);
           if (index >= 0) taken.splice(index, 1);
