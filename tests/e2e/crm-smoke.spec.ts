@@ -860,8 +860,15 @@ test('reassigning a ticket with an attachment uploads it to Drive and shows the 
           ? {
               ...base,
               latestHandoverNote: noteText,
+              // Mirrors the server: the handover card looks its attachments up
+              // by activity id, not by matching on the note's text.
+              latestHandoverActivityId: 'LOG-1',
+              attachments: {
+                'LOG-1': [{ fileName, viewLink: 'https://drive.google.com/file/d/file-999/view' }]
+              },
               history: [
                 {
+                  id: 'LOG-1',
                   when: '2026-07-29',
                   who: 'Playwright Admin',
                   action: 'Reassigned',
@@ -899,6 +906,8 @@ test('reassigning a ticket with an attachment uploads it to Drive and shows the 
   const attachmentLink = page.getByRole('link', { name: fileName }).first();
   await expect(attachmentLink).toBeVisible();
   await expect(attachmentLink).toHaveAttribute('href', 'https://drive.google.com/file/d/file-999/view');
+  // Both render sites: the history entry and the Latest handover note card.
+  await expect(page.getByRole('link', { name: fileName })).toHaveCount(2);
 
   expect(uploadPutCount).toBe(1);
   expect(beginUploadArgs).toEqual([
