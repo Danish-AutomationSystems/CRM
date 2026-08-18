@@ -53,8 +53,8 @@ that the UI itself offers. Validation is server-side, via the existing
 
 ### The defect class this feature is most exposed to
 
-`public.cases` is read and written in **four** places in `src/server/cases/repository.ts`, and a new
-column must reach all four:
+`public.cases` is read and written in **five** statements across **two** files. A new column must
+reach all five. Four are in `src/server/cases/repository.ts`:
 
 | Site | Line | What happens if `priority` is missed |
 |---|---|---|
@@ -63,16 +63,21 @@ column must reach all four:
 | `getCase` SELECT | 327 | The case detail page shows no priority regardless of what is stored. |
 | `listCases` SELECT | 340 | The list and the filter both see `undefined`. |
 
+The fifth lives elsewhere: `listCasesByCustomer` in `src/server/customers/repository.ts:325` has
+its own SELECT, its own row type, and its own mapper, and it is what feeds the Cases card on a
+customer's page. A guard that parses only `cases/repository.ts` will not see it, so it gets its own.
+
 This is not hypothetical. `createQuote` shipped to production having silently dropped all four of
-its Drive columns for exactly this reason, and it survived six reviews. The guard below exists
+its Drive columns for exactly this reason, and it survived six reviews. The guards below exist
 because of that incident.
 
 ### Column-parity guard
 
 `src/server/cases/repository.test.ts` already derives, from the migration files, the set of columns
 a migration added to `activity_log`, and asserts `logActivity` writes every one of them. The same
-derivation is extended to `public.cases`, asserting that all four sites above cover every
-migration-added column.
+derivation is extended to `public.cases`, asserting that all four sites in that file cover every
+migration-added column. `listCasesByCustomer` gets a separate, simpler guard in a new
+`src/server/customers/repository.test.ts`, asserting its select list names the column.
 
 Derived, not hardcoded: pinning the literal string `priority` would catch this one defect and let
 the next new column ship unnoticed — which is precisely what happened before.
@@ -137,6 +142,8 @@ All changes go through `docs/source-appscript/Index.html`, regenerated with
 
 `priChip()` (`Index.html:351`) is **used unmodified**. It already renders High as red, Medium as
 amber, Low as grey, and returns `''` for an unset value.
+
+The customer-detail table's `priority` comes from the customers service, not `api_listCases`.
 
 | Surface | Location | Change |
 |---|---|---|
