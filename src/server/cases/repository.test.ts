@@ -114,6 +114,193 @@ function dbHelperColumns(method: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * EVERY column of public.cases: the initial CREATE TABLE plus every later ALTER.
+ *
+ * Deliberately not limited to migration-added columns. A guard over only the new
+ * ones would protect `priority` and leave the original seventeen unguarded - drop
+ * `outcome_note` from updateCase's set clause and nothing would object. The defect
+ * class is "a statement stops carrying a column", and it does not care when the
+ * column was born.
+ */
+function allCasesColumns(): string[] {
+  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
+  const names = new Set<string>();
+
+  const initial = fs.readFileSync(path.join(dir, '0001_initial_schema.sql'), 'utf8');
+  const created = initial.match(/create table if not exists public\.cases \(([\s\S]*?)\n\);/);
+  if (!created) throw new Error('public.cases CREATE TABLE not found');
+  // Table-level constraints can span multiple lines (e.g. a multi-line `check (...)`),
+  // and a continuation line - "or (order_value is not null ...)" - starts with a bare
+  // word that would otherwise look exactly like a column definition. Once a
+  // constraint/primary key/unique/check/foreign key clause opens, every line is
+  // skipped by tracking paren depth until it closes back to zero, not just the
+  // clause's first line.
+  let depth = 0;
+  let inConstraint = false;
+  for (const line of created[1].split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!inConstraint) {
+      if (/^(constraint|primary key|unique|check|foreign key)\b/i.test(trimmed)) {
+        inConstraint = true;
+      } else {
+        const name = trimmed.split(/\s+/)[0].replace(/,$/, '');
+        if (/^[a-z_][a-z0-9_]*$/.test(name)) names.add(name);
+      }
+    }
+    if (inConstraint) {
+      for (const ch of trimmed) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+      }
+      if (depth <= 0) {
+        inConstraint = false;
+        depth = 0;
+      }
+    }
+  }
+
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
+    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
+    for (const statement of statements) {
+      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
+      for (const add of adds) names.add(add[1].toLowerCase());
+    }
+  }
+
+  return [...names].sort();
+}
+
+/**
+ * Columns a given statement is allowed NOT to carry, each with a reason.
+ *
+ * Every entry here is a deliberate, reviewed exemption. Adding to this list is
+ * how the guard gets weakened, so an entry without a reason is a defect.
+ */
+const CASES_EXEMPT: Record<string, Record<string, string>> = {
+  // createCase does not name `version`: the column defaults to 1.
+  createCase: { version: 'defaults to 1 on insert' },
+  // updateCase identifies the row by case_id and must never rewrite creation facts.
+  updateCase: {
+    case_id: 'the WHERE key, never in the SET clause',
+    customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
+    created_by: 'creation fact, immutable',
+    created_at: 'creation fact, immutable'
+  },
+  // version is an internal optimistic-lock counter (bumped by updateCase) that is
+  // never surfaced on CaseRow - CaseDbRow has no `version` field and nothing reads
+  // it back. Pre-existing gap, unrelated to priority; discovered while wiring this
+  // guard because the column parser correctly includes `version` as a real column.
+  getCase: { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
+  listCases: { version: 'internal optimistic-lock counter, not exposed on CaseRow' }
+};
+
+function missingFrom(statement: string, carried: string[]): string[] {
+  const exempt = CASES_EXEMPT[statement];
+  return allCasesColumns().filter((c) => !carried.includes(c) && !(c in exempt));
+}
+
+/**
+ * Columns added to public.cases by a migration after the initial schema.
+ * Kept as a separate, narrower derivation purely to prove the guard above is
+ * live: if this ever returns nothing, the migration parsing has broken.
+ */
+function migrationAddedCasesColumns(): string[] {
+  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
+  const names = new Set<string>();
+
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
+    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
+    for (const statement of statements) {
+      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
+      for (const add of adds) names.add(add[1].toLowerCase());
+    }
+  }
+
+  return [...names].sort();
+}
+
+function casesInsertColumns(): string[] {
+  const body = methodBody('createCase');
+  const match = body.match(/insert into public\.cases \(([^)]*)\)/);
+  if (!match) throw new Error('createCase insert column list not found');
+  return match[1].split(',').map((c) => c.trim()).filter(Boolean);
+}
+
+/**
+ * The left-hand side of every assignment in updateCase's `set` clause.
+ *
+ * updateCase is not an INSERT and not a SELECT: it merges `fields` over the
+ * existing row and rewrites the full column list. A column missing here is
+ * never written, and nothing errors - which is why it gets its own parser
+ * rather than being folded into one of the others.
+ */
+function casesUpdateSetColumns(): string[] {
+  const body = methodBody('updateCase');
+  const match = body.match(/update public\.cases\s*\n\s*set\b([\s\S]*?)\bwhere\b/);
+  if (!match) throw new Error('updateCase set clause not found');
+  return [...match[1].matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)\s*=/gi)].map((m) => m[1].toLowerCase());
+}
+
+describe('cases repository public.cases statements', () => {
+  it('finds the migration-added columns, so the derivation cannot pass vacuously', () => {
+    // If this ever legitimately drops to zero, every guard below stops guarding.
+    expect(migrationAddedCasesColumns()).toContain('priority');
+  });
+
+  it('parses a plausible createCase insert list, so a failed regex cannot pass vacuously', () => {
+    expect(casesInsertColumns().length).toBeGreaterThan(10);
+    expect(casesInsertColumns()).toContain('case_id');
+  });
+
+  it('parses a plausible updateCase set list, so a failed regex cannot pass vacuously', () => {
+    expect(casesUpdateSetColumns().length).toBeGreaterThan(10);
+    expect(casesUpdateSetColumns()).toContain('title');
+  });
+
+  it('derives the full public.cases column set, so no guard below can pass vacuously', () => {
+    const all = allCasesColumns();
+    expect(all.length).toBeGreaterThan(15);
+    expect(all).toContain('case_id');
+    expect(all).toContain('outcome_note');
+    expect(all).toContain('priority');
+  });
+
+  it('createCase writes every public.cases column', () => {
+    const missing = missingFrom('createCase', casesInsertColumns());
+    expect(missing, `createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('updateCase writes every public.cases column', () => {
+    const missing = missingFrom('updateCase', casesUpdateSetColumns());
+    expect(missing, `updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('getCase selects every public.cases column', () => {
+    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
+    expect(missing, `getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('listCases selects every public.cases column', () => {
+    const missing = missingFrom('listCases', selectColumns('listCases', 'cases'));
+    expect(missing, `listCases does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('writes no column outside the table (typo guard)', () => {
+    const all = allCasesColumns();
+    for (const [name, carried] of [
+      ['createCase', casesInsertColumns()],
+      ['updateCase', casesUpdateSetColumns()]
+    ] as const) {
+      const unknown = carried.filter((c) => !all.includes(c));
+      expect(unknown, `${name} names column(s) that do not exist: ${unknown.join(', ')}`).toEqual([]);
+    }
+  });
+});
+
 describe('cases repository case_attachments statements', () => {
   it('parses a plausible column list from the migration, so a failed regex cannot pass vacuously', () => {
     const { all } = caseAttachmentsColumns();

@@ -441,6 +441,7 @@ describe('CRM concurrency behavior', () => {
         title: 'Panel upgrade',
         details: '',
         source: '',
+        priority: '',
         stage: 'Opportunity',
         outcome: '',
         orderValue: '',

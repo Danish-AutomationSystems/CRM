@@ -209,6 +209,7 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     title: 'Panel upgrade',
     details: 'Upgrade details',
     source: 'Direct Enquiry',
+    priority: '',
     stage: 'Lead',
     outcome: '',
     orderValue: '',

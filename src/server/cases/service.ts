@@ -55,6 +55,7 @@ export type CaseRow = {
   title: string;
   details: string;
   source: string;
+  priority: string;
   stage: string;
   outcome: '' | 'Won' | 'Lost' | 'Hold';
   orderValue: number | '';
@@ -648,6 +649,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title,
           details: String(input.details ?? ''),
           source: asText(input.source),
+          priority: '',
           stage: order ? 'Quoted' : validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: order ? 'Won' : '',
           orderValue: order ? Number(input.orderValue) : '',
@@ -1187,6 +1189,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title: asText(input.title) || 'Untitled case',
           details: String(input.details ?? ''),
           source: '',
+          priority: '',
           stage: validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: '',
           orderValue: '',
