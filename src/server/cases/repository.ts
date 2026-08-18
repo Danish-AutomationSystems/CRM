@@ -271,6 +271,14 @@ export class PostgresCaseRepository implements CaseRepository {
     return rows.map(toCustomer);
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    const rows = (await this.db`
+      select key, value
+      from public.settings
+    `) as Array<{ key: string; value: string }>;
+    return rows;
+  }
+
   async findCustomerByName(name: string): Promise<CaseCustomerRow | null> {
     const key = name.trim().toLowerCase().replace(/\s+/g, ' ');
     const rows = (await this.db`

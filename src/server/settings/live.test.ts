@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_SETTINGS, TAG_TO_BE_FILLED } from './defaults';
@@ -28,6 +31,14 @@ describe('loadSettings', () => {
     // Defaulting this would resurrect names an admin deleted.
     const settings = await loadSettings(reader([{ key: 'SEI_NAMES', value: '' }]));
     expect(settings.seiNames).toEqual([]);
+  });
+
+  it('never reads DEFAULT_SETTINGS.SEI_NAMES, which the value-based test cannot detect', () => {
+    // The default is itself [], so a mistaken fallback is invisible to an output
+    // assertion. An admin may legitimately empty this list; falling back would
+    // resurrect names they deleted.
+    const source = fs.readFileSync(path.join(__dirname, 'live.ts'), 'utf8');
+    expect(source).not.toMatch(/DEFAULT_SETTINGS\.SEI_NAMES/);
   });
 
   it('reads the whole set in a single query', async () => {
