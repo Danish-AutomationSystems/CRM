@@ -22,11 +22,10 @@ set local lock_timeout = '3s';
 alter table public.cases
   add column if not exists priority text not null default '';
 
--- Partial index: today every row is in the excluded set, so this costs nothing until
--- priorities are actually used. It exists for the Cases-tab priority filter.
-create index if not exists cases_priority_idx
-  on public.cases(priority)
-  where priority <> '';
+-- No index here: the Cases-tab priority filter is applied in JavaScript, in
+-- listCases (src/server/cases/service.ts), not via a SQL predicate. An index
+-- should be added by whichever later migration pushes that filtering into SQL -
+-- an index nothing reads is cost without benefit.
 
 do $$
 declare
@@ -55,13 +54,6 @@ begin
 
   if col_default is null or col_default not like '''''%' then
     raise exception 'cases.priority default is %, expected the empty string', col_default;
-  end if;
-
-  if not exists (
-    select 1 from pg_indexes
-     where schemaname = 'public' and indexname = 'cases_priority_idx'
-  ) then
-    raise exception 'cases_priority_idx was not created';
   end if;
 
   -- Deliberately no row-level probe here. The column is NOT NULL two statements up,
