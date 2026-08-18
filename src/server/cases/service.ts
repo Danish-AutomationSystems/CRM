@@ -745,7 +745,10 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const priority = asText(priorityInput);
       const { row } = await loadVisibleCase(repo, user, id);
       // '' is allowed and means "clear it" - priority is optional, so it must be removable.
-      if (priority && !(DEFAULT_SETTINGS.PRIORITIES as readonly string[]).includes(priority)) {
+      // The case's own current priority stays acceptable even if an admin has since
+      // retired it, so re-saving cannot strip a value this endpoint would not offer.
+      const allowedPriorities = (await loadSettings(repo)).priorities;
+      if (priority && !allowedPriorities.includes(priority) && priority !== row.priority) {
         throw new Error(`"${priority}" is not a valid priority.`);
       }
       // No block on a closed case. setCaseStage refuses on Won/Lost because a closed case

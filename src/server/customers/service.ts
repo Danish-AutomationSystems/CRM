@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
 import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';
-import { loadSettings, type LiveSettings } from '../settings/live';
+import { loadSettings, selectableTags, type LiveSettings } from '../settings/live';
 import { validSei } from './sei';
 
 export type CustomerRow = {
@@ -348,16 +348,19 @@ function gridRow(
 }
 
 async function customerMeta(user: CrmContext, repo: CustomerRepository) {
+  // Every list here is read LIVE from public.settings. These feed the customer
+  // page's dropdowns; served from the constant they would offer stale options,
+  // which is the settings-drift bug this module used to have.
+  const live = await loadSettings(repo);
   return {
-    // P8: read LIVE from public.settings so an admin edit takes effect without a redeploy.
-    seiNames: await allowedSeiNames(repo),
+    seiNames: live.seiNames,
     canEditPriority: roleLevel(user) >= 2,
     canEditClass: roleLevel(user) >= 3,
     canDelete: roleLevel(user) >= 3,
     // P7: the backfill placeholder is a recognised value but is never offered as a choice.
-    tags: [...SELECTABLE_TAGS],
-    types: [...DEFAULT_SETTINGS.TYPES],
-    priorities: [...DEFAULT_SETTINGS.PRIORITIES]
+    tags: selectableTags(live),
+    types: live.types,
+    priorities: live.priorities
   };
 }
 
