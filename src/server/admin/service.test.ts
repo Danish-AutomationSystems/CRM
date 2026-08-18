@@ -551,6 +551,97 @@ describe('admin service recycle bin', () => {
   });
 });
 
+describe('admin service config items', () => {
+  it('adds an item to the stored list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha' }];
+
+    await service.addConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.settings).toContainEqual({ key: 'TYPES', value: 'Alpha | Beta' });
+  });
+
+  it('refuses a duplicate, case-insensitively', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha' }];
+
+    await expect(service.addConfigItem(admin, 'TYPES', 'alpha')).rejects.toThrow(/already/i);
+  });
+
+  it('refuses a value containing a pipe or a comma', async () => {
+    const { service } = makeService();
+
+    await expect(service.addConfigItem(admin, 'TYPES', 'A | B')).rejects.toThrow(/cannot contain/i);
+    await expect(service.addConfigItem(admin, 'TAGS', 'A, B')).rejects.toThrow(/cannot contain/i);
+  });
+
+  it('refuses an empty value and a value of only spaces', async () => {
+    const { service } = makeService();
+
+    await expect(service.addConfigItem(admin, 'TYPES', '   ')).rejects.toThrow();
+  });
+
+  it('refuses an unknown config key', async () => {
+    const { service } = makeService();
+
+    await expect(service.addConfigItem(admin, 'STAGES', 'Nope')).rejects.toThrow(/not configurable/i);
+  });
+
+  it('deletes an item from the stored list and touches no record', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+    repo.customers = [customer({ tags: ['Punjab'] })];
+    const before = JSON.stringify(repo.customers);
+
+    await service.deleteConfigItem(admin, 'TAGS', 'Punjab');
+
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'NCR' });
+    expect(JSON.stringify(repo.customers)).toBe(before);
+  });
+
+  it('refuses to delete the last remaining tag', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab' }];
+
+    await expect(service.deleteConfigItem(admin, 'TAGS', 'Punjab')).rejects.toThrow(/at least one/i);
+  });
+
+  it('refuses to touch the location backfill placeholder', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | TO BE FILLED' }];
+
+    await expect(service.deleteConfigItem(admin, 'TAGS', 'TO BE FILLED')).rejects.toThrow();
+  });
+
+  it('refuses a non-admin', async () => {
+    const { service } = makeService();
+
+    await expect(service.addConfigItem(manager, 'TYPES', 'Beta')).rejects.toThrow();
+    await expect(service.deleteConfigItem(manager, 'TYPES', 'Beta')).rejects.toThrow();
+  });
+
+  it('checks admin access before inspecting the key or value, so a non-admin gets the same access error regardless', async () => {
+    const { service } = makeService();
+
+    await expect(service.addConfigItem(manager, 'NOT_A_REAL_KEY', 'Whatever')).rejects.toThrow(
+      'Admin access requires L6'
+    );
+    await expect(service.deleteConfigItem(manager, 'NOT_A_REAL_KEY', 'Whatever')).rejects.toThrow(
+      'Admin access requires L6'
+    );
+  });
+
+  it('logs distinct actions for add and delete', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha' }];
+
+    await service.addConfigItem(admin, 'TYPES', 'Beta');
+    await service.deleteConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.logs.map((log) => log.action)).toEqual(['CONFIG_ADD', 'CONFIG_DELETE']);
+  });
+});
+
 describe('admin RPC registration', () => {
   it('registers the exact legacy admin RPC names', () => {
     const registry = createRpcRegistry();

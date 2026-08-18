@@ -8,7 +8,8 @@ import { CRM_ID_FORMATS, CRM_ROLES, CRM_TABLES, type CrmRole } from '../db/schem
 import { DIRECT_EMAIL, directVirtualUser, isDirect } from '../domain/direct';
 import { isBackendRole } from '../customers/service';
 import { joinPipe, normalizeEmail, parseList, parsePipe } from '../domain/lists';
-import { DEFAULT_SETTINGS, type DefaultSettingKey } from '../settings/defaults';
+import { DEFAULT_SETTINGS, TAG_TO_BE_FILLED, type DefaultSettingKey } from '../settings/defaults';
+import { loadSettings, type ConfigListKey } from '../settings/live';
 
 const IMPORT_CAP = 500;
 
@@ -309,6 +310,50 @@ function cleanList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+const CONFIGURABLE_KEYS: readonly ConfigListKey[] = ['TAGS', 'TYPES', 'PRIORITIES', 'CATEGORIES', 'SEI_NAMES'];
+
+function configKey(value: unknown): ConfigListKey {
+  const key = asText(value).toUpperCase();
+  const match = CONFIGURABLE_KEYS.find((candidate) => candidate === key);
+  if (!match) {
+    throw new Error(`"${asText(value)}" is not configurable.`);
+  }
+  return match;
+}
+
+/**
+ * `|` is the list separator in public.settings and in pipe-joined columns.
+ * `,` matters because parseList (domain/lists.ts:5) splits on /[|,]/, so a comma
+ * inside a location or SEI name would be silently split into two values on the
+ * next save of any record holding it.
+ */
+function configValue(value: unknown): string {
+  const text = asText(value).trim();
+  if (!text) throw new Error('Enter a value.');
+  if (text.includes('|') || text.includes(',')) {
+    throw new Error('A config value cannot contain "|" or ",".');
+  }
+  if (text === TAG_TO_BE_FILLED) {
+    throw new Error(`"${TAG_TO_BE_FILLED}" is reserved.`);
+  }
+  return text;
+}
+
+function listForKey(settings: Awaited<ReturnType<typeof loadSettings>>, key: ConfigListKey): string[] {
+  switch (key) {
+    case 'TAGS':
+      return settings.tags;
+    case 'TYPES':
+      return settings.types;
+    case 'PRIORITIES':
+      return settings.priorities;
+    case 'CATEGORIES':
+      return settings.categories;
+    case 'SEI_NAMES':
+      return settings.seiNames;
+  }
+}
+
 function localName(email: string): string {
   return email.split('@')[0] || email;
 }
@@ -556,6 +601,65 @@ export function createAdminService(repo: AdminRepository) {
           entity: '',
           customerId: '',
           details: 'Settings updated',
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    async addConfigItem(user: CrmContext, key: unknown, value: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const item = configValue(value);
+
+      const settings = await loadSettings(repo);
+      const current = listForKey(settings, listKey);
+      if (current.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
+        throw new Error(`"${item}" already exists.`);
+      }
+      const next = [...current, item];
+
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_ADD',
+          entity: listKey,
+          customerId: '',
+          details: item,
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    async deleteConfigItem(user: CrmContext, key: unknown, value: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const item = asText(value).trim();
+      if (item === TAG_TO_BE_FILLED) {
+        throw new Error(`"${TAG_TO_BE_FILLED}" is reserved.`);
+      }
+
+      const settings = await loadSettings(repo);
+      const current = listForKey(settings, listKey);
+      const next = current.filter((existing) => existing !== item);
+      if (listKey === 'TAGS' && next.length === 0) {
+        throw new Error('Keep at least one tag.');
+      }
+
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_DELETE',
+          entity: listKey,
+          customerId: '',
+          details: item,
           who: normalizeEmail(user.email)
         });
         return undefined;
