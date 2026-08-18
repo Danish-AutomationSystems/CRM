@@ -1411,6 +1411,40 @@ describe('case reads, lists, and quick log', () => {
 
     expect((await repo.getCase(logged.caseId))?.priority).toBe('');
   });
+
+  it('does not let quick-log create a case with a retired priority', async () => {
+    // Creation path: no `stored` passed to validOne for the case priority below.
+    const { repo, service } = makeService();
+    repo.settingRows = { PRIORITIES: 'Urgent | Routine' };
+
+    const logged = await service.quickLog(sales, {
+      customerId: 'CUST-0001',
+      title: 'Called about spares',
+      priority: 'High'
+    });
+
+    expect((await repo.getCase(logged.caseId))?.priority).toBe('');
+  });
+
+  it.each([
+    ['tag', { tag: 'Punjab' }, { TAGS: 'NCR | Chandigarh' }, 'tags', []],
+    ['type', { type: 'OEM' }, { TYPES: 'Alpha | Beta' }, 'type', ''],
+    ['priority', { priority: 'High' }, { PRIORITIES: 'Urgent | Routine' }, 'priority', '']
+  ] as const)(
+    'does not let quick-log create a new customer with a retired %s',
+    async (_label, newCustomerField, settingRows, field, empty) => {
+      const { repo, service } = makeService();
+      repo.settingRows = settingRows;
+
+      const logged = await service.quickLog(sales, {
+        newCustomer: { name: 'Fresh Co', ...newCustomerField },
+        title: 'Site visit'
+      });
+
+      const storedCustomer = await repo.getCustomer(logged.customerId);
+      expect(storedCustomer).toMatchObject({ [field]: empty });
+    }
+  );
 });
 
 describe('setCasePriority', () => {
@@ -1556,6 +1590,24 @@ describe('case service validates priorities and won categories against the live 
     await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', { orderValue: 5000, categories: ['Alpha'] });
 
     expect(repo.cases[0]).toMatchObject({ outcome: 'Won', wonCategories: ['Alpha'] });
+  });
+
+  it('does not let a brand-new Won order use a retired product category', async () => {
+    // createCase's own Won-order path is a creation path: no `stored` argument to
+    // validCategories, so a retired category cannot pass, and the missing-category
+    // rule (validated later in this describe block) then rejects the order outright
+    // rather than silently creating it with no category.
+    const { repo, service } = makeService();
+    repo.settingRows = { CATEGORIES: 'Alpha | Beta' };
+
+    await expect(
+      service.createCase(sales, 'CUST-0001', {
+        title: 'Win order',
+        order: true,
+        orderValue: 5000,
+        categories: ['VFDs']
+      })
+    ).rejects.toThrow('Select at least one product category for the order');
   });
 
   it('keeps a retired won category when the outcome is re-saved', async () => {

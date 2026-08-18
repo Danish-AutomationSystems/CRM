@@ -457,6 +457,39 @@ describe('customer service mutations', () => {
     ).rejects.toThrow(/at least one location/i);
   });
 
+  it.each([
+    ['type', 'OEM', { TYPES: 'Alpha | Beta' }, 'type'],
+    ['priority', 'High', { PRIORITIES: 'Urgent | Routine' }, 'priority']
+  ] as const)('does not let a NEW customer use a retired %s', async (_label, submitted, settings, field) => {
+    // Creation paths pass no stored value, so a retired value falls back to '' -
+    // validOne does not throw on create paths, unlike requiredTags for location.
+    const { repo, service } = makeService();
+    repo.settings = settings;
+
+    const created = await service.createCustomer(baseUser, {
+      name: 'Fresh Co',
+      tags: ['Punjab'],
+      [field]: submitted
+    });
+
+    expect(await repo.getCustomer(created.id)).toMatchObject({ [field]: '' });
+  });
+
+  it('does not let a bulk-imported customer use a retired tag, type or priority', async () => {
+    // bulkCustomers reads settings once for the whole batch and passes no `stored`
+    // to validTags/validOne anywhere below - creation path, so a retired value must
+    // not survive the import.
+    const { repo, service } = makeService();
+    repo.settings = { TAGS: 'NCR | Chandigarh', TYPES: 'Alpha', PRIORITIES: 'Urgent' };
+
+    const result = await service.bulkCustomers(baseUser, [
+      { name: 'Bulk Co', tag: 'Punjab', type: 'OEM', priority: 'High', area: 'Delhi' }
+    ]);
+
+    expect(result).toEqual({ created: 1, skipped: [] });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: [], type: '', priority: '' });
+  });
+
   it('P7: TO BE FILLED survives a save round-trip but is never offered as a choice', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer({ tags: ['TO BE FILLED'] })];
