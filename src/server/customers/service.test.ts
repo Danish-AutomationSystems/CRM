@@ -29,6 +29,8 @@ class FakeCustomerRepository implements CustomerRepository {
   caseOwnerRows: CaseOwnerRow[] = [];
   caseWrites: Array<{ caseId: string; extraOwners: string[] }> = [];
   settings: Record<string, string> = {};
+  getSettingCalls = 0;
+  listSettingsCalls = 0;
   recycleBin: CustomerRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   nextCustomer = 1;
@@ -152,10 +154,12 @@ class FakeCustomerRepository implements CustomerRepository {
   }
 
   async getSetting(key: string): Promise<string | null> {
+    this.getSettingCalls++;
     return this.settings[key] ?? null;
   }
 
   async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    this.listSettingsCalls++;
     return Object.entries(this.settings).map(([key, value]) => ({ key, value }));
   }
 
@@ -632,6 +636,32 @@ describe('customer service mutations', () => {
       failed: [{ id: 'CUST-0002', error: 'Tags, type and archive status can only be changed at L3 or higher.' }]
     });
     expect(await repo.getCustomer('CUST-0001')).toMatchObject({ area: 'Mohali', priority: 'Medium' });
+  });
+
+  it('loads settings once for a whole grid save, not once per patch', async () => {
+    // live.ts documents loadSettings/getSetting as "cached per request by the
+    // caller". saveCustomerCells previously called updateCustomer once per patch,
+    // each of which reloaded settings and the SEI list independently - a 100-row
+    // grid save issued 100 settings reads plus 100 SEI reads.
+    const { repo, service } = makeService();
+    repo.customers = Array.from({ length: 5 }, (_, index) =>
+      customer({ id: `CUST-${String(index + 1).padStart(4, '0')}`, name: `Row ${index}` })
+    );
+    repo.handlers = repo.customers.map((row) => ({
+      customerId: row.id,
+      email: baseUser.email,
+      assignedBy: baseUser.email,
+      assignedAt: 'now'
+    }));
+
+    const result = await service.saveCustomerCells(
+      baseUser,
+      repo.customers.map((row) => ({ id: row.id, fields: { area: 'Mohali' } }))
+    );
+
+    expect(result.saved).toHaveLength(5);
+    expect(repo.listSettingsCalls).toBe(1);
+    expect(repo.getSettingCalls).toBe(1);
   });
 
   it('blocks customer deletes with cases or quotes and moves eligible customers to recycle bin', async () => {

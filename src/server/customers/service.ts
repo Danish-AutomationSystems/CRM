@@ -441,6 +441,34 @@ async function ensureFullCustomer(
   return customer;
 }
 
+/**
+ * The shared body of `updateCustomer`, parameterised on already-loaded settings
+ * so a caller updating many rows in one request - `saveCustomerCells` - can load
+ * them once for the whole batch instead of once per row. `loadSettings` and
+ * `getSetting` are documented as "cached per request by the caller"; this is
+ * that caching.
+ */
+async function applyCustomerUpdate(
+  repo: CustomerRepository,
+  user: CrmContext,
+  id: string,
+  input: CustomerInput,
+  allowedSei: readonly string[],
+  live: LiveSettings
+) {
+  const existing = await ensureFullCustomer(repo, user, id);
+  const fields = customerUpdateFields(user, input, allowedSei, live, existing);
+  await repo.updateCustomer(id, fields);
+  await repo.logActivity({
+    action: 'CUSTOMER_EDIT',
+    entity: id,
+    customerId: id,
+    details: fields.name ?? id,
+    who: normalizeEmail(user.email)
+  });
+  return { ok: true };
+}
+
 export function createCustomerService(repo: CustomerRepository) {
   return {
     async searchCustomers(user: CrmContext, query: unknown) {
@@ -658,32 +686,23 @@ export function createCustomerService(repo: CustomerRepository) {
     },
 
     async updateCustomer(user: CrmContext, id: string, input: CustomerInput) {
-      const existing = await ensureFullCustomer(repo, user, id);
-      const fields = customerUpdateFields(
-        user,
-        input,
-        await allowedSeiNames(repo),
-        await loadSettings(repo),
-        existing
-      );
-      await repo.updateCustomer(id, fields);
-      await repo.logActivity({
-        action: 'CUSTOMER_EDIT',
-        entity: id,
-        customerId: id,
-        details: fields.name ?? id,
-        who: normalizeEmail(user.email)
-      });
-      return { ok: true };
+      const [allowedSei, live] = await Promise.all([allowedSeiNames(repo), loadSettings(repo)]);
+      return applyCustomerUpdate(repo, user, id, input, allowedSei, live);
     },
 
     async saveCustomerCells(user: CrmContext, patches: CustomerCellPatch[]) {
       const saved: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
 
+      // Loaded once for the whole grid save, not once per patch: settings and the
+      // SEI list are read live here, not from saveCustomerCells's own second call
+      // per row, which is what turned a 100-row grid save into 100 settings reads
+      // plus 100 SEI reads.
+      const [allowedSei, live] = await Promise.all([allowedSeiNames(repo), loadSettings(repo)]);
+
       for (const patch of patches ?? []) {
         try {
-          await this.updateCustomer(user, patch.id, patch.fields ?? {});
+          await applyCustomerUpdate(repo, user, patch.id, patch.fields ?? {}, allowedSei, live);
           saved.push(patch.id);
         } catch (error) {
           failed.push({
