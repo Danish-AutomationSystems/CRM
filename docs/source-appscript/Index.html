@@ -1059,8 +1059,7 @@ function mBulkCustomers(){
     '<p class="sub" style="margin-bottom:8px">Paste rows from Excel (one customer per line). Columns, in order:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area</p>'+
     '<p class="hint">Only Name is required. Location must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
-    '<p class="hint" style="margin-top:10px;margin-bottom:4px">Columns, tab-separated: Name · Location · Type · Priority · Area</p>'+
-    '<textarea id="bc_paste" style="min-height:130px;font-family:var(--mono);font-size:12px"></textarea>'+
+    '<textarea id="bc_paste" style="min-height:130px;margin-top:10px;font-family:var(--mono);font-size:12px"></textarea>'+
     '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkCust()">Preview</button></div>'+
     '<div id="bc_prev" style="margin-top:10px"></div>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
@@ -1267,8 +1266,7 @@ function mBulkContacts(custId){
     '<p class="sub" style="margin-bottom:8px">Paste one contact per line. Columns, in order:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Designation · Phone · Email</p>'+
     '<p class="hint">Only Name is required. Tab- or comma-separated.</p>'+
-    '<p class="hint" style="margin-top:10px;margin-bottom:4px">Columns, tab-separated: Name · Designation · Phone · Email</p>'+
-    '<textarea id="bk_paste" style="min-height:130px;font-family:var(--mono);font-size:12px"></textarea>'+
+    '<textarea id="bk_paste" style="min-height:130px;margin-top:10px;font-family:var(--mono);font-size:12px"></textarea>'+
     '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkContacts()">Preview</button></div>'+
     '<div id="bk_prev" style="margin-top:10px"></div>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
