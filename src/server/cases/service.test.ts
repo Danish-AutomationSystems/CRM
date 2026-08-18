@@ -1299,6 +1299,66 @@ describe('case reads, lists, and quick log', () => {
     ]);
   });
 
+  it('filters the case list by priority', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', priority: 'High' }),
+      caseRow({ id: 'CASE-2026-0002', priority: 'Low' }),
+      caseRow({ id: 'CASE-2026-0003', priority: '' })
+    ];
+
+    const listed = await service.listCases(sales, { priority: 'High' });
+
+    expect(listed.map((row) => row.id)).toEqual(['CASE-2026-0001']);
+  });
+
+  it('returns every visible case when no priority filter is given', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', priority: 'High' }),
+      caseRow({ id: 'CASE-2026-0002', priority: '' })
+    ];
+
+    const listed = await service.listCases(sales, {});
+
+    expect(listed.map((row) => row.id).sort()).toEqual(['CASE-2026-0001', 'CASE-2026-0002']);
+  });
+
+  it('carries the priority in the case list payload', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    const listed = await service.listCases(sales, {});
+
+    expect(listed[0].priority).toBe('Medium');
+  });
+
+  // Documents the requirement at the service level. It passes before the SQL is
+  // correct, because the in-memory fake merges objects and cannot reproduce a
+  // missing `set` clause - the real defence is the casesUpdateSetColumns guard in
+  // repository.test.ts. Kept deliberately, by the project owner's ruling: without
+  // it nothing in the service layer states that editing a title must not wipe the
+  // priority. Do not delete this test or this comment.
+  it('leaves an existing priority intact when an unrelated field is edited', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+
+    await service.updateCase(sales, 'CASE-2026-0001', { title: 'Renamed case' });
+
+    const stored = await repo.getCase('CASE-2026-0001');
+    expect(stored?.title).toBe('Renamed case');
+    expect(stored?.priority).toBe('High');
+  });
+
+  it('carries the priority in the case detail payload', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    const detail = await service.getCase(sales, 'CASE-2026-0001');
+
+    expect(detail.case.priority).toBe('Medium');
+  });
+
   it('quick-log creates new customers with handlers, reuses duplicate names, and blocks inaccessible existing customers', async () => {
     const { repo, service } = makeService();
     repo.customers.push(customer({ id: 'CUST-0099', name: 'Existing Co', tags: ['NCR'] }));

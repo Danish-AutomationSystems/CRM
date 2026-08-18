@@ -172,6 +172,7 @@ export type CaseListFilter = Partial<{
   assigned: unknown;
   stage: unknown;
   outcome: unknown;
+  priority: unknown;
   q: unknown;
 }>;
 
@@ -337,6 +338,7 @@ function formatCase(row: CaseRow, ownership: Ownership, users: Record<string, Ca
     title: row.title,
     details: row.details,
     source: row.source,
+    priority: row.priority,
     stage: row.stage,
     outcome: row.outcome,
     orderValue: row.orderValue,
@@ -1102,6 +1104,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         return map;
       }, {});
       const stage = asText(filter.stage);
+      const priority = asText(filter.priority);
       const outcome = asText(filter.outcome);
       const query = lower(filter.q);
       const me = normalizeEmail(user.email);
@@ -1123,6 +1126,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           if (outcome === 'Open' && row.outcome) return false;
           if (outcome && outcome !== 'Open' && row.outcome !== outcome) return false;
           if (stage && row.stage !== stage) return false;
+          if (priority && row.priority !== priority) return false;
           if (query) {
             const haystack = lower(`${row.title} ${row.id} ${customer.name}`);
             if (!haystack.includes(query)) return false;
@@ -1139,6 +1143,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             title: row.title,
             customerId: row.customerId,
             customerName: customer?.name ?? row.customerId,
+            priority: row.priority,
             stage: row.stage,
             outcome: outcomeText,
             orderValue: row.orderValue,
