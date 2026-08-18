@@ -249,7 +249,7 @@ var S = {
   user:null, settings:null, route:'dash', routeArg:null, boot:null, bootAt:0,
   /* P6: `mine` became two independent server flags, OR-combined. Neither set
      means "every case I can see". */
-  custQ:'', caseF:{owned:false, assigned:false, stage:'', outcome:'Open', q:''},
+  custQ:'', caseF:{owned:false, assigned:false, stage:'', outcome:'Open', priority:'', q:''},
   users:null, peers:[]
 };
 
@@ -598,7 +598,7 @@ function openCasesHTML(list){
   if(!list || !list.length) return '<div class="empty">No open cases assigned to you.</div>';
   return list.map(function(c){
     return '<div class="qr"><div style="flex:1;min-width:150px;cursor:pointer" onclick="nav(\'case\',\''+esc(c.id)+'\')"><b>'+esc(c.title)+'</b>'+
-      '<div class="sub">'+esc(c.customerName)+'</div></div>'+stageChip(c.stage)+
+      '<div class="sub">'+esc(c.customerName)+'</div></div>'+stageChip(c.stage)+priChip(c.priority)+
       '<button class="btn ghost sm" onclick="event.stopPropagation();mAssign(\''+esc(c.id)+'\')">Reassign</button></div>';
   }).join('');
 }
@@ -610,7 +610,7 @@ function recentHTML(recent){
   });
   return html+'</ul>';
 }
-function goCases(f){ S.caseF = {owned:!!(f.owned||f.mine), assigned:!!f.assigned, stage:f.stage||'', outcome:f.outcome||'', q:''}; vCases(); }
+function goCases(f){ S.caseF = {owned:!!(f.owned||f.mine), assigned:!!f.assigned, stage:f.stage||'', outcome:f.outcome||'', priority:'', q:''}; vCases(); }
 
 /* ---- L1 minimal dashboard ---- */
 function renderL1Dash(d){
@@ -1176,12 +1176,12 @@ function renderCustomer(d){
     html += '<div class="card"><div class="ovl">Cases</div>';
     if(!(d.cases||[]).length) html += '<div class="empty">No cases yet — create one, or it will be created automatically with the first quotation.</div>';
     else{
-      html += '<table><tr><th>ID</th><th>Title</th><th>Status</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th class="tnum-r">Quotes</th><th>Updated</th></tr>';
+      html += '<table><tr><th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th class="tnum-r">Quotes</th><th>Updated</th></tr>';
       d.cases.forEach(function(o){
         var val = o.outcome==='Won' ? o.orderValue : '';
         html += '<tr class="clk" onclick="nav(\'case\',\''+esc(o.id)+'\')">'+
           '<td class="mono">'+esc(o.id)+'</td><td><b>'+esc(o.title)+'</b></td>'+
-          '<td>'+caseStatusChip(o.stage,o.outcome)+'</td>'+
+          '<td>'+caseStatusChip(o.stage,o.outcome)+'</td><td>'+(priChip(o.priority)||'<span class="sub">—</span>')+'</td>'+
           '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
           '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
           '<td class="sub">'+(o.outcome ? '—' : esc(o.assignee||'—'))+'</td>'+
@@ -1314,6 +1314,9 @@ function mNewCase(custId){
         ? '<select id="fo_owner"><option value="">— choose who works this —</option>'+(S.users||[]).map(function(x){ return '<option value="'+esc(x.email)+'">'+esc(x.name)+'</option>'; }).join('')+'</select>'
         : userSelectHTML('fo_owner', S.user.email))+
       '<div class="hint">'+(lvl()>=5?'Pick a handler or search anyone — you can\'t hold the ticket yourself.':'Whoever holds the ticket and works the case. The account handlers are the owners.')+'</div></div></div>'+
+      '<div class="frow"><div><label>Priority</label><select id="fo_pri">'+
+        '<option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], '') +
+      '</select><div class="hint">Optional. Leave as none if it is not urgent.</div></div></div>'+
       '<div id="fo_orderwrap" style="display:none">'+
         '<div class="card" style="background:#FAFBFA;padding:14px"><div class="ovl">Order details</div>'+
         '<div class="frow"><div><label class="req">Order value ('+esc(S.settings.currency)+')</label><input id="fo_orderval" type="number" min="0"></div></div>'+
@@ -1366,7 +1369,7 @@ function setCaseKind(k){
 }
 function saveNewCase(custId){
   var kind = NEWCASE.kind;
-  var d = { title:v('fo_title'), details:v('fo_det'), assignee:v('fo_owner') };
+  var d = { title:v('fo_title'), details:v('fo_det'), assignee:v('fo_owner'), priority:v('fo_pri') };
   if(!d.title){ toast('Give the case a short title.', true); return; }
   if(lvl()>=5 && !d.assignee){ toast('Choose who this case is assigned to.', true); return; }
   if(kind==='Order'){
@@ -1423,7 +1426,7 @@ function renderCase(d){
     var html = '<div class="pagehead"><div class="grow">'+
       '<div class="crumb"><a onclick="nav(\'customers\')">Customers</a> / <a onclick="nav(\'customer\',\''+esc(d.customer.id)+'\')">'+esc(d.customer.name)+'</a> / <span class="mono">'+esc(o.id)+'</span></div>'+
       '<h1>'+esc(o.title)+'</h1>'+
-      '<div class="sub" style="margin-top:5px">'+caseStatusChip(o.stage,o.outcome)+
+      '<div class="sub" style="margin-top:5px">'+caseStatusChip(o.stage,o.outcome)+' '+priChip(o.priority)+
       ' &nbsp; Owners: <b>'+esc((o.owners||[]).join(', ')||'—')+'</b>'+
       (d.canEdit?' <button class="btn lk" onclick="mOwners()">manage</button>':'')+
       (o.outcome ? '' :
@@ -1455,6 +1458,9 @@ function renderCase(d){
           '<div style="flex:2"><label>Note (optional)</label><input id="stNote" placeholder="e.g. BOQ received, costing in progress"></div>'+
           '<div style="flex:0"><button class="btn" onclick="doStage(\''+esc(o.id)+'\')">Update stage</button></div></div>';
       }
+      html += '<div class="frow" style="align-items:flex-end"><div><label>Priority</label><select id="priSel">'+
+        '<option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], o.priority||'') +
+        '</select></div><div style="flex:0"><button class="btn" onclick="doPriority(\''+esc(o.id)+'\')">Update priority</button></div></div>';
       html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">';
       if(o.outcome!=='Won') html += '<button class="btn sm" onclick="mWon(\''+esc(o.id)+'\')">Mark Won</button>';
       if(o.outcome!=='Lost') html += '<button class="btn danger sm" onclick="mOutcomeNote(\''+esc(o.id)+'\',\'Lost\')">Mark Lost</button>';
@@ -1644,6 +1650,9 @@ function wkUploadAndAssign(id, email, note, nm, files){
 function doStage(id){
   gs('api_setCaseStage', id, v('stSel'), v('stNote')).then(function(){ toast('Stage updated.'); vCase(id); }).catch(oops);
 }
+function doPriority(id){
+  gs('api_setCasePriority', id, v('priSel')).then(function(){ toast('Priority updated.'); vCase(id); }).catch(oops);
+}
 function mWon(id){
   openModal('Mark as Won',
     '<div class="frow"><div><label class="req">Order value ('+esc(S.settings.currency)+')</label><input id="w_val" type="number" min="0"></div></div>'+
@@ -1691,6 +1700,8 @@ function vCases(){
     S.settings.stages.map(function(st){ return '<option'+(st===f.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select>'+
     '<select id="cf_outcome" onchange="applyCaseF()">'+
     ['','Open','Won','Lost','Hold'].map(function(o){ var lbl = o===''?'All outcomes':(o==='Open'?'Open only':o); return '<option value="'+esc(o)+'"'+(o===f.outcome?' selected':'')+'>'+esc(lbl)+'</option>'; }).join('')+'</select>'+
+    '<select id="cf_priority" onchange="applyCaseF()"><option value="">All priorities</option>'+
+    (S.settings.priorities || ['High','Medium','Low']).map(function(p){ return '<option'+(p===f.priority?' selected':'')+'>'+esc(p)+'</option>'; }).join('')+'</select>'+
     /* P6: two independent boxes, OR-combined by the server. Both unticked =
        every case visible to me. The sizing lives in the stylesheet now - the
        inline width:auto this replaces lost to `.filterbar input`. */
@@ -1702,7 +1713,7 @@ function vCases(){
   loadCases();
 }
 function applyCaseF(){
-  S.caseF = { q:v('cf_q'), stage:v('cf_stage'), outcome:v('cf_outcome'),
+  S.caseF = { q:v('cf_q'), stage:v('cf_stage'), outcome:v('cf_outcome'), priority:v('cf_priority'),
               owned:!!(el('cf_owned') && el('cf_owned').checked),
               assigned:!!(el('cf_assigned') && el('cf_assigned').checked) };
   loadCases();
@@ -1726,12 +1737,13 @@ function loadCases(){
 function renderCases(list){
     if(!el('caseRes')) return;
     if(!list.length){ el('caseRes').innerHTML = '<div class="empty">No cases match these filters.</div>'; return; }
-    var html = '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Title</th><th>Customer</th><th>Status</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th>Updated</th></tr>';
+    var html = '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Title</th><th>Customer</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th>Updated</th></tr>';
     list.forEach(function(o){
       var val = o.outcome==='Won' ? o.orderValue : '';
       html += '<tr class="clk" onclick="nav(\'case\',\''+esc(o.id)+'\')">'+
         '<td class="mono">'+esc(o.id)+'</td><td><b>'+esc(o.title)+'</b></td>'+
-        '<td>'+esc(o.customerName)+'</td><td>'+caseStatusChip(o.stage,o.outcome)+'</td>'+
+        '<td>'+esc(o.customerName)+'</td>'+
+        '<td>'+caseStatusChip(o.stage,o.outcome)+'</td><td>'+(priChip(o.priority)||'<span class="sub">—</span>')+'</td>'+
         '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
         '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
         '<td class="sub">'+(o.outcome ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
@@ -1749,7 +1761,8 @@ function mQuickLog(){
   var body =
     '<div id="ql_cust"></div>'+
     '<div class="frow" style="margin-top:6px"><div style="flex:2"><label class="req">Case title</label><input id="ql_title" placeholder="e.g. Enquiry for VFD panel"></div>'+
-    '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages, 'Lead')+'</select></div></div>'+
+    '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages, 'Lead')+'</select></div>'+
+    '<div><label>Priority</label><select id="ql_casepri"><option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], '') +'</select></div></div>'+
     ''
   openModal('Quick log a case', body,
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
@@ -1796,7 +1809,7 @@ function qlRun(){
 }
 function qlPick(id, name){ QL.customerId=id; QL.customerName=name; renderQLCust(); }
 function saveQuickLog(){
-  var p = { title:v('ql_title'), stage:v('ql_stage') };
+  var p = { title:v('ql_title'), stage:v('ql_stage'), priority:v('ql_casepri') };
   if(!p.title){ toast('Enter a case title.', true); return; }
   if(QL.customerId){ p.customerId = QL.customerId; }
   else if(QL.newMode){
