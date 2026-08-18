@@ -55,6 +55,7 @@ export type CaseRow = {
   title: string;
   details: string;
   source: string;
+  priority: string;
   stage: string;
   outcome: '' | 'Won' | 'Lost' | 'Hold';
   orderValue: number | '';
@@ -150,6 +151,7 @@ export type CaseInput = Partial<{
   title: unknown;
   details: unknown;
   source: unknown;
+  priority: unknown;
   stage: unknown;
   order: unknown;
   orderValue: unknown;
@@ -170,6 +172,7 @@ export type CaseListFilter = Partial<{
   assigned: unknown;
   stage: unknown;
   outcome: unknown;
+  priority: unknown;
   q: unknown;
 }>;
 
@@ -184,6 +187,7 @@ export type QuickLogInput = Partial<{
     area: unknown;
   }>;
   title: unknown;
+  priority: unknown;
   stage: unknown;
   details: unknown;
 }>;
@@ -334,6 +338,7 @@ function formatCase(row: CaseRow, ownership: Ownership, users: Record<string, Ca
     title: row.title,
     details: row.details,
     source: row.source,
+    priority: row.priority,
     stage: row.stage,
     outcome: row.outcome,
     orderValue: row.orderValue,
@@ -648,6 +653,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title,
           details: String(input.details ?? ''),
           source: asText(input.source),
+          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
           stage: order ? 'Quoted' : validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: order ? 'Won' : '',
           orderValue: order ? Number(input.orderValue) : '',
@@ -709,6 +715,29 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         entity: id,
         customerId: row.customerId,
         details: `${row.stage || '-'} -> ${stage}${asText(note) ? ` - ${asText(note)}` : ''}`,
+        who: normalizeEmail(user.email)
+      });
+      return { ok: true };
+    },
+
+    async setCasePriority(user: CrmContext, id: string, priorityInput: unknown) {
+      const priority = asText(priorityInput);
+      const { row } = await loadVisibleCase(repo, user, id);
+      // '' is allowed and means "clear it" - priority is optional, so it must be removable.
+      if (priority && !(DEFAULT_SETTINGS.PRIORITIES as readonly string[]).includes(priority)) {
+        throw new Error(`"${priority}" is not a valid priority.`);
+      }
+      // No block on a closed case. setCaseStage refuses on Won/Lost because a closed case
+      // has no meaningful stage; priority carries no such contradiction.
+      if (row.priority === priority) return { ok: true };
+
+      const previousPriority = row.priority;
+      await repo.updateCase(id, { priority, updatedAt: nowIso() });
+      await repo.logActivity({
+        action: 'CASE_PRIORITY',
+        entity: id,
+        customerId: row.customerId,
+        details: `${previousPriority || '-'} -> ${priority || '-'}`,
         who: normalizeEmail(user.email)
       });
       return { ok: true };
@@ -1075,6 +1104,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         return map;
       }, {});
       const stage = asText(filter.stage);
+      const priority = asText(filter.priority);
       const outcome = asText(filter.outcome);
       const query = lower(filter.q);
       const me = normalizeEmail(user.email);
@@ -1096,6 +1126,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           if (outcome === 'Open' && row.outcome) return false;
           if (outcome && outcome !== 'Open' && row.outcome !== outcome) return false;
           if (stage && row.stage !== stage) return false;
+          if (priority && row.priority !== priority) return false;
           if (query) {
             const haystack = lower(`${row.title} ${row.id} ${customer.name}`);
             if (!haystack.includes(query)) return false;
@@ -1112,6 +1143,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             title: row.title,
             customerId: row.customerId,
             customerName: customer?.name ?? row.customerId,
+            priority: row.priority,
             stage: row.stage,
             outcome: outcomeText,
             orderValue: row.orderValue,
@@ -1187,6 +1219,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title: asText(input.title) || 'Untitled case',
           details: String(input.details ?? ''),
           source: '',
+          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
           stage: validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: '',
           orderValue: '',

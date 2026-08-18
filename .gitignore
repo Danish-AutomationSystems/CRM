@@ -26,3 +26,8 @@ backups/
 
 # Word temporary lock files
 ~$*
+
+# Local agent transcripts
+.agent/
+.claude-code-history/
+.codex-history/

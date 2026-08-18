@@ -36,6 +36,7 @@ class FakeCaseRepository implements CaseRepository {
   nextAttachmentId = 1;
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
+  updateCaseCalls = 0;
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
@@ -98,6 +99,7 @@ class FakeCaseRepository implements CaseRepository {
   }
 
   async updateCase(id: string, fields: Partial<CaseRow>): Promise<void> {
+    this.updateCaseCalls++;
     const row = await this.getCase(id);
     if (!row) throw new Error('missing test case');
     Object.assign(row, fields);
@@ -209,6 +211,7 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     title: 'Panel upgrade',
     details: 'Upgrade details',
     source: 'Direct Enquiry',
+    priority: '',
     stage: 'Lead',
     outcome: '',
     orderValue: '',
@@ -1037,6 +1040,39 @@ describe('case service ownership and assignment', () => {
     expect(result.latestHandoverNote).toBe('');
     expect(result.latestHandoverActivityId).toBe('');
   });
+
+  it('stores the priority a case is created with', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', {
+      title: 'Urgent panel fault',
+      priority: 'High'
+    });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('High');
+  });
+
+  it('stores no priority when the case is created without one', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Routine enquiry' });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('');
+  });
+
+  it('ignores a priority outside the allowed list rather than failing the create', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', {
+      title: 'Panel fault',
+      priority: 'Urgent'
+    });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('');
+  });
 });
 
 describe('case service assignable users', () => {
@@ -1263,6 +1299,66 @@ describe('case reads, lists, and quick log', () => {
     ]);
   });
 
+  it('filters the case list by priority', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', priority: 'High' }),
+      caseRow({ id: 'CASE-2026-0002', priority: 'Low' }),
+      caseRow({ id: 'CASE-2026-0003', priority: '' })
+    ];
+
+    const listed = await service.listCases(sales, { priority: 'High' });
+
+    expect(listed.map((row) => row.id)).toEqual(['CASE-2026-0001']);
+  });
+
+  it('returns every visible case when no priority filter is given', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', priority: 'High' }),
+      caseRow({ id: 'CASE-2026-0002', priority: '' })
+    ];
+
+    const listed = await service.listCases(sales, {});
+
+    expect(listed.map((row) => row.id).sort()).toEqual(['CASE-2026-0001', 'CASE-2026-0002']);
+  });
+
+  it('carries the priority in the case list payload', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    const listed = await service.listCases(sales, {});
+
+    expect(listed[0].priority).toBe('Medium');
+  });
+
+  // Documents the requirement at the service level. It passes before the SQL is
+  // correct, because the in-memory fake merges objects and cannot reproduce a
+  // missing `set` clause - the real defence is the casesUpdateSetColumns guard in
+  // repository.test.ts. Kept deliberately, by the project owner's ruling: without
+  // it nothing in the service layer states that editing a title must not wipe the
+  // priority. Do not delete this test or this comment.
+  it('leaves an existing priority intact when an unrelated field is edited', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+
+    await service.updateCase(sales, 'CASE-2026-0001', { title: 'Renamed case' });
+
+    const stored = await repo.getCase('CASE-2026-0001');
+    expect(stored?.title).toBe('Renamed case');
+    expect(stored?.priority).toBe('High');
+  });
+
+  it('carries the priority in the case detail payload', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    const detail = await service.getCase(sales, 'CASE-2026-0001');
+
+    expect(detail.case.priority).toBe('Medium');
+  });
+
   it('quick-log creates new customers with handlers, reuses duplicate names, and blocks inaccessible existing customers', async () => {
     const { repo, service } = makeService();
     repo.customers.push(customer({ id: 'CUST-0099', name: 'Existing Co', tags: ['NCR'] }));
@@ -1281,5 +1377,130 @@ describe('case reads, lists, and quick log', () => {
     expect(repo.lockedNames).toEqual(['site co', 'site co']);
 
     await expect(service.quickLog(sales, { customerId: 'CUST-0099', title: 'No access' })).rejects.toThrow('not an account handler');
+  });
+
+  it('quick log stores the case priority without confusing it with the new customer priority', async () => {
+    const { repo, service } = makeService();
+
+    const logged = await service.quickLog(sales, {
+      newCustomer: { name: 'Fresh Co', tag: 'Punjab', priority: 'Low' },
+      title: 'Site visit request',
+      priority: 'High'
+    });
+
+    const storedCase = await repo.getCase(logged.caseId);
+    const storedCustomer = await repo.getCustomer(logged.customerId);
+    expect(storedCase?.priority).toBe('High');
+    expect(storedCustomer?.priority).toBe('Low');
+  });
+
+  it('quick log stores no case priority when none is given', async () => {
+    const { repo, service } = makeService();
+
+    const logged = await service.quickLog(sales, {
+      customerId: 'CUST-0001',
+      title: 'Called about spares'
+    });
+
+    expect((await repo.getCase(logged.caseId))?.priority).toBe('');
+  });
+});
+
+describe('setCasePriority', () => {
+  // Same user/handler shape as makeService()'s default fixtures, reused so we know it is
+  // genuinely denied: 'refuses a user who cannot see the case and creates no upload session'
+  // (beginAttachmentUpload access and validation, near line 352) proves this exact user -
+  // not a handler, not the assignee, not an owner of CASE-2026-0001 - fails loadVisibleCase.
+  const outsider: CrmContext = {
+    ...sales,
+    email: 'other@automationsystems.org',
+    name: 'Other Sales',
+    allowedTags: ['NCR']
+  };
+
+  it('changes the priority and logs the change in history', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'High');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+    const logged = repo.logs.filter((entry) => entry.action === 'CASE_PRIORITY');
+    expect(logged).toHaveLength(1);
+    expect(logged[0].details).toBe('Low -> High');
+    expect(logged[0].entity).toBe('CASE-2026-0001');
+  });
+
+  it('clears the priority when given an empty string', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', '');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('');
+    expect(repo.logs.filter((e) => e.action === 'CASE_PRIORITY')[0].details).toBe('High -> -');
+  });
+
+  it('writes nothing and logs nothing when the priority is unchanged', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'Medium');
+
+    // A same-value call must not reach the repository at all: repository.ts rewrites every
+    // column on updateCase, so a no-op write would still bump updatedAt on a case nobody
+    // actually changed.
+    expect(repo.updateCaseCalls).toBe(0);
+    expect(repo.logs.filter((e) => e.action === 'CASE_PRIORITY')).toEqual([]);
+  });
+
+  it('rejects a priority outside the allowed list', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await expect(service.setCasePriority(sales, 'CASE-2026-0001', 'Urgent')).rejects.toThrow(/not a valid priority/i);
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+
+  it('denies an outsider before validating the priority, so a junk value cannot leak that the case exists', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    // 'Urgent' is not a valid priority - if validation ran before the access check, an
+    // outsider would learn the case exists from a "not a valid priority" error instead of
+    // a generic access error. Both conditions (denied user + invalid value) must be present
+    // together for this to be exercised, which is exactly what the two existing tests
+    // (each varying only one of the two) do not do.
+    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'Urgent')).rejects.toThrow(
+      /do not have access/i
+    );
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+
+  it('allows a priority change on a closed case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({
+        id: 'CASE-2026-0001',
+        priority: 'Low',
+        outcome: 'Won',
+        orderValue: 5000,
+        wonCategories: ['Drives'],
+        closedOn: '2026-08-01T00:00:00.000Z',
+        assignee: ''
+      })
+    ];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'High');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+  });
+
+  it('denies a user who cannot see the case, without revealing that it exists', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'High')).rejects.toThrow(/do not have access/i);
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
   });
 });

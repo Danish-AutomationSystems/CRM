@@ -62,6 +62,7 @@ type CustomerCaseDbRow = {
   customer_id: string;
   title: string;
   stage: string;
+  priority: string | null;
   outcome: string | null;
   order_value: string | number | null;
   quoted_value: string | number | null;
@@ -166,6 +167,7 @@ function toCustomerCase(row: CustomerCaseDbRow): CustomerCaseSummary {
     customerId: row.customer_id,
     title: row.title,
     stage: row.stage,
+    priority: row.priority ?? '',
     outcome: row.outcome ?? '',
     orderValue: numberOrBlank(row.order_value),
     quotedValue: numberOrBlank(row.quoted_value),
@@ -335,7 +337,7 @@ export class PostgresCustomerRepository implements CustomerRepository {
         order by case_id, rev desc
       )
       -- P11: owners are materialised on the case, never derived from public.handlers.
-      select c.case_id, c.customer_id, c.title, c.stage, c.outcome, c.order_value,
+      select c.case_id, c.customer_id, c.title, c.stage, c.priority, c.outcome, c.order_value,
              lq.quoted_value,
              case
                when cardinality(so.owners) > 0 then so.owners

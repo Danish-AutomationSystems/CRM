@@ -4,6 +4,15 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  casesInsertColumns as sharedCasesInsertColumns,
+  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
+  insertValueCount as sharedInsertValueCount,
+  missingFrom as sharedMissingFrom,
+  selectColumns as sharedSelectColumns,
+  splitTopLevel
+} from '../db/cases-columns.test-helpers';
+
 /**
  * Static guard against the "createQuote silently drops a column" defect class.
  *
@@ -37,25 +46,6 @@ function methodBody(name: string): string {
   return source.slice(start, next === -1 ? source.length : next);
 }
 
-/** Split on commas that are not nested inside parentheses. */
-function splitTopLevel(list: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let current = '';
-  for (const char of list) {
-    if (char === '(') depth += 1;
-    if (char === ')') depth -= 1;
-    if (char === ',' && depth === 0) {
-      parts.push(current);
-      current = '';
-      continue;
-    }
-    current += char;
-  }
-  parts.push(current);
-  return parts.map((part) => part.trim()).filter(Boolean);
-}
-
 function insertColumns(): string[] {
   const body = methodBody('createQuote');
   const match = /insert into public\.quotations\s*\(([\s\S]*?)\)\s*values/i.exec(body);
@@ -64,13 +54,14 @@ function insertColumns(): string[] {
 }
 
 function insertValueCount(): number {
-  const body = methodBody('createQuote');
-  const match = /values\s*\(([\s\S]*?)\)\s*`/i.exec(body);
-  expect(match, 'could not parse the createQuote values list').not.toBeNull();
-  return splitTopLevel(match![1]).length;
+  return sharedInsertValueCount(source, 'createQuote', 'quotations');
 }
 
-function selectColumns(methodName: string): string[] {
+function selectColumns(methodName: string): string[];
+function selectColumns(methodName: string, table: string): string[];
+function selectColumns(methodName: string, table?: string): string[] {
+  if (table) return sharedSelectColumns(source, methodName, table);
+
   const body = methodBody(methodName);
   const match = /select\s+([\s\S]*?)\s+from public\.quotations/i.exec(body);
   expect(match, `could not parse the ${methodName} select list`).not.toBeNull();
@@ -79,6 +70,32 @@ function selectColumns(methodName: string): string[] {
     const name = (aliased ? aliased[1] : item).trim().toLowerCase();
     return SELECT_ALIAS_TO_COLUMN[name] ?? name;
   });
+}
+
+/**
+ * public.cases column-parity helpers, reused (not copied) from
+ * src/server/cases/repository.test.ts via src/server/db/cases-columns.test-helpers.ts.
+ *
+ * This repository carries its own independent getCase/createCase/updateCase
+ * trio against public.cases, structurally identical to the ones guarded there
+ * and otherwise invisible to that guard.
+ */
+const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'supabase', 'migrations');
+
+function quotesInsertColumns(): string[] {
+  return sharedCasesInsertColumns(source, 'createCase');
+}
+
+function quotesUpdateSetColumns(): string[] {
+  return sharedCasesUpdateSetColumns(source, 'updateCase');
+}
+
+function quotesCasesInsertValueCount(): number {
+  return sharedInsertValueCount(source, 'createCase', 'cases');
+}
+
+function missingFrom(statement: string, carried: string[]): string[] {
+  return sharedMissingFrom(migrationsDir, `quotes.${statement}`, carried);
 }
 
 describe('PostgresQuoteRepository SQL column coverage', () => {
@@ -118,5 +135,38 @@ describe('PostgresQuoteRepository SQL column coverage', () => {
 
   it('still reads upload_data so pre-Drive uploads remain downloadable', () => {
     expect(methodBody('getQuote')).toMatch(/encode\(upload_data, 'base64'\)/);
+  });
+});
+
+describe('quotes repository public.cases statements', () => {
+  it('parses a plausible column list from each statement, so a failed regex cannot pass vacuously', () => {
+    expect(quotesInsertColumns().length).toBeGreaterThan(10);
+    expect(quotesUpdateSetColumns().length).toBeGreaterThan(10);
+    expect(selectColumns('getCase', 'cases').length).toBeGreaterThan(10);
+  });
+
+  it('createCase writes every public.cases column', () => {
+    const missing = missingFrom('createCase', quotesInsertColumns());
+    expect(missing, `quotes createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  // This only proves the column list and the VALUES tuple are the same length,
+  // not that they are in the same order. Two entries transposed in one list but
+  // not the other (e.g. `source` and `priority` swapped in the column list)
+  // keeps the counts equal, keeps every guard above green, and writes every
+  // value into the wrong column - both are `text`, so Postgres raises nothing.
+  // That transposition risk is not covered by this test.
+  it('createCase supplies exactly one value per inserted column', () => {
+    expect(quotesCasesInsertValueCount()).toBe(quotesInsertColumns().length);
+  });
+
+  it('updateCase writes every public.cases column', () => {
+    const missing = missingFrom('updateCase', quotesUpdateSetColumns());
+    expect(missing, `quotes updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('getCase selects every public.cases column', () => {
+    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
+    expect(missing, `quotes getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
   });
 });

@@ -1057,3 +1057,43 @@ test('P10 - a case creator is not mislabelled as the account handler', async ({ 
   await expect(body).toContainText('created this case');
   await expect(body).not.toContainText('account handler — owner of every case on the account');
 });
+
+test('the cases list shows a priority badge only for cases that have one', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await context.addCookies([
+    {
+      name: storageCookieName,
+      value: JSON.stringify(createFakeSession()),
+      domain: '127.0.0.1',
+      path: '/',
+      sameSite: 'Lax',
+      httpOnly: false,
+      secure: false,
+      expires: Math.floor(Date.now() / 1000) + 60 * 60
+    }
+  ]);
+  const casesWithMixedPriority = [
+    { ...caseSummary, id: 'CASE-2026-0001', title: 'Panel upgrade', priority: 'High' },
+    { ...caseSummary, id: 'CASE-2026-0002', title: 'Sensor retrofit', priority: '' }
+  ];
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string };
+    // api_workspace warms the cases cache on cold nav; api_listCases refreshes
+    // it afterwards. Both must carry the mixed-priority list or the app
+    // renders the cached single-case default instead.
+    let data = rpcData(body.fn);
+    if (body.fn === 'api_listCases') data = casesWithMixedPriority;
+    if (body.fn === 'api_workspace') data = { ...(data as object), cases: casesWithMixedPriority };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+  });
+
+  await page.goto('/crm/cases');
+  await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
+
+  const highRow = page.locator('tr', { has: page.getByText('Panel upgrade') });
+  await expect(highRow.getByText('High', { exact: true })).toBeVisible();
+
+  const noPriorityRow = page.locator('tr', { has: page.getByText('Sensor retrofit') });
+  await expect(noPriorityRow.locator('.badge')).toHaveCount(1); // only the status badge, no priority badge
+  await expect(noPriorityRow.getByText('—')).toBeVisible();
+});

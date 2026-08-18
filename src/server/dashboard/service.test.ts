@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import type { CaseAttachmentRow, CaseRepository } from '../cases/service';
@@ -108,6 +108,7 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
         customerId: row.customerId,
         title: row.title,
         stage: row.stage,
+        priority: row.priority,
         outcome: row.outcome,
         orderValue: row.orderValue,
         quotedValue: '',
@@ -318,10 +319,37 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
   };
 }
 
-/** A timestamp inside the current calendar month, so month-to-date assertions are not date-dependent. */
+/**
+ * A timestamp that is simultaneously inside the current UTC calendar month AND within the
+ * trailing 14-day window, on every day of every month (28/29/30/31-day months included).
+ *
+ * `service.ts` credits a won case to `wonMonthCount` when its `closedOn` falls in the current
+ * UTC year-month, and to `won2wCount` when `daysAgo(closedOn) <= 14`. Neither "the 1st of this
+ * month" nor "14 days ago" alone satisfies both on every day: the 1st falls outside the 14-day
+ * window from roughly the 16th onward, while "14 days ago" falls in the *previous* month during
+ * the first half of a month.
+ *
+ * The fix is to pick the later (more recent) of "start of this month" and "14 days ago", then
+ * clamp to "now" so the result is never in the future:
+ *   - Early in the month (through ~day 15), "14 days ago" is in the previous month, so
+ *     `max()` picks the start of this month — satisfying the month check, and within 14 days
+ *     of `now` because we're still near the start of the month.
+ *   - Later in the month (~day 16 onward), "14 days ago" has moved into this month and is more
+ *     recent than the 1st, so `max()` picks it — satisfying the 14-day check by construction,
+ *     and still within this month since it's day 2 or later.
+ *   - On day 1 itself, "start of this month" (pinned to 12:00 UTC) can be later than `now` if
+ *     the test runs before noon UTC; `min(now, ...)` clamps that back to `now` so the result is
+ *     never a future timestamp.
+ * This holds at both month-length boundaries (31-day months, 30-day months, and February in
+ * leap and non-leap years) because it never depends on the month's length — only on "day 1" and
+ * "14 days back" relative to `now`.
+ */
 function closedThisMonth(): string {
   const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 12)).toISOString();
+  const startOfMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 12);
+  const fourteenDaysAgo = now.getTime() - 14 * 86_400_000;
+  const closedOn = Math.min(now.getTime(), Math.max(startOfMonth, fourteenDaysAgo));
+  return new Date(closedOn).toISOString();
 }
 
 function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
@@ -331,6 +359,7 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     title: 'Panel upgrade',
     details: '',
     source: '',
+    priority: '',
     stage: 'Lead',
     outcome: '',
     orderValue: '',
@@ -433,6 +462,50 @@ describe('dashboard service', () => {
 
     const peer = await dashboard.dashboard({ ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] }, 'peer');
     expect(peer.dash.stats.wonMonthValue).toBe(7000);
+  });
+
+  describe('closedThisMonth fixture across month boundaries', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const fixedDates = [
+      '2026-08-01T09:00:00.000Z', // 1st of a 31-day month
+      '2026-08-15T09:00:00.000Z', // 15th (last day the old fixture passed)
+      '2026-08-16T09:00:00.000Z', // 16th (first day the old fixture failed)
+      '2026-08-28T09:00:00.000Z', // 28th
+      '2026-08-31T09:00:00.000Z', // last day of a 31-day month
+      '2026-09-30T09:00:00.000Z', // last day of a 30-day month
+      '2026-02-28T09:00:00.000Z', // last day of Feb, non-leap year
+      '2028-02-29T09:00:00.000Z' // last day of Feb, leap year
+    ];
+
+    it.each(fixedDates)('credits both wonMonthCount and won2wCount as 1 on %s', async (isoNow) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(isoNow));
+
+      const { repo, dashboard } = makeService();
+      repo.cases = [caseRow({ id: 'CASE-2026-0900', title: 'Won together', outcome: 'Won', orderValue: 7000, closedOn: closedThisMonth(), assignee: '' })];
+
+      const result = await dashboard.dashboard(sales, sales.email);
+
+      expect(result.dash.stats).toMatchObject({
+        wonMonthValue: 7000,
+        wonMonthCount: 1,
+        won2wValue: 7000,
+        won2wCount: 1
+      });
+    });
+  });
+
+  it('carries the case priority into both dashboard case lists', async () => {
+    const { repo, dashboard } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+
+    const { dash } = await dashboard.dashboard(sales, sales.email);
+
+    expect(dash.cases[0].priority).toBe('High');
+    expect(dash.tickets[0].priority).toBe('High');
   });
 
   it('composes workspace bootstrap, customers, and cases while tolerating partial failures', async () => {

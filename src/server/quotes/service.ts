@@ -39,6 +39,7 @@ export type QuoteCaseRow = {
   title: string;
   details: string;
   source: string;
+  priority: string;
   stage: string;
   outcome: '' | 'Won' | 'Lost' | 'Hold';
   orderValue: number | '';
@@ -366,6 +367,7 @@ async function createAutoCase(
     title,
     details: `${detailPrefix} ${quoteNo}`,
     source: 'Sales Team',
+    priority: '',
     stage,
     outcome: '',
     orderValue: '',

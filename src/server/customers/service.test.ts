@@ -286,6 +286,7 @@ describe('customer service mutations', () => {
         customerId: 'CUST-0001',
         title: 'Panel upgrade',
         stage: 'Opportunity',
+        priority: '',
         outcome: '',
         orderValue: '',
         quotedValue: 1180,
@@ -320,6 +321,33 @@ describe('customer service mutations', () => {
       cases: [expect.objectContaining({ id: 'CASE-2026-0001', quotedValue: 1180 })],
       quotes: [expect.objectContaining({ quoteNo: 'QTN-2026-0001', total: 1180 })]
     });
+  });
+
+  it('carries each case priority into the customer detail payload', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [];
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Panel fault',
+        stage: 'Lead',
+        priority: 'High',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        owners: [baseUser.email],
+        assignee: baseUser.email,
+        updatedAt: '2026-07-01T00:00:00.000Z'
+      }
+    ];
+
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+
+    expect(detail.cases[0].priority).toBe('High');
   });
 
   it('P7: requires at least one location on create and refuses to empty it on update', async () => {

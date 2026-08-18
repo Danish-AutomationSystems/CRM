@@ -2,13 +2,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  allCasesColumns as sharedAllCasesColumns,
+  casesInsertColumns as sharedCasesInsertColumns,
+  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
+  insertValueCount as sharedInsertValueCount,
+  methodBody as sharedMethodBody,
+  migrationAddedCasesColumns as sharedMigrationAddedCasesColumns,
+  missingFrom as sharedMissingFrom,
+  selectColumns as sharedSelectColumns
+} from '../db/cases-columns.test-helpers';
+
 const source = fs.readFileSync(path.join(__dirname, 'repository.ts'), 'utf8');
+const migrationsDir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
 
 function methodBody(name: string): string {
-  const start = source.indexOf(`async ${name}(`);
-  if (start === -1) throw new Error(`method ${name} not found in repository.ts`);
-  const next = source.indexOf('\n  async ', start + 1);
-  return source.slice(start, next === -1 ? source.length : next);
+  return sharedMethodBody(source, name);
 }
 
 function insertColumns(): string[] {
@@ -19,10 +28,7 @@ function insertColumns(): string[] {
 }
 
 function selectColumns(method: string, table: string): string[] {
-  const body = methodBody(method);
-  const match = body.match(new RegExp(`select ([\\s\\S]*?)\\s+from public\\.${table}\\b`));
-  if (!match) throw new Error(`${method} select list not found`);
-  return match[1].split(',').map((c) => c.trim()).filter(Boolean);
+  return sharedSelectColumns(source, method, table);
 }
 
 /**
@@ -113,6 +119,118 @@ function dbHelperColumns(method: string): string[] {
     .map((c) => c.trim().replace(/^['"]|['"]$/g, ''))
     .filter(Boolean);
 }
+
+/**
+ * EVERY column of public.cases: the initial CREATE TABLE plus every later ALTER.
+ *
+ * Deliberately not limited to migration-added columns. A guard over only the new
+ * ones would protect `priority` and leave the original seventeen unguarded - drop
+ * `outcome_note` from updateCase's set clause and nothing would object. The defect
+ * class is "a statement stops carrying a column", and it does not care when the
+ * column was born.
+ */
+function allCasesColumns(): string[] {
+  return sharedAllCasesColumns(migrationsDir);
+}
+
+function missingFrom(statement: string, carried: string[]): string[] {
+  return sharedMissingFrom(migrationsDir, `cases.${statement}`, carried);
+}
+
+/**
+ * Columns added to public.cases by a migration after the initial schema.
+ * Kept as a separate, narrower derivation purely to prove the guard above is
+ * live: if this ever returns nothing, the migration parsing has broken.
+ */
+function migrationAddedCasesColumns(): string[] {
+  return sharedMigrationAddedCasesColumns(migrationsDir);
+}
+
+function casesInsertColumns(): string[] {
+  return sharedCasesInsertColumns(source, 'createCase');
+}
+
+function casesInsertValueCount(): number {
+  return sharedInsertValueCount(source, 'createCase', 'cases');
+}
+
+/**
+ * The left-hand side of every assignment in updateCase's `set` clause.
+ *
+ * updateCase is not an INSERT and not a SELECT: it merges `fields` over the
+ * existing row and rewrites the full column list. A column missing here is
+ * never written, and nothing errors - which is why it gets its own parser
+ * rather than being folded into one of the others.
+ */
+function casesUpdateSetColumns(): string[] {
+  return sharedCasesUpdateSetColumns(source, 'updateCase');
+}
+
+describe('cases repository public.cases statements', () => {
+  it('finds the migration-added columns, so the derivation cannot pass vacuously', () => {
+    // If this ever legitimately drops to zero, every guard below stops guarding.
+    expect(migrationAddedCasesColumns()).toContain('priority');
+  });
+
+  it('parses a plausible createCase insert list, so a failed regex cannot pass vacuously', () => {
+    expect(casesInsertColumns().length).toBeGreaterThan(10);
+    expect(casesInsertColumns()).toContain('case_id');
+  });
+
+  it('parses a plausible updateCase set list, so a failed regex cannot pass vacuously', () => {
+    expect(casesUpdateSetColumns().length).toBeGreaterThan(10);
+    expect(casesUpdateSetColumns()).toContain('title');
+  });
+
+  it('derives the full public.cases column set, so no guard below can pass vacuously', () => {
+    const all = allCasesColumns();
+    expect(all.length).toBeGreaterThan(15);
+    expect(all).toContain('case_id');
+    expect(all).toContain('outcome_note');
+    expect(all).toContain('priority');
+  });
+
+  it('createCase writes every public.cases column', () => {
+    const missing = missingFrom('createCase', casesInsertColumns());
+    expect(missing, `createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  // This only proves the column list and the VALUES tuple are the same length,
+  // not that they are in the same order. Two entries transposed in one list but
+  // not the other (e.g. `source` and `priority` swapped in the column list)
+  // keeps the counts equal, keeps every guard above green, and writes every
+  // value into the wrong column - both are `text`, so Postgres raises nothing.
+  // That transposition risk is not covered by this test.
+  it('createCase supplies exactly one value per inserted column', () => {
+    expect(casesInsertValueCount()).toBe(casesInsertColumns().length);
+  });
+
+  it('updateCase writes every public.cases column', () => {
+    const missing = missingFrom('updateCase', casesUpdateSetColumns());
+    expect(missing, `updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('getCase selects every public.cases column', () => {
+    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
+    expect(missing, `getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('listCases selects every public.cases column', () => {
+    const missing = missingFrom('listCases', selectColumns('listCases', 'cases'));
+    expect(missing, `listCases does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('writes no column outside the table (typo guard)', () => {
+    const all = allCasesColumns();
+    for (const [name, carried] of [
+      ['createCase', casesInsertColumns()],
+      ['updateCase', casesUpdateSetColumns()]
+    ] as const) {
+      const unknown = carried.filter((c) => !all.includes(c));
+      expect(unknown, `${name} names column(s) that do not exist: ${unknown.join(', ')}`).toEqual([]);
+    }
+  });
+});
 
 describe('cases repository case_attachments statements', () => {
   it('parses a plausible column list from the migration, so a failed regex cannot pass vacuously', () => {

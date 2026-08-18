@@ -80,6 +80,7 @@ export type CustomerCaseSummary = {
   customerId: string;
   title: string;
   stage: string;
+  priority: string;
   outcome: string;
   orderValue: number | '';
   quotedValue: number | '';

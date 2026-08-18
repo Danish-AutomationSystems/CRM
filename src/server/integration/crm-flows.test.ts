@@ -177,6 +177,7 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
         customerId: row.customerId,
         title: row.title,
         stage: row.stage,
+        priority: row.priority,
         outcome: row.outcome,
         orderValue: row.orderValue,
         quotedValue: '',
