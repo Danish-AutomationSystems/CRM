@@ -155,6 +155,10 @@ class FakeCustomerRepository implements CustomerRepository {
     return this.settings[key] ?? null;
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return Object.entries(this.settings).map(([key, value]) => ({ key, value }));
+  }
+
   async listUsers(): Promise<UserRow[]> {
     return this.users;
   }
@@ -375,6 +379,66 @@ describe('customer service mutations', () => {
 
     await service.updateCustomer(l3, 'CUST-0001', { tags: ['NCR'] });
     expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['NCR'] });
+  });
+
+  it('validates a customer type against the stored list, not the hardcoded defaults', async () => {
+    const { repo, service } = makeService();
+    repo.settings = { TYPES: 'Alpha | Beta' };
+
+    await service.createCustomer(baseUser, { name: 'Live Co', tags: ['Punjab'], type: 'Alpha' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ type: 'Alpha' });
+  });
+
+  it('keeps a retired location when the edit form resubmits it unchanged', async () => {
+    // The customer edit modal submits EVERY field, including ones the user did not
+    // touch. Before this, an admin retiring Punjab made every Punjab customer
+    // uneditable: requiredTags stripped it, the list came back empty, and the save
+    // was rejected with "Pick at least one location".
+    const { repo, service } = makeService();
+    repo.customers = [customer({ tags: ['Punjab'] })];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await service.updateCustomer(l3, 'CUST-0001', { tags: ['Punjab'], area: 'Mohali' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'], area: 'Mohali' });
+  });
+
+  it('keeps a retired type and priority when the edit form resubmits them', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ type: 'OEM', priority: 'High' })];
+    repo.settings = { TYPES: 'Alpha', PRIORITIES: 'Urgent' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await service.updateCustomer(l3, 'CUST-0001', { type: 'OEM', priority: 'High' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ type: 'OEM', priority: 'High' });
+  });
+
+  it('still refuses a value that is neither configured nor already stored', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ tags: ['Punjab'] })];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await expect(service.updateCustomer(l3, 'CUST-0001', { tags: ['Atlantis'] })).rejects.toThrow(
+      /at least one location/i
+    );
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'] });
+  });
+
+  it('does not let a NEW customer use a retired location', async () => {
+    // Creation paths pass no stored value, so retired options stay unavailable.
+    const { repo, service } = makeService();
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+
+    await expect(
+      service.createCustomer(baseUser, { name: 'Fresh Co', tags: ['Punjab'] })
+    ).rejects.toThrow(/at least one location/i);
   });
 
   it('P7: TO BE FILLED survives a save round-trip but is never offered as a choice', async () => {

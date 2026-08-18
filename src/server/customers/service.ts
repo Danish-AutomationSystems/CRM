@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
 import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';
+import { loadSettings, type LiveSettings } from '../settings/live';
 import { validSei } from './sei';
 
 export type CustomerRow = {
@@ -132,6 +133,7 @@ export type CustomerRepository = {
   listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]>;
   setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void>;
   getSetting(key: string): Promise<string | null>;
+  listSettings(): Promise<Array<{ key: string; value: string }>>;
   listUsers(): Promise<CustomerUserRow[]>;
   hasCases(customerId: string): Promise<boolean>;
   hasQuotations(customerId: string): Promise<boolean>;
@@ -231,14 +233,30 @@ function lower(value: unknown): string {
   return asText(value).toLowerCase();
 }
 
-function validOne(value: unknown, allowed: readonly string[]): string {
+/**
+ * A value is acceptable if it is currently configured, OR if it is unchanged from
+ * what is already stored on this record.
+ *
+ * The second clause is what makes "retiring a config value does not touch existing
+ * records" true through an edit. Without it, the customer edit modal - which
+ * resubmits every field, including ones the user did not touch - strips a retired
+ * value on save. For an optional field that silently blanks it; for the mandatory
+ * location it empties the list and the save is rejected outright, leaving the
+ * customer uneditable until someone changes their location.
+ *
+ * `stored` is passed only on update paths. Creation paths pass nothing, so a new
+ * record can only ever use a currently-configured value.
+ */
+function validOne(value: unknown, allowed: readonly string[], stored?: string): string {
   const text = asText(value);
-  return allowed.includes(text) ? text : '';
+  if (allowed.includes(text)) return text;
+  if (stored !== undefined && text === stored) return text;
+  return '';
 }
 
-function validTags(value: unknown): string[] {
-  return parseList(Array.isArray(value) ? value.map(String) : String(value ?? '')).filter((tag) =>
-    (DEFAULT_SETTINGS.TAGS as readonly string[]).includes(tag)
+function validTags(value: unknown, allowed: readonly string[], stored: readonly string[] = []): string[] {
+  return parseList(Array.isArray(value) ? value.map(String) : String(value ?? '')).filter(
+    (tag) => allowed.includes(tag) || stored.includes(tag)
   );
 }
 
@@ -248,8 +266,8 @@ async function allowedSeiNames(repo: CustomerRepository): Promise<string[]> {
 }
 
 /** P7: a customer must always carry at least one recognised location. */
-function requiredTags(value: unknown): string[] {
-  const tags = validTags(value);
+function requiredTags(value: unknown, allowed: readonly string[], stored: readonly string[] = []): string[] {
+  const tags = validTags(value, allowed, stored);
   if (!tags.length) {
     throw new Error('Pick at least one location for this customer.');
   }
@@ -362,7 +380,14 @@ function normalizeContact(input: ContactInput, fallback: ContactRow | null = nul
 function customerUpdateFields(
   user: CrmContext,
   input: CustomerInput,
-  allowedSei: readonly string[]
+  allowedSei: readonly string[],
+  live: LiveSettings,
+  /**
+   * The row as it stands. Its current values stay acceptable even after an admin
+   * retires them from the configured list - see validOne. This is an update path,
+   * so it always has one.
+   */
+  stored: CustomerRow
 ): Partial<CustomerRow> {
   const fields: Partial<CustomerRow> = {
     updatedAt: nowIso()
@@ -384,7 +409,7 @@ function customerUpdateFields(
 
   if (input.priority !== undefined) {
     requireLevel(user, 2);
-    fields.priority = validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES);
+    fields.priority = validOne(input.priority, live.priorities, stored.priority);
   }
 
   const wantsClass = input.tags !== undefined || input.type !== undefined || input.status !== undefined;
@@ -393,8 +418,8 @@ function customerUpdateFields(
       throw new Error('Tags, type and archive status can only be changed at L3 or higher.');
     }
     // P7: an update may change the location, but must never leave the customer with none.
-    if (input.tags !== undefined) fields.tags = requiredTags(input.tags);
-    if (input.type !== undefined) fields.type = validOne(input.type, DEFAULT_SETTINGS.TYPES);
+    if (input.tags !== undefined) fields.tags = requiredTags(input.tags, live.tags, stored.tags);
+    if (input.type !== undefined) fields.type = validOne(input.type, live.types, stored.type);
     if (input.status !== undefined) fields.status = asText(input.status) === 'Archived' ? 'Archived' : 'Active';
   }
 
@@ -553,7 +578,11 @@ export function createCustomerService(repo: CustomerRepository) {
       const name = asText(input?.name);
       if (!name) throw new Error('Customer name is required.');
       // P7: location is mandatory at creation.
-      const tags = requiredTags(input.tags ?? input.tag);
+      // No `stored` argument: this is a creation path, so only a currently
+      // configured location is acceptable. A retired one must not be selectable
+      // on a brand-new customer.
+      const live = await loadSettings(repo);
+      const tags = requiredTags(input.tags ?? input.tag, live.tags);
       // P8: validated against the live admin-managed list, not a hardcoded constant.
       const sei = validSei(input.sei, await allowedSeiNames(repo));
 
@@ -575,8 +604,8 @@ export function createCustomerService(repo: CustomerRepository) {
           id,
           name,
           tags,
-          type: validOne(input.type, DEFAULT_SETTINGS.TYPES),
-          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
+          type: validOne(input.type, live.types),
+          priority: validOne(input.priority, live.priorities),
           area: asText(input.area),
           address: asText(input.address),
           gstin: asText(input.gstin),
@@ -627,8 +656,14 @@ export function createCustomerService(repo: CustomerRepository) {
     },
 
     async updateCustomer(user: CrmContext, id: string, input: CustomerInput) {
-      await ensureFullCustomer(repo, user, id);
-      const fields = customerUpdateFields(user, input, await allowedSeiNames(repo));
+      const existing = await ensureFullCustomer(repo, user, id);
+      const fields = customerUpdateFields(
+        user,
+        input,
+        await allowedSeiNames(repo),
+        await loadSettings(repo),
+        existing
+      );
       await repo.updateCustomer(id, fields);
       await repo.logActivity({
         action: 'CUSTOMER_EDIT',
@@ -664,6 +699,10 @@ export function createCustomerService(repo: CustomerRepository) {
       if (!rows?.length) throw new Error('Nothing to import - add at least one row.');
       if (rows.length > 500) throw new Error('Please import at most 500 customers at a time.');
 
+      // Read once for the whole batch rather than per row. Creation path, so no
+      // `stored` argument anywhere below: an import cannot introduce a retired value.
+      const live = await loadSettings(repo);
+
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
         let created = 0;
@@ -684,9 +723,9 @@ export function createCustomerService(repo: CustomerRepository) {
           await trx.createCustomer({
             id,
             name,
-            tags: validTags(row.tags ?? row.tag),
-            type: validOne(row.type, DEFAULT_SETTINGS.TYPES),
-            priority: validOne(row.priority, DEFAULT_SETTINGS.PRIORITIES),
+            tags: validTags(row.tags ?? row.tag, live.tags),
+            type: validOne(row.type, live.types),
+            priority: validOne(row.priority, live.priorities),
             area: asText(row.area),
             address: asText(row.address),
             gstin: asText(row.gstin),

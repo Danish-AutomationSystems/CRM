@@ -499,6 +499,13 @@ export class PostgresCustomerRepository implements CustomerRepository {
     return rows[0]?.value ?? null;
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return (await this.db`
+      select key, value
+      from public.settings
+    `) as Array<{ key: string; value: string }>;
+  }
+
   async listUsers(): Promise<CustomerUserRow[]> {
     const rows = (await this.db`
       select email, name, role, allowed_tags, active

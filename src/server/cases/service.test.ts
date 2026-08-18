@@ -37,9 +37,16 @@ class FakeCaseRepository implements CaseRepository {
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
   updateCaseCalls = 0;
+  /** Empty by default, so loadSettings falls back to DEFAULT_SETTINGS and every
+   *  pre-existing test keeps the behaviour it was written against. */
+  settingRows: Record<string, string> = {};
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return Object.entries(this.settingRows).map(([key, value]) => ({ key, value }));
   }
 
   async lockCustomerName(name: string): Promise<void> {
