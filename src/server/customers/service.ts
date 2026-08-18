@@ -1,7 +1,6 @@
 import type { CrmContext } from '../auth/context';
 import { accessLevel, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
-import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
 import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';

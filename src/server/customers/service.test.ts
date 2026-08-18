@@ -381,6 +381,22 @@ describe('customer service mutations', () => {
     expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['NCR'] });
   });
 
+  it('serves the customer page location list from live settings, not the hardcoded default TAGS', async () => {
+    // This is the shape of the original settings-drift bug: customerMeta must read
+    // TAGS live, not via SELECTABLE_TAGS (DEFAULT_SETTINGS.TAGS filtered, computed
+    // once at import time). If it read the derived constant instead, this would
+    // still return the DEFAULT_SETTINGS order ['Punjab', 'Chandigarh', 'NCR', 'Geo',
+    // 'Other'] no matter what is stored, and this assertion would fail.
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+
+    const grid = await service.myCustomers(baseUser);
+
+    expect(grid.tags).toEqual(['NCR', 'Chandigarh']);
+  });
+
   it('validates a customer type against the stored list, not the hardcoded defaults', async () => {
     const { repo, service } = makeService();
     repo.settings = { TYPES: 'Alpha | Beta' };
