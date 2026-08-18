@@ -4,6 +4,13 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  casesInsertColumns as sharedCasesInsertColumns,
+  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
+  missingFrom as sharedMissingFrom,
+  selectColumns as sharedSelectColumns
+} from '../db/cases-columns.test-helpers';
+
 /**
  * Static guard against the "createQuote silently drops a column" defect class.
  *
@@ -70,7 +77,11 @@ function insertValueCount(): number {
   return splitTopLevel(match![1]).length;
 }
 
-function selectColumns(methodName: string): string[] {
+function selectColumns(methodName: string): string[];
+function selectColumns(methodName: string, table: string): string[];
+function selectColumns(methodName: string, table?: string): string[] {
+  if (table) return sharedSelectColumns(source, methodName, table);
+
   const body = methodBody(methodName);
   const match = /select\s+([\s\S]*?)\s+from public\.quotations/i.exec(body);
   expect(match, `could not parse the ${methodName} select list`).not.toBeNull();
@@ -79,6 +90,28 @@ function selectColumns(methodName: string): string[] {
     const name = (aliased ? aliased[1] : item).trim().toLowerCase();
     return SELECT_ALIAS_TO_COLUMN[name] ?? name;
   });
+}
+
+/**
+ * public.cases column-parity helpers, reused (not copied) from
+ * src/server/cases/repository.test.ts via src/server/db/cases-columns.test-helpers.ts.
+ *
+ * This repository carries its own independent getCase/createCase/updateCase
+ * trio against public.cases, structurally identical to the ones guarded there
+ * and otherwise invisible to that guard.
+ */
+const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'supabase', 'migrations');
+
+function quotesInsertColumns(): string[] {
+  return sharedCasesInsertColumns(source, 'createCase');
+}
+
+function quotesUpdateSetColumns(): string[] {
+  return sharedCasesUpdateSetColumns(source, 'updateCase');
+}
+
+function missingFrom(statement: string, carried: string[]): string[] {
+  return sharedMissingFrom(migrationsDir, statement, carried);
 }
 
 describe('PostgresQuoteRepository SQL column coverage', () => {
@@ -118,5 +151,28 @@ describe('PostgresQuoteRepository SQL column coverage', () => {
 
   it('still reads upload_data so pre-Drive uploads remain downloadable', () => {
     expect(methodBody('getQuote')).toMatch(/encode\(upload_data, 'base64'\)/);
+  });
+});
+
+describe('quotes repository public.cases statements', () => {
+  it('parses a plausible column list from each statement, so a failed regex cannot pass vacuously', () => {
+    expect(quotesInsertColumns().length).toBeGreaterThan(10);
+    expect(quotesUpdateSetColumns().length).toBeGreaterThan(10);
+    expect(selectColumns('getCase', 'cases').length).toBeGreaterThan(10);
+  });
+
+  it('createCase writes every public.cases column', () => {
+    const missing = missingFrom('createCase', quotesInsertColumns());
+    expect(missing, `quotes createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('updateCase writes every public.cases column', () => {
+    const missing = missingFrom('updateCase', quotesUpdateSetColumns());
+    expect(missing, `quotes updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('getCase selects every public.cases column', () => {
+    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
+    expect(missing, `quotes getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
   });
 });

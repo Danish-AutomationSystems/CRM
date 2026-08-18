@@ -2,13 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  allCasesColumns as sharedAllCasesColumns,
+  casesInsertColumns as sharedCasesInsertColumns,
+  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
+  methodBody as sharedMethodBody,
+  migrationAddedCasesColumns as sharedMigrationAddedCasesColumns,
+  missingFrom as sharedMissingFrom,
+  selectColumns as sharedSelectColumns
+} from '../db/cases-columns.test-helpers';
+
 const source = fs.readFileSync(path.join(__dirname, 'repository.ts'), 'utf8');
+const migrationsDir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
 
 function methodBody(name: string): string {
-  const start = source.indexOf(`async ${name}(`);
-  if (start === -1) throw new Error(`method ${name} not found in repository.ts`);
-  const next = source.indexOf('\n  async ', start + 1);
-  return source.slice(start, next === -1 ? source.length : next);
+  return sharedMethodBody(source, name);
 }
 
 function insertColumns(): string[] {
@@ -19,10 +27,7 @@ function insertColumns(): string[] {
 }
 
 function selectColumns(method: string, table: string): string[] {
-  const body = methodBody(method);
-  const match = body.match(new RegExp(`select ([\\s\\S]*?)\\s+from public\\.${table}\\b`));
-  if (!match) throw new Error(`${method} select list not found`);
-  return match[1].split(',').map((c) => c.trim()).filter(Boolean);
+  return sharedSelectColumns(source, method, table);
 }
 
 /**
@@ -124,82 +129,11 @@ function dbHelperColumns(method: string): string[] {
  * column was born.
  */
 function allCasesColumns(): string[] {
-  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
-  const names = new Set<string>();
-
-  const initial = fs.readFileSync(path.join(dir, '0001_initial_schema.sql'), 'utf8');
-  const created = initial.match(/create table if not exists public\.cases \(([\s\S]*?)\n\);/);
-  if (!created) throw new Error('public.cases CREATE TABLE not found');
-  // Table-level constraints can span multiple lines (e.g. a multi-line `check (...)`),
-  // and a continuation line - "or (order_value is not null ...)" - starts with a bare
-  // word that would otherwise look exactly like a column definition. Once a
-  // constraint/primary key/unique/check/foreign key clause opens, every line is
-  // skipped by tracking paren depth until it closes back to zero, not just the
-  // clause's first line.
-  let depth = 0;
-  let inConstraint = false;
-  for (const line of created[1].split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (!inConstraint) {
-      if (/^(constraint|primary key|unique|check|foreign key)\b/i.test(trimmed)) {
-        inConstraint = true;
-      } else {
-        const name = trimmed.split(/\s+/)[0].replace(/,$/, '');
-        if (/^[a-z_][a-z0-9_]*$/.test(name)) names.add(name);
-      }
-    }
-    if (inConstraint) {
-      for (const ch of trimmed) {
-        if (ch === '(') depth += 1;
-        else if (ch === ')') depth -= 1;
-      }
-      if (depth <= 0) {
-        inConstraint = false;
-        depth = 0;
-      }
-    }
-  }
-
-  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
-    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
-    for (const statement of statements) {
-      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
-      for (const add of adds) names.add(add[1].toLowerCase());
-    }
-  }
-
-  return [...names].sort();
+  return sharedAllCasesColumns(migrationsDir);
 }
 
-/**
- * Columns a given statement is allowed NOT to carry, each with a reason.
- *
- * Every entry here is a deliberate, reviewed exemption. Adding to this list is
- * how the guard gets weakened, so an entry without a reason is a defect.
- */
-const CASES_EXEMPT: Record<string, Record<string, string>> = {
-  // createCase does not name `version`: the column defaults to 1.
-  createCase: { version: 'defaults to 1 on insert' },
-  // updateCase identifies the row by case_id and must never rewrite creation facts.
-  updateCase: {
-    case_id: 'the WHERE key, never in the SET clause',
-    customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
-    created_by: 'creation fact, immutable',
-    created_at: 'creation fact, immutable'
-  },
-  // version is an internal optimistic-lock counter (bumped by updateCase) that is
-  // never surfaced on CaseRow - CaseDbRow has no `version` field and nothing reads
-  // it back. Pre-existing gap, unrelated to priority; discovered while wiring this
-  // guard because the column parser correctly includes `version` as a real column.
-  getCase: { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
-  listCases: { version: 'internal optimistic-lock counter, not exposed on CaseRow' }
-};
-
 function missingFrom(statement: string, carried: string[]): string[] {
-  const exempt = CASES_EXEMPT[statement];
-  return allCasesColumns().filter((c) => !carried.includes(c) && !(c in exempt));
+  return sharedMissingFrom(migrationsDir, statement, carried);
 }
 
 /**
@@ -208,26 +142,11 @@ function missingFrom(statement: string, carried: string[]): string[] {
  * live: if this ever returns nothing, the migration parsing has broken.
  */
 function migrationAddedCasesColumns(): string[] {
-  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
-  const names = new Set<string>();
-
-  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
-    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
-    for (const statement of statements) {
-      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
-      for (const add of adds) names.add(add[1].toLowerCase());
-    }
-  }
-
-  return [...names].sort();
+  return sharedMigrationAddedCasesColumns(migrationsDir);
 }
 
 function casesInsertColumns(): string[] {
-  const body = methodBody('createCase');
-  const match = body.match(/insert into public\.cases \(([^)]*)\)/);
-  if (!match) throw new Error('createCase insert column list not found');
-  return match[1].split(',').map((c) => c.trim()).filter(Boolean);
+  return sharedCasesInsertColumns(source, 'createCase');
 }
 
 /**
@@ -239,10 +158,7 @@ function casesInsertColumns(): string[] {
  * rather than being folded into one of the others.
  */
 function casesUpdateSetColumns(): string[] {
-  const body = methodBody('updateCase');
-  const match = body.match(/update public\.cases\s*\n\s*set\b([\s\S]*?)\bwhere\b/);
-  if (!match) throw new Error('updateCase set clause not found');
-  return [...match[1].matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)\s*=/gi)].map((m) => m[1].toLowerCase());
+  return sharedCasesUpdateSetColumns(source, 'updateCase');
 }
 
 describe('cases repository public.cases statements', () => {

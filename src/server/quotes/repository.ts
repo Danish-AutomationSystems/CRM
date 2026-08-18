@@ -57,6 +57,7 @@ type CaseDbRow = {
   title: string;
   details: string | null;
   source: string | null;
+  priority: string | null;
   stage: string;
   outcome: 'Won' | 'Lost' | 'Hold' | null;
   order_value: string | number | null;
@@ -201,6 +202,7 @@ function toCase(row: CaseDbRow): QuoteCaseRow {
     title: row.title,
     details: row.details ?? '',
     source: row.source ?? '',
+    priority: row.priority ?? '',
     stage: row.stage,
     outcome: row.outcome ?? '',
     orderValue: numberOrBlank(row.order_value),
@@ -332,7 +334,7 @@ export class PostgresQuoteRepository implements QuoteRepository {
 
   async getCase(id: string): Promise<QuoteCaseRow | null> {
     const rows = (await this.db`
-      select case_id, customer_id, title, details, source, stage, outcome, order_value,
+      select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
              won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
              created_by, created_at, updated_at
       from public.cases
@@ -346,12 +348,12 @@ export class PostgresQuoteRepository implements QuoteRepository {
   async createCase(row: QuoteCaseRow): Promise<void> {
     await this.db`
       insert into public.cases (
-        case_id, customer_id, title, details, source, stage, outcome, order_value,
+        case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
         won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
         created_by, created_at, updated_at
       )
       values (
-        ${row.id}, ${row.customerId}, ${row.title}, ${row.details}, ${row.source}, ${row.stage},
+        ${row.id}, ${row.customerId}, ${row.title}, ${row.details}, ${row.source}, ${row.priority}, ${row.stage},
         ${dbOutcome(row.outcome)}, ${dbNumber(row.orderValue)}, ${joinPipe(row.wonCategories)},
         ${row.outcomeNote}, ${dbEmail(row.owner)}, ${joinPipe(row.extraOwners)}, ${dbEmail(row.assignee)},
         ${dbDate(row.closedOn)}, ${dbEmail(row.createdBy)}, ${row.createdAt}, ${row.updatedAt}
@@ -369,6 +371,7 @@ export class PostgresQuoteRepository implements QuoteRepository {
         title = ${row.title},
         details = ${row.details},
         source = ${row.source},
+        priority = ${row.priority},
         stage = ${row.stage},
         outcome = ${dbOutcome(row.outcome)},
         order_value = ${dbNumber(row.orderValue)},
