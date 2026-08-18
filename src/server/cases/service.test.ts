@@ -1038,6 +1038,39 @@ describe('case service ownership and assignment', () => {
     expect(result.latestHandoverNote).toBe('');
     expect(result.latestHandoverActivityId).toBe('');
   });
+
+  it('stores the priority a case is created with', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', {
+      title: 'Urgent panel fault',
+      priority: 'High'
+    });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('High');
+  });
+
+  it('stores no priority when the case is created without one', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Routine enquiry' });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('');
+  });
+
+  it('ignores a priority outside the allowed list rather than failing the create', async () => {
+    const { repo, service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', {
+      title: 'Panel fault',
+      priority: 'Urgent'
+    });
+
+    const stored = await repo.getCase(created.id);
+    expect(stored?.priority).toBe('');
+  });
 });
 
 describe('case service assignable users', () => {
@@ -1282,5 +1315,31 @@ describe('case reads, lists, and quick log', () => {
     expect(repo.lockedNames).toEqual(['site co', 'site co']);
 
     await expect(service.quickLog(sales, { customerId: 'CUST-0099', title: 'No access' })).rejects.toThrow('not an account handler');
+  });
+
+  it('quick log stores the case priority without confusing it with the new customer priority', async () => {
+    const { repo, service } = makeService();
+
+    const logged = await service.quickLog(sales, {
+      newCustomer: { name: 'Fresh Co', tag: 'Punjab', priority: 'Low' },
+      title: 'Site visit request',
+      priority: 'High'
+    });
+
+    const storedCase = await repo.getCase(logged.caseId);
+    const storedCustomer = await repo.getCustomer(logged.customerId);
+    expect(storedCase?.priority).toBe('High');
+    expect(storedCustomer?.priority).toBe('Low');
+  });
+
+  it('quick log stores no case priority when none is given', async () => {
+    const { repo, service } = makeService();
+
+    const logged = await service.quickLog(sales, {
+      customerId: 'CUST-0001',
+      title: 'Called about spares'
+    });
+
+    expect((await repo.getCase(logged.caseId))?.priority).toBe('');
   });
 });

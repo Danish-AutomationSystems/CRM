@@ -151,6 +151,7 @@ export type CaseInput = Partial<{
   title: unknown;
   details: unknown;
   source: unknown;
+  priority: unknown;
   stage: unknown;
   order: unknown;
   orderValue: unknown;
@@ -185,6 +186,7 @@ export type QuickLogInput = Partial<{
     area: unknown;
   }>;
   title: unknown;
+  priority: unknown;
   stage: unknown;
   details: unknown;
 }>;
@@ -649,7 +651,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title,
           details: String(input.details ?? ''),
           source: asText(input.source),
-          priority: '',
+          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
           stage: order ? 'Quoted' : validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: order ? 'Won' : '',
           orderValue: order ? Number(input.orderValue) : '',
@@ -1189,7 +1191,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title: asText(input.title) || 'Untitled case',
           details: String(input.details ?? ''),
           source: '',
-          priority: '',
+          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
           stage: validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: '',
           orderValue: '',
