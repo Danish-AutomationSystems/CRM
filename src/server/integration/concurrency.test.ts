@@ -142,6 +142,7 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
         customerId: row.customerId,
         title: row.title,
         stage: row.stage,
+        priority: row.priority,
         outcome: row.outcome,
         orderValue: row.orderValue,
         quotedValue: '',
