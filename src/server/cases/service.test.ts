@@ -36,6 +36,7 @@ class FakeCaseRepository implements CaseRepository {
   nextAttachmentId = 1;
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
+  updateCaseCalls = 0;
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
@@ -98,6 +99,7 @@ class FakeCaseRepository implements CaseRepository {
   }
 
   async updateCase(id: string, fields: Partial<CaseRow>): Promise<void> {
+    this.updateCaseCalls++;
     const row = await this.getCase(id);
     if (!row) throw new Error('missing test case');
     Object.assign(row, fields);
@@ -1385,6 +1387,10 @@ describe('setCasePriority', () => {
 
     await service.setCasePriority(sales, 'CASE-2026-0001', 'Medium');
 
+    // A same-value call must not reach the repository at all: repository.ts rewrites every
+    // column on updateCase, so a no-op write would still bump updatedAt on a case nobody
+    // actually changed.
+    expect(repo.updateCaseCalls).toBe(0);
     expect(repo.logs.filter((e) => e.action === 'CASE_PRIORITY')).toEqual([]);
   });
 
@@ -1393,6 +1399,21 @@ describe('setCasePriority', () => {
     repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
 
     await expect(service.setCasePriority(sales, 'CASE-2026-0001', 'Urgent')).rejects.toThrow(/not a valid priority/i);
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+
+  it('denies an outsider before validating the priority, so a junk value cannot leak that the case exists', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    // 'Urgent' is not a valid priority - if validation ran before the access check, an
+    // outsider would learn the case exists from a "not a valid priority" error instead of
+    // a generic access error. Both conditions (denied user + invalid value) must be present
+    // together for this to be exercised, which is exactly what the two existing tests
+    // (each varying only one of the two) do not do.
+    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'Urgent')).rejects.toThrow(
+      /do not have access/i
+    );
     expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
   });
 
@@ -1419,7 +1440,7 @@ describe('setCasePriority', () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
 
-    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'High')).rejects.toThrow();
+    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'High')).rejects.toThrow(/do not have access/i);
     expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
   });
 });
