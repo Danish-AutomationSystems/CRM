@@ -13,7 +13,7 @@
 - **Design spec:** `docs/superpowers/specs/2026-08-18-case-priority-design.md`. Read it first.
 - **Branch:** `feat/case-priority`, already created, spec already committed on it.
 - **Run everything from** `D:\AutomationSystems\CRM\migrated-crm`. Windows. Use the PowerShell tool. Never work in the parent directory `D:\AutomationSystems\CRM` — that is the old Apps Script project.
-- **TDD is mandatory.** Every code change is preceded by a test that is run and *seen to fail* first. A test that passes before the implementation exists is a broken test, not a head start — report it rather than moving on.
+- **TDD is mandatory.** Every code change is preceded by a test that is run and *seen to fail* first. A test that passes before the implementation exists is a broken test, not a head start — report it rather than moving on. **One deliberate exemption**, ruled on by the project owner and carrying an explanatory code comment: the `updateCase` service-level regression test in Task 5. Do not remove it, and do not remove its comment.
 - **Baseline that must not regress: 382 vitest tests and 23 Playwright tests currently pass.**
 - **Unset priority is the empty string `''`, never `null`, never a default of `'Medium'`.** Existing cases must render byte-identically to today after this ships.
 - **No backfill.** Every existing case keeps an empty priority. Explicitly confirmed by the project owner.
@@ -193,12 +193,69 @@ equivalents. Place them after the existing helpers and before the `describe` blo
 
 ```ts
 /**
- * Columns added to public.cases by a migration *after* the initial schema.
+ * EVERY column of public.cases: the initial CREATE TABLE plus every later ALTER.
  *
- * Derived rather than hardcoded, for the same reason as
- * migrationAddedActivityLogColumns above: the defect this guards against is "a
- * migration adds a column and a statement never carries it", and pinning the
- * literal 'priority' would only ever catch it for this one column.
+ * Deliberately not limited to migration-added columns. A guard over only the new
+ * ones would protect `priority` and leave the original seventeen unguarded - drop
+ * `outcome_note` from updateCase's set clause and nothing would object. The defect
+ * class is "a statement stops carrying a column", and it does not care when the
+ * column was born.
+ */
+function allCasesColumns(): string[] {
+  const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
+  const names = new Set<string>();
+
+  const initial = fs.readFileSync(path.join(dir, '0001_initial_schema.sql'), 'utf8');
+  const created = initial.match(/create table if not exists public\.cases \(([\s\S]*?)\n\);/);
+  if (!created) throw new Error('public.cases CREATE TABLE not found');
+  for (const line of created[1].split('\n')) {
+    const trimmed = line.trim();
+    // Skip table-level constraints; only column definitions start with a bare name.
+    if (!trimmed || /^(constraint|primary key|unique|check|foreign key)\b/i.test(trimmed)) continue;
+    const name = trimmed.split(/\s+/)[0].replace(/,$/, '');
+    if (/^[a-z_][a-z0-9_]*$/.test(name)) names.add(name);
+  }
+
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
+    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
+    for (const statement of statements) {
+      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
+      for (const add of adds) names.add(add[1].toLowerCase());
+    }
+  }
+
+  return [...names].sort();
+}
+
+/**
+ * Columns a given statement is allowed NOT to carry, each with a reason.
+ *
+ * Every entry here is a deliberate, reviewed exemption. Adding to this list is
+ * how the guard gets weakened, so an entry without a reason is a defect.
+ */
+const CASES_EXEMPT: Record<string, Record<string, string>> = {
+  // createCase does not name `version`: the column defaults to 1.
+  createCase: { version: 'defaults to 1 on insert' },
+  // updateCase identifies the row by case_id and must never rewrite creation facts.
+  updateCase: {
+    case_id: 'the WHERE key, never in the SET clause',
+    created_by: 'creation fact, immutable',
+    created_at: 'creation fact, immutable'
+  },
+  getCase: {},
+  listCases: {}
+};
+
+function missingFrom(statement: string, carried: string[]): string[] {
+  const exempt = CASES_EXEMPT[statement];
+  return allCasesColumns().filter((c) => !carried.includes(c) && !(c in exempt));
+}
+
+/**
+ * Columns added to public.cases by a migration after the initial schema.
+ * Kept as a separate, narrower derivation purely to prove the guard above is
+ * live: if this ever returns nothing, the migration parsing has broken.
  */
 function migrationAddedCasesColumns(): string[] {
   const dir = path.join(__dirname, '..', '..', '..', 'supabase', 'migrations');
@@ -258,40 +315,43 @@ describe('cases repository public.cases statements', () => {
     expect(casesUpdateSetColumns()).toContain('title');
   });
 
-  it('createCase writes every column a migration added to public.cases', () => {
-    const written = casesInsertColumns();
-    const missing = migrationAddedCasesColumns().filter((c) => !written.includes(c));
-    expect(
-      missing,
-      `createCase does not write public.cases column(s) added by a migration: ${missing.join(', ')}`
-    ).toEqual([]);
+  it('derives the full public.cases column set, so no guard below can pass vacuously', () => {
+    const all = allCasesColumns();
+    expect(all.length).toBeGreaterThan(15);
+    expect(all).toContain('case_id');
+    expect(all).toContain('outcome_note');
+    expect(all).toContain('priority');
   });
 
-  it('updateCase writes every column a migration added to public.cases', () => {
-    const written = casesUpdateSetColumns();
-    const missing = migrationAddedCasesColumns().filter((c) => !written.includes(c));
-    expect(
-      missing,
-      `updateCase does not write public.cases column(s) added by a migration: ${missing.join(', ')}`
-    ).toEqual([]);
+  it('createCase writes every public.cases column', () => {
+    const missing = missingFrom('createCase', casesInsertColumns());
+    expect(missing, `createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('getCase selects every column a migration added to public.cases', () => {
-    const selected = selectColumns('getCase', 'cases');
-    const missing = migrationAddedCasesColumns().filter((c) => !selected.includes(c));
-    expect(
-      missing,
-      `getCase does not select public.cases column(s) added by a migration: ${missing.join(', ')}`
-    ).toEqual([]);
+  it('updateCase writes every public.cases column', () => {
+    const missing = missingFrom('updateCase', casesUpdateSetColumns());
+    expect(missing, `updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('listCases selects every column a migration added to public.cases', () => {
-    const selected = selectColumns('listCases', 'cases');
-    const missing = migrationAddedCasesColumns().filter((c) => !selected.includes(c));
-    expect(
-      missing,
-      `listCases does not select public.cases column(s) added by a migration: ${missing.join(', ')}`
-    ).toEqual([]);
+  it('getCase selects every public.cases column', () => {
+    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
+    expect(missing, `getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('listCases selects every public.cases column', () => {
+    const missing = missingFrom('listCases', selectColumns('listCases', 'cases'));
+    expect(missing, `listCases does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('writes no column outside the table (typo guard)', () => {
+    const all = allCasesColumns();
+    for (const [name, carried] of [
+      ['createCase', casesInsertColumns()],
+      ['updateCase', casesUpdateSetColumns()]
+    ] as const) {
+      const unknown = carried.filter((c) => !all.includes(c));
+      expect(unknown, `${name} names column(s) that do not exist: ${unknown.join(', ')}`).toEqual([]);
+    }
   });
 });
 ```
@@ -300,11 +360,16 @@ describe('cases repository public.cases statements', () => {
 
 Run: `npx vitest run src/server/cases/repository.test.ts`
 
-Expected: the two "plausible list" tests and the "finds the migration-added columns" test
-PASS. The four coverage tests FAIL, each naming `priority`.
+Expected: the "plausible list" and "derives the full column set" tests PASS. The four coverage
+tests FAIL, each naming `priority`.
 
-**If any of the four coverage tests passes here, stop and report it** — it means the parser
-returned an empty list and the guard is vacuous.
+**Read the failure messages.** They must name `priority` and *only* `priority`. If a coverage
+test also names other columns, the exemption list is wrong or the parser is dropping real
+columns — fix that before implementing. Never widen `CASES_EXEMPT` to make a guard pass; that
+is weakening the guard to silence it.
+
+**If any of the four coverage tests passes here, stop and report it** — the parser returned an
+empty list and the guard is vacuous.
 
 - [ ] **Step 3: Add the column to the four statements**
 
@@ -755,6 +820,12 @@ carries no such contradiction."
     expect(listed[0].priority).toBe('Medium');
   });
 
+  // Documents the requirement at the service level. It passes before the SQL is
+  // correct, because the in-memory fake merges objects and cannot reproduce a
+  // missing `set` clause - the real defence is the casesUpdateSetColumns guard in
+  // repository.test.ts. Kept deliberately, by the project owner's ruling: without
+  // it nothing in the service layer states that editing a title must not wipe the
+  // priority. Do not delete this test or this comment.
   it('leaves an existing priority intact when an unrelated field is edited', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
