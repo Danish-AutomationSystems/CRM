@@ -338,13 +338,13 @@ test('mocked authenticated session renders critical CRM route containers', async
   await page.getByRole('button', { name: 'Customers' }).first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
   await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
-  await expect(page.getByPlaceholder('Search customers by name, location, type or area…')).toBeVisible();
+  await expect(page.locator('#custQ')).toBeVisible();
   await expect(page.locator('table.grid input.ce').first()).toHaveValue(customerSummary.name);
 
   await page.getByRole('button', { name: 'Cases' }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
   await expect(page.getByRole('heading', { name: 'Cases' })).toBeVisible();
-  await expect(page.getByPlaceholder('Search title / ID / customer')).toBeVisible();
+  await expect(page.locator('#cf_q')).toBeVisible();
 
   await page.getByText('Panel upgrade').first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');

@@ -629,7 +629,7 @@ function vCustomers(){
   el('main').innerHTML =
     '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div>'+
     '<button class="btn ghost" onclick="mBulkCustomers()">Bulk add</button></div>'+
-    '<div class="card"><input id="custQ" placeholder="Search customers by name, location, type or area…" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
+    '<div class="card"><label>Search customers by name, location, type or area</label><input id="custQ" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
     '<div id="custBody"></div>';
   el('custQ').focus();
   custApply();
@@ -775,7 +775,7 @@ function renderMyCustomers(){
       list.map(function(t){ return '<option value="'+esc(t)+'"'+(MCFILT[field]===t?' selected':'')+'>'+esc(t)+'</option>'; }).join('')+
       '<option value="'+esc(MCBLANK)+'"'+(MCFILT[field]===MCBLANK?' selected':'')+'>(blank)</option></select>';
   }
-  function ftext(field){ return '<input class="fx" placeholder="filter" value="'+esc(MCFILT[field])+'" oninput="mcSetFilter(\''+field+'\',this.value)">'; }
+  function ftext(field){ return '<input class="fx" value="'+esc(MCFILT[field])+'" oninput="mcSetFilter(\''+field+'\',this.value)">'; }
   var handlerFilterCell;
   if(all){
     handlerFilterCell='<button class="btn ghost sm" onclick="mcHandlerPicker()">'+(MCHSEL.length?('Handlers ('+MCHSEL.length+')'):'Filter…')+'</button>';
@@ -1059,7 +1059,8 @@ function mBulkCustomers(){
     '<p class="sub" style="margin-bottom:8px">Paste rows from Excel (one customer per line). Columns, in order:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area</p>'+
     '<p class="hint">Only Name is required. Location must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
-    '<textarea id="bc_paste" style="min-height:130px;font-family:var(--mono);font-size:12px;margin-top:10px" placeholder="ABC Industries\tPunjab\tOEM\tHigh\tLudhiana"></textarea>'+
+    '<p class="hint" style="margin-top:10px;margin-bottom:4px">Columns, tab-separated: Name · Location · Type · Priority · Area</p>'+
+    '<textarea id="bc_paste" style="min-height:130px;font-family:var(--mono);font-size:12px"></textarea>'+
     '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkCust()">Preview</button></div>'+
     '<div id="bc_prev" style="margin-top:10px"></div>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
@@ -1218,7 +1219,7 @@ function openBuilderForCustomer(){
 /* ---------------- handlers & contacts ---------------- */
 function mAddHandler(custId){
   openModal('Add account handler',
-    '<label class="req">Username</label><div style="display:flex;align-items:center;gap:6px"><input id="f_hmail" placeholder="username" style="flex:1"><span class="mono sub">@'+esc(S.settings.domain)+'</span></div>'+
+    '<label class="req">Username</label><div style="display:flex;align-items:center;gap:6px"><input id="f_hmail" style="flex:1"><span class="mono sub">@'+esc(S.settings.domain)+'</span></div>'+
     '<p class="hint">Enter just the username. They must already be an active CRM user (Admin → Users). Handlers get full access to this customer.</p>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
     '<button class="btn" onclick="addHandler(\''+esc(custId)+'\')">Add</button>');
@@ -1266,7 +1267,8 @@ function mBulkContacts(custId){
     '<p class="sub" style="margin-bottom:8px">Paste one contact per line. Columns, in order:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Designation · Phone · Email</p>'+
     '<p class="hint">Only Name is required. Tab- or comma-separated.</p>'+
-    '<textarea id="bk_paste" style="min-height:130px;font-family:var(--mono);font-size:12px;margin-top:10px" placeholder="Rajesh Kumar\tPurchase Manager\t98140xxxxx\trajesh@abc.com"></textarea>'+
+    '<p class="hint" style="margin-top:10px;margin-bottom:4px">Columns, tab-separated: Name · Designation · Phone · Email</p>'+
+    '<textarea id="bk_paste" style="min-height:130px;font-family:var(--mono);font-size:12px"></textarea>'+
     '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkContacts()">Preview</button></div>'+
     '<div id="bk_prev" style="margin-top:10px"></div>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
@@ -1308,7 +1310,7 @@ function mNewCase(custId){
         '<button type="button" class="on" onclick="setCaseKind(\'Lead\')">Lead</button>'+
         '<button type="button" onclick="setCaseKind(\'Opportunity\')">Opportunity</button>'+
         '<button type="button" onclick="setCaseKind(\'Order\')">Order (Won)</button></div></div></div>'+
-      '<div class="frow"><div style="flex:2"><label class="req">Title</label><input id="fo_title" placeholder="e.g. ATV630 panel for boiler feed pumps"></div></div>'+
+      '<div class="frow"><div style="flex:2"><label class="req">Title</label><input id="fo_title"></div></div>'+
       '<div class="frow"><div><label'+(lvl()>=5?' class="req"':'')+'>Assign to</label>'+
       (lvl()>=5
         ? '<select id="fo_owner"><option value="">— choose who works this —</option>'+(S.users||[]).map(function(x){ return '<option value="'+esc(x.email)+'">'+esc(x.name)+'</option>'; }).join('')+'</select>'
@@ -1387,7 +1389,7 @@ function saveNewCase(custId){
 /* pick a customer, then create a case (used from the Cases page) */
 function mPickCustomerThenCase(){
   openModal('New case — pick a customer',
-    '<input id="pc_q" placeholder="Search customer by name…" oninput="pcSearch()">'+
+    '<label>Customer</label><input id="pc_q" oninput="pcSearch()">'+
     '<div id="pc_res" class="ql-res" style="display:none"></div>'+
     '<p class="hint" style="margin-top:10px">Don\'t see them? Add the customer first from the Customers tab, or use Quick log.</p>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>');
@@ -1455,7 +1457,7 @@ function renderCase(d){
       if(o.outcome!=='Won' && o.outcome!=='Lost'){
         html += '<div class="frow" style="align-items:flex-end"><div><label>Stage</label><select id="stSel">'+
           S.settings.stages.map(function(st){ return '<option'+(st===o.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select></div>'+
-          '<div style="flex:2"><label>Note (optional)</label><input id="stNote" placeholder="e.g. BOQ received, costing in progress"></div>'+
+          '<div style="flex:2"><label>Note (optional)</label><input id="stNote"></div>'+
           '<div style="flex:0"><button class="btn" onclick="doStage(\''+esc(o.id)+'\')">Update stage</button></div></div>';
       }
       html += '<div class="frow" style="align-items:flex-end"><div><label>Priority</label><select id="priSel">'+
@@ -1529,11 +1531,11 @@ function mAssign(id, suggestions){
     openModal('Reassign ticket',
       bubbles+
       '<label style="margin-top:10px">Search for a user</label>'+
-      '<input id="wk_q" placeholder="type a name or username…" autocomplete="off" oninput="wkSearch()">'+
+      '<input id="wk_q" autocomplete="off" oninput="wkSearch()">'+
       '<div id="wk_res" class="reslist"></div>'+
       '<div id="wk_sel" class="hint" style="margin-top:8px">No one selected yet.</div>'+
       '<div class="frow" style="margin-top:10px"><div><label>Handover note <span class="sub">(optional)</span></label>'+
-      '<textarea id="wk_note" maxlength="2000" placeholder="What has been done so far, and what the next person needs to know."></textarea></div></div>'+
+      '<textarea id="wk_note" maxlength="2000"></textarea></div></div>'+
       '<div class="frow" style="margin-top:10px"><div><label>Attachments <span class="sub">(optional, any type, up to 100 MB each)</span></label>'+
       '<input id="wk_files" type="file" multiple onchange="wkFilesPicked()">'+
       '<div id="wk_filelist" class="hint"></div></div></div>'+
@@ -1657,7 +1659,7 @@ function mWon(id){
   openModal('Mark as Won',
     '<div class="frow"><div><label class="req">Order value ('+esc(S.settings.currency)+')</label><input id="w_val" type="number" min="0"></div></div>'+
     '<label class="req">Product categories</label>'+ multiPickHTML('w_cats', catPickItems(), []) +
-    '<div class="frow" style="margin-top:12px"><div><label>Note (optional)</label><input id="w_note" placeholder="e.g. PO no. / negotiated terms"></div></div>',
+    '<div class="frow" style="margin-top:12px"><div><label>Note (optional)</label><input id="w_note"></div></div>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
     '<button class="btn" onclick="doWon(\''+esc(id)+'\')">Confirm Won</button>', true);
   el('w_val').focus();
@@ -1672,7 +1674,7 @@ function doWon(id){
 }
 function mOutcomeNote(id, outcome){
   openModal('Mark as '+outcome,
-    '<label>Note (optional)</label><input id="o_note" placeholder="'+(outcome==='Lost'?'e.g. lost to competitor on price':'e.g. on hold pending budget')+'">',
+    '<label>Note (optional)</label><input id="o_note">',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
     '<button class="btn'+(outcome==='Lost'?' danger':'')+'" onclick="doOutcome(\''+esc(id)+'\',\''+esc(outcome)+'\')">Confirm</button>');
 }
@@ -1695,7 +1697,7 @@ function vCases(){
     '<div class="sub">Cases on customers you can access, plus any you own.</div></div>'+
     '<button class="btn" onclick="mPickCustomerThenCase()">+ New case</button></div>'+
     '<div class="card"><div class="filterbar">'+
-    '<input id="cf_q" placeholder="Search title / ID / customer" value="'+esc(f.q)+'" onkeydown="if(event.key===\'Enter\')applyCaseF()">'+
+    '<label>Search cases</label><input id="cf_q" value="'+esc(f.q)+'" onkeydown="if(event.key===\'Enter\')applyCaseF()">'+
     '<select id="cf_stage" onchange="applyCaseF()"><option value="">All stages</option>'+
     S.settings.stages.map(function(st){ return '<option'+(st===f.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select>'+
     '<select id="cf_outcome" onchange="applyCaseF()">'+
@@ -1760,7 +1762,7 @@ function mQuickLog(){
   QL = { customerId:'', customerName:'', newMode:false };
   var body =
     '<div id="ql_cust"></div>'+
-    '<div class="frow" style="margin-top:6px"><div style="flex:2"><label class="req">Case title</label><input id="ql_title" placeholder="e.g. Enquiry for VFD panel"></div>'+
+    '<div class="frow" style="margin-top:6px"><div style="flex:2"><label class="req">Case title</label><input id="ql_title"></div>'+
     '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages, 'Lead')+'</select></div>'+
     '<div><label>Priority</label><select id="ql_casepri"><option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], '') +'</select></div></div>'+
     ''
@@ -1776,7 +1778,7 @@ function renderQLCust(){
     return;
   }
   if(QL.newMode){
-    el('ql_cust').innerHTML = '<label class="req">New customer name</label><input id="ql_cname" placeholder="Customer name">'+
+    el('ql_cust').innerHTML = '<label class="req">New customer name</label><input id="ql_cname">'+
       '<div class="frow" style="margin-top:8px"><div><label>Location</label><select id="ql_tag"><option value="">—</option>'+selOptions(S.settings.tags,'')+'</select></div>'+
       '<div><label>Type</label><select id="ql_type"><option value="">—</option>'+selOptions(S.settings.types,'')+'</select></div>'+
       '<div><label>Priority</label><select id="ql_pri"><option value="">—</option>'+selOptions(S.settings.priorities,'')+'</select></div></div>'+
@@ -1784,7 +1786,7 @@ function renderQLCust(){
     setTimeout(function(){ if(el('ql_cname')) el('ql_cname').focus(); },50);
     return;
   }
-  el('ql_cust').innerHTML = '<label class="req">Customer</label><input id="ql_q" placeholder="Search by name…" oninput="qlSearch()">'+
+  el('ql_cust').innerHTML = '<label class="req">Customer</label><input id="ql_q" oninput="qlSearch()">'+
     '<div id="ql_res" class="ql-res" style="display:none"></div>'+
     '<button class="btn lk" style="margin-top:6px" onclick="qlNew()">+ New customer instead</button>';
   setTimeout(function(){ if(el('ql_q')) el('ql_q').focus(); },50);
@@ -1838,10 +1840,10 @@ function mQuoteBuilder(ctx){
   var body =
     '<div class="frow"><div><label>Customer</label><input value="'+esc(ctx.customerName)+'" disabled></div>'+
     '<div style="flex:1.4"><label>Case</label>'+caseSel+'</div></div>'+
-    '<div class="frow"><div style="flex:2"><label class="req">Quotation title</label><input id="qb_title" value="'+esc(base.title||'')+'" placeholder="e.g. ATV630 VFD panel — boiler feed pump"></div>'+
+    '<div class="frow"><div style="flex:2"><label class="req">Quotation title</label><input id="qb_title" value="'+esc(base.title||'')+'"></div>'+
     '<div><label class="req">Template</label><select id="qb_tpl"><option value="">Loading templates…</option></select></div></div>'+
     '<div class="frow"><div><label>Valid until</label><input id="qb_valid" type="date" value="'+esc(base.validUntil||'')+'"></div>'+
-    '<div><label class="req">Subtotal</label><input id="qb_sub" type="number" min="0" step="0.01" value="'+esc(base.subtotal!==undefined?base.subtotal:'')+'" placeholder="enter manually" oninput="qbTotals()"></div>'+
+    '<div><label class="req">Subtotal</label><input id="qb_sub" type="number" min="0" step="0.01" value="'+esc(base.subtotal!==undefined?base.subtotal:'')+'" oninput="qbTotals()"></div>'+
     '<div><label>GST %</label><input id="qb_tax" type="number" min="0" step="0.01" value="'+esc(base.taxPct!==undefined?base.taxPct:S.settings.taxPct)+'" oninput="qbTotals()"></div>'+
     '<div><label>Currency</label><input id="qb_cur" value="'+esc(base.currency||S.settings.currency)+'"></div></div>'+
     '<div class="frow"><div><label>Notes / terms shown on quote</label><textarea id="qb_notes">'+esc(base.notes||'')+'</textarea></div></div>'+
@@ -1888,9 +1890,10 @@ function qbRenderBlocks(){
   var html='';
   B.blocks.forEach(function(b,i){
     html+='<div class="card" style="padding:12px;margin-bottom:10px;background:#fff">'+
-      '<div class="frow" style="margin-bottom:8px"><div style="flex:2"><label>Table title (optional)</label><input id="qb_bt_'+i+'" value="'+esc(b.title||'')+'" placeholder="e.g. Main panel BOQ" oninput="captureBlocks()"></div>'+
+      '<div class="frow" style="margin-bottom:8px"><div style="flex:2"><label>Table title (optional)</label><input id="qb_bt_'+i+'" value="'+esc(b.title||'')+'" oninput="captureBlocks()"></div>'+
       (B.blocks.length>1?'<div style="flex:0;display:flex;align-items:flex-end"><button class="btn danger sm" onclick="qbDelBlock('+i+')">Remove</button></div>':'')+'</div>'+
-      '<textarea id="qb_bx_'+i+'" placeholder="Paste this table from Excel — first row = headers" style="min-height:80px;font-family:var(--mono);font-size:12px" oninput="captureBlocks();qbPreview('+i+')">'+esc(b.text||'')+'</textarea>'+
+      '<label>Paste table from Excel</label>'+
+      '<textarea id="qb_bx_'+i+'" style="min-height:80px;font-family:var(--mono);font-size:12px" oninput="captureBlocks();qbPreview('+i+')">'+esc(b.text||'')+'</textarea>'+
       '<div id="qb_bp_'+i+'" style="margin-top:8px;overflow-x:auto"></div></div>';
   });
   el('qb_blocks').innerHTML=html;
@@ -1971,7 +1974,7 @@ function mUploadQuote(base){
     '<p class="hint" style="margin-top:0">Attach a quotation you prepared elsewhere (PDF, Word or Excel) so it is on record against the case. The file is stored in the CRM Quotations folder.</p>'+
     '<div class="frow"><div><label>Customer</label><input value="'+esc(ctx.customerName)+'" disabled></div>'+
     '<div style="flex:1.4"><label>Case</label>'+caseSel+'</div></div>'+
-    '<div class="frow"><div style="flex:2"><label class="req">Title</label><input id="uq_title" value="'+esc(base.title||'')+'" placeholder="e.g. VFD panel offer — rev 2"></div>'+
+    '<div class="frow"><div style="flex:2"><label class="req">Title</label><input id="uq_title" value="'+esc(base.title||'')+'"></div>'+
     '<div><label>Status</label><select id="uq_status">'+
       ['Sent','Draft'].map(function(x){ return '<option'+(base.status===x?' selected':'')+'>'+x+'</option>'; }).join('')+'</select></div></div>'+
     '<div class="frow"><div><label class="req">Total value</label><input id="uq_total" type="number" min="0" step="0.01" value="'+esc(base.total!==undefined?base.total:'')+'"></div>'+

@@ -873,8 +873,8 @@ describe('legacy CRM full client', () => {
       const headers = [...document.querySelectorAll('table.grid th')].map((th) => th.textContent);
       expect(headers).toContain('Location');
       expect(headers).not.toContain('Tag');
-      expect((document.getElementById('custQ') as HTMLInputElement).placeholder).toMatch(/location/i);
-      expect((document.getElementById('custQ') as HTMLInputElement).placeholder).not.toMatch(/\btag\b/i);
+      expect(document.getElementById('custQ')?.previousElementSibling?.textContent).toMatch(/location/i);
+      expect(document.getElementById('custQ')?.previousElementSibling?.textContent).not.toMatch(/\btag\b/i);
     });
   });
 
@@ -1083,12 +1083,10 @@ describe('legacy CRM full client', () => {
       await screen.findByRole('heading', { name: 'Overview' });
 
       window.eval('mAssign("CASE-1", [])');
-      await screen.findByPlaceholderText('type a name or username…');
+      await waitFor(() => expect(document.getElementById('wk_q')).toBeTruthy());
       window.eval('wkPick("other@automationsystems.org", "Other User")');
 
-      const noteField = await screen.findByPlaceholderText(
-        'What has been done so far, and what the next person needs to know.'
-      );
+      const noteField = document.getElementById('wk_note') as HTMLTextAreaElement;
       window.eval(
         `document.getElementById('wk_note').value = ${JSON.stringify('Quoted, waiting on their PO.')};`
       );
@@ -1312,7 +1310,7 @@ describe('legacy CRM full client', () => {
       render(createElement(CrmApp));
       await screen.findByRole('heading', { name: 'Overview' });
       window.eval('mAssign("CASE-1", [])');
-      await screen.findByPlaceholderText('type a name or username…');
+      await waitFor(() => expect(document.getElementById('wk_q')).toBeTruthy());
       window.eval('wkPick("other@automationsystems.org", "Other User")');
       await screen.findByRole('button', { name: 'Reassign' });
     }
@@ -1869,5 +1867,28 @@ describe('legacy CRM full client', () => {
       xhr.respond(200, { id: 'DRIVE-FILE-1' });
       await waitFor(() => expect(document.getElementById('mwrap')?.className).not.toContain('on'));
     });
+  });
+});
+
+describe('form fields carry no placeholder text', () => {
+  const indexHtml = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'docs', 'source-appscript', 'Index.html'),
+    'utf8'
+  );
+
+  test('has no placeholder attribute anywhere in the legacy client source', () => {
+    const found = [...indexHtml.matchAll(/placeholder\s*=/gi)].map((match) => {
+      const upto = indexHtml.slice(0, match.index ?? 0);
+      return `line ${upto.split('\n').length}`;
+    });
+    expect(found, `placeholder attributes remain at: ${found.join(', ')}`).toEqual([]);
+  });
+
+  test('still tells the user the bulk-import column order', () => {
+    // The placeholder that carried this was removed deliberately; the guidance
+    // moved to a visible hint. Without it a pasted Excel range maps every column
+    // wrong and writes bad data to every row, silently.
+    expect(indexHtml).toContain('Name · Location · Type · Priority · Area');
+    expect(indexHtml).toContain('Name · Designation · Phone · Email');
   });
 });
