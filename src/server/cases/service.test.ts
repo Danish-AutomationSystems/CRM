@@ -1343,3 +1343,83 @@ describe('case reads, lists, and quick log', () => {
     expect((await repo.getCase(logged.caseId))?.priority).toBe('');
   });
 });
+
+describe('setCasePriority', () => {
+  // Same user/handler shape as makeService()'s default fixtures, reused so we know it is
+  // genuinely denied: 'refuses a user who cannot see the case and creates no upload session'
+  // (beginAttachmentUpload access and validation, near line 352) proves this exact user -
+  // not a handler, not the assignee, not an owner of CASE-2026-0001 - fails loadVisibleCase.
+  const outsider: CrmContext = {
+    ...sales,
+    email: 'other@automationsystems.org',
+    name: 'Other Sales',
+    allowedTags: ['NCR']
+  };
+
+  it('changes the priority and logs the change in history', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'High');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+    const logged = repo.logs.filter((entry) => entry.action === 'CASE_PRIORITY');
+    expect(logged).toHaveLength(1);
+    expect(logged[0].details).toBe('Low -> High');
+    expect(logged[0].entity).toBe('CASE-2026-0001');
+  });
+
+  it('clears the priority when given an empty string', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', '');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('');
+    expect(repo.logs.filter((e) => e.action === 'CASE_PRIORITY')[0].details).toBe('High -> -');
+  });
+
+  it('writes nothing and logs nothing when the priority is unchanged', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Medium' })];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'Medium');
+
+    expect(repo.logs.filter((e) => e.action === 'CASE_PRIORITY')).toEqual([]);
+  });
+
+  it('rejects a priority outside the allowed list', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await expect(service.setCasePriority(sales, 'CASE-2026-0001', 'Urgent')).rejects.toThrow(/not a valid priority/i);
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+
+  it('allows a priority change on a closed case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({
+        id: 'CASE-2026-0001',
+        priority: 'Low',
+        outcome: 'Won',
+        orderValue: 5000,
+        wonCategories: ['Drives'],
+        closedOn: '2026-08-01T00:00:00.000Z',
+        assignee: ''
+      })
+    ];
+
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'High');
+
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+  });
+
+  it('denies a user who cannot see the case, without revealing that it exists', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'Low' })];
+
+    await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'High')).rejects.toThrow();
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+});

@@ -26,6 +26,11 @@ registerRpc(
   { read: false }
 );
 registerRpc(
+  'api_setCasePriority',
+  ({ args, context }) => service.setCasePriority(context, String(args[0] ?? ''), args[1]),
+  { read: false }
+);
+registerRpc(
   'api_setCaseOutcome',
   ({ args, context }) => service.setCaseOutcome(context, String(args[0] ?? ''), args[1], args[2] ?? {}),
   { read: false }

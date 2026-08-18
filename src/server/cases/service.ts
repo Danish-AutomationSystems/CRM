@@ -718,6 +718,29 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return { ok: true };
     },
 
+    async setCasePriority(user: CrmContext, id: string, priorityInput: unknown) {
+      const priority = asText(priorityInput);
+      const { row } = await loadVisibleCase(repo, user, id);
+      // '' is allowed and means "clear it" - priority is optional, so it must be removable.
+      if (priority && !(DEFAULT_SETTINGS.PRIORITIES as readonly string[]).includes(priority)) {
+        throw new Error(`"${priority}" is not a valid priority.`);
+      }
+      // No block on a closed case. setCaseStage refuses on Won/Lost because a closed case
+      // has no meaningful stage; priority carries no such contradiction.
+      if (row.priority === priority) return { ok: true };
+
+      const previousPriority = row.priority;
+      await repo.updateCase(id, { priority, updatedAt: nowIso() });
+      await repo.logActivity({
+        action: 'CASE_PRIORITY',
+        entity: id,
+        customerId: row.customerId,
+        details: `${previousPriority || '-'} -> ${priority || '-'}`,
+        who: normalizeEmail(user.email)
+      });
+      return { ok: true };
+    },
+
     async setCaseOutcome(user: CrmContext, id: string, outcomeInput: unknown, data: CaseOutcomeInput = {}) {
       const outcome = asText(outcomeInput);
       const { row } = await loadVisibleCase(repo, user, id);
