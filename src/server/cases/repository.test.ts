@@ -6,6 +6,7 @@ import {
   allCasesColumns as sharedAllCasesColumns,
   casesInsertColumns as sharedCasesInsertColumns,
   casesUpdateSetColumns as sharedCasesUpdateSetColumns,
+  insertValueCount as sharedInsertValueCount,
   methodBody as sharedMethodBody,
   migrationAddedCasesColumns as sharedMigrationAddedCasesColumns,
   missingFrom as sharedMissingFrom,
@@ -133,7 +134,7 @@ function allCasesColumns(): string[] {
 }
 
 function missingFrom(statement: string, carried: string[]): string[] {
-  return sharedMissingFrom(migrationsDir, statement, carried);
+  return sharedMissingFrom(migrationsDir, `cases.${statement}`, carried);
 }
 
 /**
@@ -147,6 +148,10 @@ function migrationAddedCasesColumns(): string[] {
 
 function casesInsertColumns(): string[] {
   return sharedCasesInsertColumns(source, 'createCase');
+}
+
+function casesInsertValueCount(): number {
+  return sharedInsertValueCount(source, 'createCase', 'cases');
 }
 
 /**
@@ -188,6 +193,16 @@ describe('cases repository public.cases statements', () => {
   it('createCase writes every public.cases column', () => {
     const missing = missingFrom('createCase', casesInsertColumns());
     expect(missing, `createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  // This only proves the column list and the VALUES tuple are the same length,
+  // not that they are in the same order. Two entries transposed in one list but
+  // not the other (e.g. `source` and `priority` swapped in the column list)
+  // keeps the counts equal, keeps every guard above green, and writes every
+  // value into the wrong column - both are `text`, so Postgres raises nothing.
+  // That transposition risk is not covered by this test.
+  it('createCase supplies exactly one value per inserted column', () => {
+    expect(casesInsertValueCount()).toBe(casesInsertColumns().length);
   });
 
   it('updateCase writes every public.cases column', () => {

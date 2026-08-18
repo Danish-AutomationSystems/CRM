@@ -89,14 +89,28 @@ export function allCasesColumns(migrationsDir: string): string[] {
 /**
  * Columns a given statement is allowed NOT to carry, each with a reason.
  *
+ * Keyed by qualified name (`<repository>.<method>`), not bare method name.
+ * `cases/repository.ts` and `quotes/repository.ts` each carry their own
+ * independent createCase/updateCase/getCase trio against public.cases, with
+ * identically named methods. A bare-name key would let an exemption added to
+ * satisfy one repository's guard silently exempt the same column in the
+ * other's - weakening a guard in a file nobody opened, with no test failing.
+ *
  * Every entry here is a deliberate, reviewed exemption. Adding to this list is
  * how the guard gets weakened, so an entry without a reason is a defect.
  */
 export const CASES_EXEMPT: Record<string, Record<string, string>> = {
   // createCase does not name `version`: the column defaults to 1.
-  createCase: { version: 'defaults to 1 on insert' },
+  'cases.createCase': { version: 'defaults to 1 on insert' },
+  'quotes.createCase': { version: 'defaults to 1 on insert' },
   // updateCase identifies the row by case_id and must never rewrite creation facts.
-  updateCase: {
+  'cases.updateCase': {
+    case_id: 'the WHERE key, never in the SET clause',
+    customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
+    created_by: 'creation fact, immutable',
+    created_at: 'creation fact, immutable'
+  },
+  'quotes.updateCase': {
     case_id: 'the WHERE key, never in the SET clause',
     customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
     created_by: 'creation fact, immutable',
@@ -106,12 +120,14 @@ export const CASES_EXEMPT: Record<string, Record<string, string>> = {
   // never surfaced on CaseRow - CaseDbRow has no `version` field and nothing reads
   // it back. Pre-existing gap, unrelated to priority; discovered while wiring this
   // guard because the column parser correctly includes `version` as a real column.
-  getCase: { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
-  listCases: { version: 'internal optimistic-lock counter, not exposed on CaseRow' }
+  'cases.getCase': { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
+  'quotes.getCase': { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
+  'cases.listCases': { version: 'internal optimistic-lock counter, not exposed on CaseRow' }
 };
 
 export function missingFrom(migrationsDir: string, statement: string, carried: string[]): string[] {
   const exempt = CASES_EXEMPT[statement];
+  if (!exempt) throw new Error(`no CASES_EXEMPT entry for qualified statement "${statement}"`);
   return allCasesColumns(migrationsDir).filter((c) => !carried.includes(c) && !(c in exempt));
 }
 
@@ -141,6 +157,47 @@ export function casesInsertColumns(source: string, methodName: string): string[]
   const match = body.match(/insert into public\.cases \(([^)]*)\)/);
   if (!match) throw new Error(`${methodName} insert column list not found`);
   return match[1].split(',').map((c) => c.trim()).filter(Boolean);
+}
+
+/** Split on commas that are not nested inside parentheses. */
+export function splitTopLevel(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of list) {
+    if (char === '(') depth += 1;
+    if (char === ')') depth -= 1;
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * Counts the values in an INSERT statement's VALUES tuple, paren-aware so that
+ * a nested call like `dbNumber(row.orderValue)` does not get miscounted as two
+ * values. Shared by createCase (here and in quotes/repository.ts) and by
+ * createQuote, all of which previously carried their own copy of this parser.
+ *
+ * This only proves the column list and the values list are the same *length*.
+ * It says nothing about *order* - two adjacent entries transposed in one list
+ * but not the other keeps the counts equal and this check green while every
+ * insert writes each value into the wrong column. That risk is not caught
+ * here; see the callers' comments.
+ */
+export function insertValueCount(source: string, methodName: string, table: string): number {
+  const body = methodBody(source, methodName);
+  const insertAt = body.indexOf(`insert into public.${table}`);
+  if (insertAt === -1) throw new Error(`${methodName} insert into public.${table} not found`);
+  const after = body.slice(insertAt);
+  const match = after.match(/values\s*\(([\s\S]*?)\)\s*`/i);
+  if (!match) throw new Error(`${methodName} values list not found`);
+  return splitTopLevel(match[1]).length;
 }
 
 /**
