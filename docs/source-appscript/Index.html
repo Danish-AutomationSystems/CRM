@@ -1294,11 +1294,6 @@ function saveBulkContacts(custId){
 /* =====================================================================
  * CASES
  * =================================================================== */
-function srcOptions(sel){
-  var html = '<option value="">—</option>';
-  (S.settings.sources||[]).forEach(function(s){ html += '<option'+(s===sel?' selected':'')+'>'+esc(s)+'</option>'; });
-  return html;
-}
 var NEWCASE = { kind:'Lead' };
 function mNewCase(custId){
   NEWCASE = { kind:'Lead' };
@@ -2143,24 +2138,15 @@ function renderAdmin(users, links){
     Object.keys({L1:1,L2:1,L3:1,L4:1,L5:1,L6:1}).map(function(k){ return '<b>'+k+'</b><span class="sub">'+esc(LEVEL_DESC[k])+'</span>'; }).join('')+
     '</div></div>';
 
-  html += '<div class="row"><div class="col"><div class="card"><div class="ovl">Customer locations (geographies)</div>'+
-    '<textarea id="ad_tags" class="listedit" style="min-height:100px">'+esc(S.settings.tags.join('\n'))+'</textarea>'+
-    '<p class="hint">Locations drive access control. Removing a location does not remove it from customers that already have it.</p>'+
-    '<button class="btn sm" onclick="saveSettings({tags:linesOf(\'ad_tags\')})">Save locations</button></div>'+
-    '<div class="card"><div class="ovl">Customer types</div>'+
-    '<textarea id="ad_types" class="listedit" style="min-height:80px">'+esc(S.settings.types.join('\n'))+'</textarea>'+
-    '<button class="btn sm" onclick="saveSettings({types:linesOf(\'ad_types\')})">Save types</button></div>'+
-    '<div class="card"><div class="ovl">Priorities</div>'+
-    '<textarea id="ad_pri" class="listedit" style="min-height:70px">'+esc(S.settings.priorities.join('\n'))+'</textarea>'+
-    '<button class="btn sm" onclick="saveSettings({priorities:linesOf(\'ad_pri\')})">Save priorities</button></div></div>';
+  html += '<div class="row"><div class="col">'+
+    configCard('Customer locations (geographies)', 'TAGS', S.settings.tags, 'Locations drive access control. Removing a location does not remove it from customers that already have it.')+
+    configCard('Customer types', 'TYPES', S.settings.types)+
+    configCard('Priorities', 'PRIORITIES', S.settings.priorities)+
+    '</div>';
 
-  html += '<div class="col"><div class="card"><div class="ovl">Won order categories</div>'+
-    '<textarea id="ad_cats" class="listedit" style="min-height:170px">'+esc(S.settings.categories.join('\n'))+'</textarea>'+
-    '<p class="hint">One per line. Shown as the multi-select when a case is marked Won.</p>'+
-    '<button class="btn sm" onclick="saveSettings({categories:linesOf(\'ad_cats\')})">Save categories</button></div>'+
-    '<div class="card"><div class="ovl">Case sources</div>'+
-    '<textarea id="ad_sources" class="listedit" style="min-height:90px">'+esc(S.settings.sources.join('\n'))+'</textarea>'+
-    '<button class="btn sm" onclick="saveSettings({sources:linesOf(\'ad_sources\')})">Save sources</button></div>'+
+  html += '<div class="col">'+
+    configCard('Won order categories', 'CATEGORIES', S.settings.categories, 'One per line. Shown as the multi-select when a case is marked Won.')+
+    configCard('SEI names', 'SEI_NAMES', S.settings.seiNames)+
     '<div class="card"><div class="ovl">Defaults</div>'+
     '<div class="frow"><div><label>GST %</label><input id="ad_tax" type="number" value="'+esc(S.settings.taxPct)+'"></div>'+
     '<div><label>Currency</label><input id="ad_cur" value="'+esc(S.settings.currency)+'"></div></div>'+
@@ -2192,7 +2178,37 @@ function renderAdmin(users, links){
   el('admBody').innerHTML = html;
   loadRecycle();
 }
-function linesOf(id){ return el(id).value.split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean); }
+function configCard(title, key, items, hint){
+  var rows = (items||[]).map(function(item){
+    return '<div class="qr"><div style="flex:1">'+esc(item)+'</div>'+
+      '<button class="btn lk" onclick="cfgRename(\''+key+'\',\''+esc(item)+'\')">edit</button> · '+
+      '<button class="btn lk" onclick="cfgDelete(\''+key+'\',\''+esc(item)+'\')">delete</button></div>';
+  }).join('') || '<div class="empty">Nothing configured yet.</div>';
+  return '<div class="card"><div class="ovl">'+esc(title)+'</div>'+rows+
+    (hint?'<p class="hint">'+esc(hint)+'</p>':'')+
+    '<div class="frow" style="margin-top:10px"><div style="flex:1"><input id="cfg_'+key+'"></div>'+
+    '<div style="display:flex;align-items:flex-end"><button class="btn sm" onclick="cfgAdd(\''+key+'\')">Add</button></div></div></div>';
+}
+function cfgAdd(key){
+  var val = v('cfg_'+key);
+  if(!val){ toast('Enter a value.', true); return; }
+  gs('api_admin_addConfigItem', key, val).then(afterConfigChange).catch(oops);
+}
+function cfgDelete(key, item){
+  gs('api_admin_deleteConfigItem', key, item).then(afterConfigChange).catch(oops);
+}
+function cfgRename(key, item){
+  var next = prompt('Rename "'+item+'" to:', item);
+  if(next===null) return;
+  next = String(next).trim();
+  if(!next || next===item) return;
+  gs('api_admin_renameConfigItem', key, item, next).then(afterConfigChange).catch(oops);
+}
+function afterConfigChange(){
+  toast('Saved.');
+  cacheBust();
+  gs('api_bootstrap').then(function(b){ S.settings = b.settings; vAdmin(); }).catch(oops);
+}
 function loadRecycle(){
   if(!el('recycleBin')) return;
   gs('api_admin_listRecycle').then(renderRecycle).catch(function(e){ if(el('recycleBin')) el('recycleBin').innerHTML='<div class="empty">'+esc(errMsg(e))+'</div>'; });
