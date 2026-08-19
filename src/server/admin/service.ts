@@ -639,15 +639,19 @@ export function createAdminService(repo: AdminRepository) {
       const listKey = configKey(key);
       const item = configValue(value);
 
-      const settings = await loadSettings(repo);
-      const current = listForKey(settings, listKey);
-      if (current.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
-        throw new Error(`"${item}" already exists.`);
-      }
-      const next = [...current, item];
-
+      // Read inside the transaction (as runImport does, service.ts's runImport
+      // below), not before it: an outer read races a concurrent admin's write,
+      // and the loser's stale list clobbers the winner's change when it is
+      // written back. See Important 2 in the task-5 code review.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        if (current.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
+          throw new Error(`"${item}" already exists.`);
+        }
+        const next = [...current, item];
+
         await trx.setSetting(listKey, joinPipe(next));
         await trx.logActivity({
           action: 'CONFIG_ADD',
@@ -667,15 +671,16 @@ export function createAdminService(repo: AdminRepository) {
       const listKey = configKey(key);
       const item = reservedConfigValue(asText(value).trim());
 
-      const settings = await loadSettings(repo);
-      const current = listForKey(settings, listKey);
-      const next = current.filter((existing) => existing !== item);
-      if (listKey === 'TAGS' && next.length === 0) {
-        throw new Error('Keep at least one tag.');
-      }
-
+      // Read inside the transaction; see addConfigItem above.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        const next = current.filter((existing) => existing !== item);
+        if (listKey === 'TAGS' && next.length === 0) {
+          throw new Error('Keep at least one tag.');
+        }
+
         await trx.setSetting(listKey, joinPipe(next));
         await trx.logActivity({
           action: 'CONFIG_DELETE',
@@ -717,18 +722,19 @@ export function createAdminService(repo: AdminRepository) {
       reservedConfigValue(from);
       const to = configValue(newValue);
 
-      const settings = await loadSettings(repo);
-      const current = listForKey(settings, listKey);
-      if (!current.includes(from)) {
-        throw new Error(`"${from}" was not found in that list.`);
-      }
-      if (current.some((existing) => existing.toLowerCase() === to.toLowerCase())) {
-        throw new Error(`"${to}" already exists.`);
-      }
-      const next = current.map((existing) => (existing === from ? to : existing));
-
+      // Read inside the transaction; see addConfigItem above.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        if (!current.includes(from)) {
+          throw new Error(`"${from}" was not found in that list.`);
+        }
+        if (current.some((existing) => existing !== from && existing.toLowerCase() === to.toLowerCase())) {
+          throw new Error(`"${to}" already exists.`);
+        }
+        const next = current.map((existing) => (existing === from ? to : existing));
+
         for (const target of RENAME_TARGETS[listKey]) {
           await trx.renameConfigValue(target, from, to);
         }
@@ -1054,6 +1060,14 @@ export class PostgresAdminRepository implements AdminRepository {
     // format. A plain string replace is the other wrong answer: the live category
     // list holds both 'Other' and 'Others', and 'Panels' beside 'Switchgear'.
     //
+    // btrim(part, E' \t\r\n') rather than one-argument btrim(part): the single-arg
+    // form strips ASCII spaces only, while parsePipe's JS .trim() (domain/lists.ts:16)
+    // also strips tabs, CRs and newlines. A hand-edited row or a legacy import can
+    // hold a tab beside a separator - not reachable from joinPipe, but reachable
+    // from stored data - and without the matching character set here, this SQL and
+    // the renamePipe reference function (settings/config-targets.ts) would disagree
+    // about whether a rewrite happened at all.
+    //
     // `with ordinality` plus `order by` is load-bearing: string_agg over an unnest
     // has no guaranteed input order, so without it a category list would silently
     // reshuffle on every rename.
@@ -1062,17 +1076,17 @@ export class PostgresAdminRepository implements AdminRepository {
       set ${column} = (
         select coalesce(
           string_agg(
-            case when btrim(part) = ${oldValue} then ${newValue} else btrim(part) end,
+            case when btrim(part, E' \t\r\n') = ${oldValue} then ${newValue} else btrim(part, E' \t\r\n') end,
             ' | '
             order by position
           ),
           ''
         )
         from unnest(string_to_array(${column}, '|')) with ordinality as element(part, position)
-        where btrim(part) <> ''
+        where btrim(part, E' \t\r\n') <> ''
       )
       where ${oldValue} = any(
-        select btrim(part) from unnest(string_to_array(${column}, '|')) as part
+        select btrim(part, E' \t\r\n') from unnest(string_to_array(${column}, '|')) as part
       )
     `;
   }

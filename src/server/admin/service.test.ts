@@ -745,6 +745,44 @@ describe('admin service config items', () => {
 
     expect(repo.logs.map((log) => log.action)).toEqual(['CONFIG_ADD', 'CONFIG_DELETE']);
   });
+
+  /**
+   * Stands in for a second admin's transaction committing in the gap between
+   * this request's pre-check read and the point where its own transaction
+   * begins. If the service reads settings before withTransaction, it works
+   * from the stale list and its write clobbers the concurrent change; if it
+   * reads from inside the transaction (as runImport already does), it works
+   * from the fresh list and both changes survive.
+   */
+  class RacyFakeAdminRepository extends FakeAdminRepository {
+    concurrentSettings: SettingRow[] = [];
+    async withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T> {
+      this.settings = this.concurrentSettings;
+      return super.withTransaction(fn);
+    }
+  }
+
+  it('addConfigItem reads settings inside the transaction, so a concurrent add is not lost', async () => {
+    const repo = new RacyFakeAdminRepository();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha | Beta' }];
+    repo.concurrentSettings = [{ key: 'TYPES', value: 'Alpha | Beta | Gamma' }];
+    const service = createAdminService(repo);
+
+    await service.addConfigItem(admin, 'TYPES', 'Delta');
+
+    expect(repo.settings).toContainEqual({ key: 'TYPES', value: 'Alpha | Beta | Gamma | Delta' });
+  });
+
+  it('deleteConfigItem reads settings inside the transaction, so a concurrent add is not lost', async () => {
+    const repo = new RacyFakeAdminRepository();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha | Beta' }];
+    repo.concurrentSettings = [{ key: 'TYPES', value: 'Alpha | Beta | Gamma' }];
+    const service = createAdminService(repo);
+
+    await service.deleteConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.settings).toContainEqual({ key: 'TYPES', value: 'Alpha | Gamma' });
+  });
 });
 
 describe('admin service config rename', () => {
@@ -907,6 +945,28 @@ describe('admin service config rename', () => {
     expect(repo.renames).toEqual([]);
   });
 
+  it('allows a case-only rename of a value onto itself', async () => {
+    // The naive collision check compares the whole list case-insensitively,
+    // which finds the row being renamed and rejects every case fix. Excluding
+    // `from` from the check is what makes this possible at all - the only other
+    // way to fix a location's capitalisation is delete-then-add, which drops
+    // every customer holding it and every user granted it.
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'punjab | NCR' }];
+
+    await service.renameConfigItem(admin, 'TAGS', 'punjab', 'Punjab');
+
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'Punjab | NCR' });
+  });
+
+  it('still refuses a genuine collision after allowing case-only renames', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'punjab', 'NCR')).rejects.toThrow(/already/i);
+    expect(repo.renames).toEqual([]);
+  });
+
   it('refuses to rename a value that is not in the list', async () => {
     const { repo, service } = makeService();
     repo.settings = [{ key: 'TAGS', value: 'Punjab' }];
@@ -1017,6 +1077,28 @@ describe('admin service config rename', () => {
     repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
 
     await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', '   ')).rejects.toThrow();
+  });
+
+  it('reads settings inside the transaction, so a concurrent add is not lost', async () => {
+    // Stands in for a second admin's transaction committing in the gap between
+    // this request's pre-check read and the point where its own transaction
+    // begins. A stale outer read would rewrite the settings row back to a list
+    // missing 'Kerala', losing it silently.
+    class RacyFakeAdminRepository extends FakeAdminRepository {
+      concurrentSettings: SettingRow[] = [];
+      async withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T> {
+        this.settings = this.concurrentSettings;
+        return super.withTransaction(fn);
+      }
+    }
+    const repo = new RacyFakeAdminRepository();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+    repo.concurrentSettings = [{ key: 'TAGS', value: 'Punjab | NCR | Kerala' }];
+    const service = createAdminService(repo);
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'PUN | NCR | Kerala' });
   });
 });
 

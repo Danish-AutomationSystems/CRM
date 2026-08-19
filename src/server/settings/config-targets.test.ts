@@ -53,6 +53,57 @@ function derivedSchema(): Map<string, Set<string>> {
   return tables;
 }
 
+/**
+ * The `text` vs `text[]` shape of each column, as the migrations actually leave
+ * it - so a RENAME_TARGETS entry can be checked against the real column type,
+ * not just its existence.
+ *
+ * customers.sei and recycle_bin.sei are `text` in the initial CREATE TABLE and
+ * become `text[]` only via 0008_customer_sei_multi_select.sql's `alter column
+ * ... type text[]`; reading only the CREATE TABLE would report them as scalar
+ * and miss exactly the kind of drift this derivation exists to catch.
+ */
+function derivedColumnTypes(): Map<string, 'array' | 'text' | 'other'> {
+  const files = fs
+    .readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith('.sql'))
+    .sort();
+  const sql = files.map((name) => fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8')).join('\n');
+
+  const types = new Map<string, 'array' | 'text' | 'other'>();
+  const typeOf = (raw: string): 'array' | 'text' | 'other' =>
+    raw === 'text[]' ? 'array' : raw === 'text' ? 'text' : 'other';
+
+  const NOT_A_COLUMN = /^(constraint|primary|unique|check|foreign|exclude|like)$/;
+
+  const createTable = /create\s+table\s+(?:if\s+not\s+exists\s+)?public\.(\w+)\s*\(([\s\S]*?)\n\);/g;
+  for (const match of sql.matchAll(createTable)) {
+    const table = match[1];
+    for (const line of match[2].split('\n')) {
+      const column = /^ {2}(\w+)\s+(text\[\]|text|\S+)/.exec(line);
+      if (column && !NOT_A_COLUMN.test(column[1])) {
+        types.set(`${table}.${column[1]}`, typeOf(column[2]));
+      }
+    }
+  }
+
+  const addColumn =
+    /alter\s+table\s+(?:only\s+)?public\.(\w+)\s+add\s+column\s+(?:if\s+not\s+exists\s+)?(\w+)\s+(text\[\]|text|\S+)/gi;
+  for (const match of sql.matchAll(addColumn)) {
+    types.set(`${match[1]}.${match[2]}`, typeOf(match[3]));
+  }
+
+  // A later `alter column ... type` overrides whatever CREATE TABLE or a
+  // previous ADD COLUMN said, exactly as it does in Postgres.
+  const alterType =
+    /alter\s+table\s+(?:only\s+)?public\.(\w+)\s+alter\s+column\s+(\w+)\s+type\s+(text\[\]|text|\S+)/gi;
+  for (const match of sql.matchAll(alterType)) {
+    types.set(`${match[1]}.${match[2]}`, typeOf(match[3]));
+  }
+
+  return types;
+}
+
 describe('rename targets', () => {
   it('names only tables and columns that exist', () => {
     const schema = derivedSchema();
@@ -93,6 +144,53 @@ describe('rename targets', () => {
     // A scalar rewrite would replace substrings: the live list has both
     // 'Other' and 'Others', and 'Panels' alongside 'Switchgear'.
     expect(RENAME_TARGETS.CATEGORIES[0].kind).toBe('pipe');
+  });
+
+  it('derives sei as text[] only after the 0008 multi-select migration, not from the initial schema alone', () => {
+    // Guards derivedColumnTypes itself: customers.sei is `text` in
+    // 0001_initial_schema.sql and only becomes `text[]` via 0008's
+    // `alter column sei type text[]`. Stopping at CREATE TABLE would call it
+    // scalar and defeat the type check below.
+    const types = derivedColumnTypes();
+
+    expect(types.get('customers.sei')).toBe('array');
+    expect(types.get('recycle_bin.sei')).toBe('array');
+  });
+
+  it('maps every kind: array target to an actual text[] column', () => {
+    // An `array` target on a plain `text` column passes the map test (the
+    // column exists) and then fails at runtime with
+    // "function array_replace(text, text, text) does not exist" mid-transaction,
+    // during a rename. The rollback makes it loud rather than silent, but it is
+    // avoidable: the derivation already parses each column's declared type.
+    const types = derivedColumnTypes();
+
+    for (const targets of Object.values(RENAME_TARGETS)) {
+      for (const target of targets) {
+        if (target.kind !== 'array') continue;
+        expect(
+          types.get(`${target.table}.${target.column}`),
+          `${target.table}.${target.column} is kind: 'array' but is not a text[] column`
+        ).toBe('array');
+      }
+    }
+  });
+
+  it('maps every kind: scalar or pipe target to a plain text column, not text[]', () => {
+    // The inverse mistake: a scalar/pipe target on a text[] column would fail
+    // string_to_array/string_agg (pipe) or the plain `=` comparison (scalar) at
+    // runtime instead of at CREATE-TABLE-derivation time.
+    const types = derivedColumnTypes();
+
+    for (const targets of Object.values(RENAME_TARGETS)) {
+      for (const target of targets) {
+        if (target.kind === 'array') continue;
+        expect(
+          types.get(`${target.table}.${target.column}`),
+          `${target.table}.${target.column} is kind: '${target.kind}' but is a text[] column`
+        ).toBe('text');
+      }
+    }
   });
 });
 
@@ -143,6 +241,15 @@ describe('rename semantics', () => {
     expect(renamePipe('VFDs |  | PLC', 'PLC', 'PLCs')).toBe('VFDs | PLCs');
     expect(renamePipe('', 'PLC', 'PLCs')).toBe('');
   });
+
+  it('matches a pipe element with a tab beside the separator, not just a space', () => {
+    // Only reachable from data not written by joinPipe (which always writes
+    // ' | ') - a hand-edited row or a legacy import. parsePipe's JS .trim()
+    // strips tabs; the SQL btrim must strip the same characters or it silently
+    // disagrees with this reference function about whether anything changed.
+    expect(renamePipe('VFDs\t|\tPLC', 'PLC', 'PLCs')).toBe('VFDs | PLCs');
+    expect(renamePipe('VFDs |\nPLC', 'PLC', 'PLCs')).toBe('VFDs | PLCs');
+  });
 });
 
 /**
@@ -178,7 +285,27 @@ describe('the SQL that implements a rename', () => {
   });
 
   it('compares pipe elements after btrim, since the stored format has spaces', () => {
-    expect(body).toContain('btrim(part) = ${oldValue}');
+    expect(body).toContain('btrim(part, E\' \\t\\r\\n\') = ${oldValue}');
+  });
+
+  it('btrim strips tabs, carriage returns and newlines, not just ASCII spaces', () => {
+    // One-argument btrim(part) strips ASCII spaces only. parsePipe's JS .trim()
+    // (domain/lists.ts:16) also strips tabs, CRs and newlines, so a hand-edited
+    // or legacy-imported row with a tab beside a separator would let the SQL and
+    // the JS reference function (renamePipe, used by the fake repo in the
+    // service tests) disagree about whether a rewrite happened at all.
+    // Scoped to the SQL template literals only, so the word "btrim(part)" inside
+    // the surrounding explanatory comment does not get mistaken for SQL.
+    const sqlBlocks = [...body.matchAll(/this\.db`([\s\S]*?)`/g)].map((match) => match[1]);
+    expect(sqlBlocks.length).toBeGreaterThan(0);
+    const btrimCalls = sqlBlocks
+      .join('\n')
+      .matchAll(/btrim\(([^)]*)\)/g);
+    const calls = [...btrimCalls].map((match) => match[1]);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const args of calls) {
+      expect(args, `btrim(${args}) does not strip tabs/CR/LF`).toContain("E' \\t\\r\\n'");
+    }
   });
 
   it('keeps pipe elements in order when it re-joins them', () => {
