@@ -281,6 +281,13 @@ export class PostgresQuoteRepository implements QuoteRepository {
     await this.db`select pg_advisory_xact_lock(hashtext(${quoteFamilyLockKey(quoteNo)}))`;
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return (await this.db`
+      select key, value
+      from public.settings
+    `) as Array<{ key: string; value: string }>;
+  }
+
   async nextQuoteNo(): Promise<string> {
     const format = CRM_ID_FORMATS.quotations;
     return nextCrmId(this.db, format.key, format.prefix, format.width, new Date().getFullYear());

@@ -20,6 +20,21 @@ export function registerAdminRpcs(registry: Pick<RpcRegistry, 'registerRpc'>, ad
   });
   registry.registerRpc('api_admin_listRecycle', ({ context }) => adminService.listRecycle(context));
   registry.registerRpc(
+    'api_admin_addConfigItem',
+    ({ args, context }) => adminService.addConfigItem(context, args[0], args[1]),
+    { read: false }
+  );
+  registry.registerRpc(
+    'api_admin_deleteConfigItem',
+    ({ args, context }) => adminService.deleteConfigItem(context, args[0], args[1]),
+    { read: false }
+  );
+  registry.registerRpc(
+    'api_admin_renameConfigItem',
+    ({ args, context }) => adminService.renameConfigItem(context, args[0], args[1], args[2]),
+    { read: false }
+  );
+  registry.registerRpc(
     'api_admin_restoreCustomer',
     ({ args, context }) => adminService.restoreCustomer(context, String(args[0] ?? '')),
     { read: false }

@@ -28,11 +28,16 @@ class FakeQuoteRepository implements QuoteRepository {
   contacts: Array<{ name: string; designation: string }> = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   lockedQuoteFamilies: string[] = [];
+  settings: Array<{ key: string; value: string }> = [];
   quoteSeq = 1;
   caseSeq = 2;
 
   async withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return this.settings;
   }
 
   async lockQuoteFamily(quoteNo: string): Promise<void> {
@@ -791,6 +796,18 @@ describe('quote reads and direct download metadata', () => {
     ]);
   });
 
+  it('renders the download artifact with the live company name, not the hardcoded default', async () => {
+    const { repo, service } = makeService();
+    repo.quotes = [makeQuote()];
+    repo.blocks = [{ quoteNo: 'QTN-2026-0001', rev: 0, block: 1, title: 'BOQ', headers: ['Item'], rows: [['Panel']] }];
+    repo.settings = [{ key: 'COMPANY', value: 'Renamed Company Pvt Ltd' }];
+
+    const artifact = await service.getDownloadArtifact(sales, 'QTN-2026-0001', 0);
+
+    expect(artifact.body).toContain('Renamed Company Pvt Ltd');
+    expect(artifact.body).not.toContain('Automation Systems NG Pvt Ltd');
+  });
+
   it('enforces full customer access before rendering a download artifact', async () => {
     const { repo, service } = makeService();
     repo.quotes = [makeQuote()];
@@ -976,6 +993,24 @@ describe('generateQuoteDoc', () => {
     repo.quotes.push(makeQuote({ source: 'External', fileName: 'vendor-quote.pdf' }));
 
     await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('uploaded as an external file');
+  });
+
+  it('merges {{COMPANY}} from live settings, not the hardcoded default, so a renamed company reaches the document', async () => {
+    const { docsClient, deps } = makeClients();
+    const { repo, service } = makeService(deps);
+    seedGenerated(repo);
+    repo.settings.push({ key: 'COMPANY', value: 'Renamed Company Pvt Ltd' });
+
+    await service.generateQuoteDoc(sales, 'QTN-2026-0001', 0);
+
+    const mergeRequests = docsClient.batchUpdate.mock.calls[0][1];
+    const replaced = Object.fromEntries(
+      mergeRequests.map((r: { replaceAllText: { containsText: { text: string }; replaceText: string } }) => [
+        r.replaceAllText.containsText.text,
+        r.replaceAllText.replaceText
+      ])
+    );
+    expect(replaced['{{COMPANY}}']).toBe('Renamed Company Pvt Ltd');
   });
 
   it('refuses to generate when the quote has no template selected', async () => {

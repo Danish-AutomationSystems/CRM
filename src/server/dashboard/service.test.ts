@@ -170,6 +170,10 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
     return this.settingRows[key] ?? null;
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return Object.entries(this.settingRows).map(([key, value]) => ({ key, value }));
+  }
+
   async listUsers(): Promise<UserRow[]> {
     return this.users;
   }
@@ -531,6 +535,33 @@ describe('dashboard service', () => {
 
     expect(boot.settings.tags).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other']);
     expect(boot.settings.tags).not.toContain('TO BE FILLED');
+  });
+
+  it('serves the stored config lists, not the hardcoded defaults', async () => {
+    const { repo, dashboard } = makeService();
+    repo.settingRows = { TYPES: 'Alpha | Beta', PRIORITIES: 'Urgent | Routine' };
+
+    const boot = await dashboard.bootstrap(sales);
+
+    expect(boot.settings.types).toEqual(['Alpha', 'Beta']);
+    expect(boot.settings.priorities).toEqual(['Urgent', 'Routine']);
+  });
+
+  it('never offers the location backfill placeholder', async () => {
+    const { repo, dashboard } = makeService();
+    repo.settingRows = { TAGS: 'Punjab | TO BE FILLED | NCR' };
+
+    const boot = await dashboard.bootstrap(sales);
+
+    expect(boot.settings.tags).toEqual(['Punjab', 'NCR']);
+  });
+
+  it('no longer sends case sources, which nothing consumes', async () => {
+    const { dashboard } = makeService();
+
+    const boot = await dashboard.bootstrap(sales);
+
+    expect('sources' in boot.settings).toBe(false);
   });
 
   it('P9: offers Direct in the dashboard picker for L4+ only, flagged as having no login', async () => {

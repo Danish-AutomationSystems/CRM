@@ -224,6 +224,10 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
     row.extraOwners = extraOwners;
   }
 
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return Object.entries(this.settingRows).map(([key, value]) => ({ key, value }));
+  }
+
   async getSetting(key: string): Promise<string | null> {
     return this.settingRows[key] ?? null;
   }

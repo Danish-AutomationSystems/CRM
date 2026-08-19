@@ -2,6 +2,7 @@ import type { CrmContext } from '../auth/context';
 import { ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
+import { loadSettings } from '../settings/live';
 import { normalizeEmail } from '../domain/lists';
 import { renderQuoteHtml, safeQuoteFileName, type QuoteDownloadArtifact } from './render';
 import type { DriveClient } from '../drive/client';
@@ -119,6 +120,7 @@ export type QuoteActivityLogEntry = {
 
 export type QuoteRepository = {
   withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T>;
+  listSettings(): Promise<Array<{ key: string; value: string }>>;
   lockQuoteFamily(quoteNo: string): Promise<void>;
   nextQuoteNo(): Promise<string>;
   nextCaseId(): Promise<string>;
@@ -213,8 +215,8 @@ function nonnegativeNumber(value: unknown, fallback = 0): number {
   return roundedMoney(numeric);
 }
 
-function taxPercent(value: unknown): number {
-  if (value === '' || value === undefined || value === null) return DEFAULT_SETTINGS.TAX_PCT;
+function taxPercent(value: unknown, fallback: number = DEFAULT_SETTINGS.TAX_PCT): number {
+  if (value === '' || value === undefined || value === null) return fallback;
   return nonnegativeNumber(value, 0);
 }
 
@@ -441,12 +443,15 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       requireLevel(user, 2);
       const customerId = asText(input.customerId);
       const { customer } = await ensureFullCustomer(repo, user, customerId);
+      // Fallback only - the client always sends live tax/currency values from
+      // bootstrap(), so these matter only when the client omits them.
+      const live = await loadSettings(repo);
       const blocks = cleanBoqBlocks(input.blocks);
       const subtotal = nonnegativeNumber(input.subtotal, 0);
-      const taxPct = taxPercent(input.taxPct);
+      const taxPct = taxPercent(input.taxPct, live.taxPct);
       const taxAmount = roundedMoney((subtotal * taxPct) / 100);
       const total = roundedMoney(subtotal + taxAmount);
-      const currency = asText(input.currency) || DEFAULT_SETTINGS.CURRENCY;
+      const currency = asText(input.currency) || live.currency;
       const title = asText(input.title) || `Quotation for ${customer.name}`;
       const templates = await loadTemplates();
       const templateId = asText(input.templateId);
@@ -533,7 +538,8 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const title = asText(input.title) || `Quotation for ${customer.name}`;
       const status = quoteStatus(input.status, 'Sent');
       const total = nonnegativeNumber(input.total, 0);
-      const currency = asText(input.currency) || DEFAULT_SETTINGS.CURRENCY;
+      // Fallback only - the client always sends a live currency from bootstrap().
+      const currency = asText(input.currency) || (await loadSettings(repo)).currency;
       const fileName = cleanUploadFileName(input.fileName);
       const uploadMimeType = cleanMimeType(input.mimeType);
 
@@ -730,10 +736,11 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         throw new Error('Google Drive is not configured. Run the one-time Drive setup first.');
       }
 
-      const [blocks, contacts, users] = await Promise.all([
+      const [blocks, contacts, users, live] = await Promise.all([
         repo.listBoqBlocks(quoteNo, rev),
         repo.listContacts(quote.customerId),
-        repo.listUsers()
+        repo.listUsers(),
+        loadSettings(repo)
       ]);
       const idx = userIndex(users);
       const contact = contacts[0];
@@ -764,7 +771,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
           '{{TAX_AMOUNT}}': fmtMoney(quote.taxAmount),
           '{{TOTAL}}': fmtMoney(quote.total),
           '{{CURRENCY}}': quote.currency,
-          '{{COMPANY}}': DEFAULT_SETTINGS.COMPANY,
+          '{{COMPANY}}': live.company,
           '{{PREPARED_BY}}': `${nameOf(idx, quote.createdBy)} (${normalizeEmail(quote.createdBy)})`
         })
       );
@@ -829,13 +836,17 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       const { quote, customer } = await loadQuote(repo, user, quoteNo, rev);
       if (quote.source === 'External') return externalArtifact(quote);
 
-      const [blocks, users] = await Promise.all([repo.listBoqBlocks(quoteNo, rev), repo.listUsers()]);
+      const [blocks, users, live] = await Promise.all([
+        repo.listBoqBlocks(quoteNo, rev),
+        repo.listUsers(),
+        loadSettings(repo)
+      ]);
       const idx = userIndex(users);
       return {
         fileName: safeQuoteFileName(quote.quoteNo, quote.rev, customer.name),
         mimeType: 'text/html; charset=utf-8',
         body: renderQuoteHtml({
-          company: DEFAULT_SETTINGS.COMPANY,
+          company: live.company,
           preparedBy: `${nameOf(idx, quote.createdBy)} (${normalizeEmail(quote.createdBy)})`,
           generatedOn: today(),
           quote,

@@ -106,6 +106,19 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     else this.settings.push({ key, value });
   }
 
+  async lockSetting(key: SettingRow['key']): Promise<string | null> {
+    return this.settings.find((setting) => setting.key === key)?.value ?? null;
+  }
+
+  /**
+   * These integration flows never rename a config value, so there is nothing to
+   * rewrite here. Modelling it faithfully would need generic per-table row storage
+   * this fake does not have; the column-level model lives in the admin service
+   * tests, where rename is actually exercised. If a flow here ever starts renaming,
+   * this must stop being a no-op or the flow will silently prove nothing.
+   */
+  async renameConfigValue(): Promise<void> {}
+
   async nextCustomerId(): Promise<string> {
     return `CUST-${String(this.customerSeq++).padStart(4, '0')}`;
   }

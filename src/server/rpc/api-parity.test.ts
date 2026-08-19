@@ -36,7 +36,14 @@ describe('Apps Script API parity', () => {
 
     // Capabilities added after the migration that never existed in the
     // legacy Apps Script server - not expected to appear in Code.gs.
-    const intentionallyNew = ['api_saveQuotationToDrive', 'api_beginAttachmentUpload', 'api_setCasePriority'];
+    const intentionallyNew = [
+      'api_saveQuotationToDrive',
+      'api_beginAttachmentUpload',
+      'api_setCasePriority',
+      'api_admin_addConfigItem',
+      'api_admin_deleteConfigItem',
+      'api_admin_renameConfigItem',
+    ];
     const legacyUiApis = uiApis.filter((api) => !intentionallyNew.includes(api));
 
     expect(uiApis.length).toBeGreaterThan(0);

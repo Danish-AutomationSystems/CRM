@@ -29,6 +29,8 @@ class FakeCustomerRepository implements CustomerRepository {
   caseOwnerRows: CaseOwnerRow[] = [];
   caseWrites: Array<{ caseId: string; extraOwners: string[] }> = [];
   settings: Record<string, string> = {};
+  getSettingCalls = 0;
+  listSettingsCalls = 0;
   recycleBin: CustomerRow[] = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
   nextCustomer = 1;
@@ -152,7 +154,13 @@ class FakeCustomerRepository implements CustomerRepository {
   }
 
   async getSetting(key: string): Promise<string | null> {
+    this.getSettingCalls++;
     return this.settings[key] ?? null;
+  }
+
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    this.listSettingsCalls++;
+    return Object.entries(this.settings).map(([key, value]) => ({ key, value }));
   }
 
   async listUsers(): Promise<UserRow[]> {
@@ -377,6 +385,115 @@ describe('customer service mutations', () => {
     expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['NCR'] });
   });
 
+  it('serves the customer page location list from live settings, not the hardcoded default TAGS', async () => {
+    // This is the shape of the original settings-drift bug: customerMeta must read
+    // TAGS live, not via SELECTABLE_TAGS (DEFAULT_SETTINGS.TAGS filtered, computed
+    // once at import time). If it read the derived constant instead, this would
+    // still return the DEFAULT_SETTINGS order ['Punjab', 'Chandigarh', 'NCR', 'Geo',
+    // 'Other'] no matter what is stored, and this assertion would fail.
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+
+    const grid = await service.myCustomers(baseUser);
+
+    expect(grid.tags).toEqual(['NCR', 'Chandigarh']);
+  });
+
+  it('validates a customer type against the stored list, not the hardcoded defaults', async () => {
+    const { repo, service } = makeService();
+    repo.settings = { TYPES: 'Alpha | Beta' };
+
+    await service.createCustomer(baseUser, { name: 'Live Co', tags: ['Punjab'], type: 'Alpha' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ type: 'Alpha' });
+  });
+
+  it('keeps a retired location when the edit form resubmits it unchanged', async () => {
+    // The customer edit modal submits EVERY field, including ones the user did not
+    // touch. Before this, an admin retiring Punjab made every Punjab customer
+    // uneditable: requiredTags stripped it, the list came back empty, and the save
+    // was rejected with "Pick at least one location".
+    const { repo, service } = makeService();
+    repo.customers = [customer({ tags: ['Punjab'] })];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await service.updateCustomer(l3, 'CUST-0001', { tags: ['Punjab'], area: 'Mohali' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'], area: 'Mohali' });
+  });
+
+  it('keeps a retired type and priority when the edit form resubmits them', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ type: 'OEM', priority: 'High' })];
+    repo.settings = { TYPES: 'Alpha', PRIORITIES: 'Urgent' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await service.updateCustomer(l3, 'CUST-0001', { type: 'OEM', priority: 'High' });
+
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ type: 'OEM', priority: 'High' });
+  });
+
+  it('still refuses a value that is neither configured nor already stored', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ tags: ['Punjab'] })];
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+    const l3: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+    repo.handlers = [{ customerId: 'CUST-0001', email: l3.email, assignedBy: l3.email, assignedAt: 'now' }];
+
+    await expect(service.updateCustomer(l3, 'CUST-0001', { tags: ['Atlantis'] })).rejects.toThrow(
+      /at least one location/i
+    );
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['Punjab'] });
+  });
+
+  it('does not let a NEW customer use a retired location', async () => {
+    // Creation paths pass no stored value, so retired options stay unavailable.
+    const { repo, service } = makeService();
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+
+    await expect(
+      service.createCustomer(baseUser, { name: 'Fresh Co', tags: ['Punjab'] })
+    ).rejects.toThrow(/at least one location/i);
+  });
+
+  it.each([
+    ['type', 'OEM', { TYPES: 'Alpha | Beta' }, 'type'],
+    ['priority', 'High', { PRIORITIES: 'Urgent | Routine' }, 'priority']
+  ] as const)('does not let a NEW customer use a retired %s', async (_label, submitted, settings, field) => {
+    // Creation paths pass no stored value, so a retired value falls back to '' -
+    // validOne does not throw on create paths, unlike requiredTags for location.
+    const { repo, service } = makeService();
+    repo.settings = settings;
+
+    const created = await service.createCustomer(baseUser, {
+      name: 'Fresh Co',
+      tags: ['Punjab'],
+      [field]: submitted
+    });
+
+    expect(await repo.getCustomer(created.id)).toMatchObject({ [field]: '' });
+  });
+
+  it('does not let a bulk-imported customer use a retired tag, type or priority', async () => {
+    // bulkCustomers reads settings once for the whole batch and passes no `stored`
+    // to validTags/validOne anywhere below - creation path, so a retired value must
+    // not survive the import.
+    const { repo, service } = makeService();
+    repo.settings = { TAGS: 'NCR | Chandigarh', TYPES: 'Alpha', PRIORITIES: 'Urgent' };
+
+    const result = await service.bulkCustomers(baseUser, [
+      { name: 'Bulk Co', tag: 'Punjab', type: 'OEM', priority: 'High', area: 'Delhi' }
+    ]);
+
+    expect(result).toEqual({ created: 1, skipped: [] });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: [], type: '', priority: '' });
+  });
+
   it('P7: TO BE FILLED survives a save round-trip but is never offered as a choice', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer({ tags: ['TO BE FILLED'] })];
@@ -519,6 +636,32 @@ describe('customer service mutations', () => {
       failed: [{ id: 'CUST-0002', error: 'Tags, type and archive status can only be changed at L3 or higher.' }]
     });
     expect(await repo.getCustomer('CUST-0001')).toMatchObject({ area: 'Mohali', priority: 'Medium' });
+  });
+
+  it('loads settings once for a whole grid save, not once per patch', async () => {
+    // live.ts documents loadSettings/getSetting as "cached per request by the
+    // caller". saveCustomerCells previously called updateCustomer once per patch,
+    // each of which reloaded settings and the SEI list independently - a 100-row
+    // grid save issued 100 settings reads plus 100 SEI reads.
+    const { repo, service } = makeService();
+    repo.customers = Array.from({ length: 5 }, (_, index) =>
+      customer({ id: `CUST-${String(index + 1).padStart(4, '0')}`, name: `Row ${index}` })
+    );
+    repo.handlers = repo.customers.map((row) => ({
+      customerId: row.id,
+      email: baseUser.email,
+      assignedBy: baseUser.email,
+      assignedAt: 'now'
+    }));
+
+    const result = await service.saveCustomerCells(
+      baseUser,
+      repo.customers.map((row) => ({ id: row.id, fields: { area: 'Mohali' } }))
+    );
+
+    expect(result.saved).toHaveLength(5);
+    expect(repo.listSettingsCalls).toBe(1);
+    expect(repo.getSettingCalls).toBe(1);
   });
 
   it('blocks customer deletes with cases or quotes and moves eligible customers to recycle bin', async () => {

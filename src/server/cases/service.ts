@@ -10,6 +10,7 @@ import {
 import { CASE_STAGES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
+import { loadSettings } from '../settings/live';
 import { joinPipe, normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
 import type { CustomerRecord } from '../domain/types';
 import type { DriveClient, DriveFileMeta } from '../drive/client';
@@ -145,6 +146,7 @@ export type CaseRepository = {
   latestHandover(caseId: string): Promise<{ note: string; activityId: string }>;
   createAttachments(rows: Array<Omit<CaseAttachmentRow, 'id' | 'createdAt'>>): Promise<void>;
   listAttachmentsByCase(caseId: string): Promise<CaseAttachmentRow[]>;
+  listSettings(): Promise<Array<{ key: string; value: string }>>;
 };
 
 export type CaseInput = Partial<{
@@ -223,20 +225,35 @@ function asBool(value: unknown): boolean {
   return value === true || String(value ?? '').toLowerCase() === 'true';
 }
 
-function validOne(value: unknown, allowed: readonly string[]): string {
+/**
+ * A value is acceptable if it is currently configured, OR if it is unchanged from
+ * what is already stored on this record. See the same helper in
+ * customers/service.ts for the full reasoning: without the second clause, retiring
+ * a config value strips it from existing records the next time anything is saved.
+ *
+ * `stored` is passed only on update paths. Creation paths pass nothing, so a new
+ * record can only ever use a currently-configured value.
+ */
+function validOne(value: unknown, allowed: readonly string[], stored?: string): string {
   const text = asText(value);
-  return allowed.includes(text) ? text : '';
+  if (allowed.includes(text)) return text;
+  if (stored !== undefined && text === stored) return text;
+  return '';
 }
 
-function validTags(value: unknown): string[] {
-  return parseList(Array.isArray(value) ? value.map(String) : String(value ?? '')).filter((tag) =>
-    (DEFAULT_SETTINGS.TAGS as readonly string[]).includes(tag)
+function validTags(value: unknown, allowed: readonly string[], stored: readonly string[] = []): string[] {
+  return parseList(Array.isArray(value) ? value.map(String) : String(value ?? '')).filter(
+    (tag) => allowed.includes(tag) || stored.includes(tag)
   );
 }
 
-function validCategories(value: unknown): string[] {
-  return (Array.isArray(value) ? value.map(String) : parsePipe(String(value ?? ''))).filter((category) =>
-    (DEFAULT_SETTINGS.CATEGORIES as readonly string[]).includes(category)
+function validCategories(
+  value: unknown,
+  allowed: readonly string[],
+  stored: readonly string[] = []
+): string[] {
+  return (Array.isArray(value) ? value.map(String) : parsePipe(String(value ?? ''))).filter(
+    (category) => allowed.includes(category) || stored.includes(category)
   );
 }
 
@@ -625,6 +642,10 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const ownership = ownershipFor(handlers);
       ensureFull(user, customerForAccess(customer), ownership);
 
+      // Creation path: no `stored` argument anywhere below, so a new case can only
+      // use currently-configured values.
+      const live = await loadSettings(repo);
+
       const title = asText(input.title);
       if (!title) throw new Error('Give the case a short title.');
 
@@ -634,7 +655,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (order) {
         const orderValue = Number(input.orderValue);
         if (!(orderValue > 0)) throw new Error('Enter the order value to add a won order.');
-        if (!validCategories(input.categories).length) throw new Error('Select at least one product category for the order.');
+        if (!validCategories(input.categories, live.categories).length) throw new Error('Select at least one product category for the order.');
       } else if (input.assignee) {
         assignee = resolveUser(users, input.assignee);
       } else if (roleLevel(user) >= 5) {
@@ -653,11 +674,11 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title,
           details: String(input.details ?? ''),
           source: asText(input.source),
-          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
+          priority: validOne(input.priority, live.priorities),
           stage: order ? 'Quoted' : validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: order ? 'Won' : '',
           orderValue: order ? Number(input.orderValue) : '',
-          wonCategories: order ? validCategories(input.categories) : [],
+          wonCategories: order ? validCategories(input.categories, live.categories) : [],
           outcomeNote: '',
           owner: normalizeEmail(user.email),
           // P11: ownership is materialised at creation - the customer's real handlers, or
@@ -724,7 +745,10 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const priority = asText(priorityInput);
       const { row } = await loadVisibleCase(repo, user, id);
       // '' is allowed and means "clear it" - priority is optional, so it must be removable.
-      if (priority && !(DEFAULT_SETTINGS.PRIORITIES as readonly string[]).includes(priority)) {
+      // The case's own current priority stays acceptable even if an admin has since
+      // retired it, so re-saving cannot strip a value this endpoint would not offer.
+      const allowedPriorities = (await loadSettings(repo)).priorities;
+      if (priority && !allowedPriorities.includes(priority) && priority !== row.priority) {
         throw new Error(`"${priority}" is not a valid priority.`);
       }
       // No block on a closed case. setCaseStage refuses on Won/Lost because a closed case
@@ -774,7 +798,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         if (outcome === 'Won') {
           const value = Number(data.orderValue);
           if (!(value > 0)) throw new Error('Enter the order value (the amount at which the order was won).');
-          const categories = validCategories(data.categories);
+          // Update path: the case's existing categories stay acceptable even if an
+          // admin has since retired one, so re-saving a Won case cannot strip them.
+          const categories = validCategories(data.categories, (await loadSettings(trx)).categories, row.wonCategories);
           if (!categories.length) throw new Error('Select at least one product category for the won order.');
           fields.orderValue = Math.round(value * 100) / 100;
           fields.wonCategories = categories;
@@ -1157,6 +1183,8 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async quickLog(user: CrmContext, input: QuickLogInput) {
       requireLevel(user, 2);
+      // Creation path for both the case and any new customer: no `stored` below.
+      const live = await loadSettings(repo);
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
         let customerId = asText(input.customerId);
@@ -1174,9 +1202,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             await trx.createCustomer({
               id: customerId,
               name,
-              tags: validTags(newCustomer.tags ?? newCustomer.tag),
-              type: validOne(newCustomer.type, DEFAULT_SETTINGS.TYPES),
-              priority: validOne(newCustomer.priority, DEFAULT_SETTINGS.PRIORITIES),
+              tags: validTags(newCustomer.tags ?? newCustomer.tag, live.tags),
+              type: validOne(newCustomer.type, live.types),
+              priority: validOne(newCustomer.priority, live.priorities),
               area: asText(newCustomer.area),
               address: '',
               gstin: '',
@@ -1219,7 +1247,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           title: asText(input.title) || 'Untitled case',
           details: String(input.details ?? ''),
           source: '',
-          priority: validOne(input.priority, DEFAULT_SETTINGS.PRIORITIES),
+          priority: validOne(input.priority, live.priorities),
           stage: validOne(input.stage, CASE_STAGES) || DEFAULT_SETTINGS.STAGES[0],
           outcome: '',
           orderValue: '',

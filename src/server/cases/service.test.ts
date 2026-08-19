@@ -37,9 +37,16 @@ class FakeCaseRepository implements CaseRepository {
   getCustomerCalls = 0;
   getCustomersByIdsCalls: string[][] = [];
   updateCaseCalls = 0;
+  /** Empty by default, so loadSettings falls back to DEFAULT_SETTINGS and every
+   *  pre-existing test keeps the behaviour it was written against. */
+  settingRows: Record<string, string> = {};
 
   async withTransaction<T>(fn: (repo?: CaseRepository) => Promise<T>): Promise<T> {
     return fn(this);
+  }
+
+  async listSettings(): Promise<Array<{ key: string; value: string }>> {
+    return Object.entries(this.settingRows).map(([key, value]) => ({ key, value }));
   }
 
   async lockCustomerName(name: string): Promise<void> {
@@ -1404,6 +1411,40 @@ describe('case reads, lists, and quick log', () => {
 
     expect((await repo.getCase(logged.caseId))?.priority).toBe('');
   });
+
+  it('does not let quick-log create a case with a retired priority', async () => {
+    // Creation path: no `stored` passed to validOne for the case priority below.
+    const { repo, service } = makeService();
+    repo.settingRows = { PRIORITIES: 'Urgent | Routine' };
+
+    const logged = await service.quickLog(sales, {
+      customerId: 'CUST-0001',
+      title: 'Called about spares',
+      priority: 'High'
+    });
+
+    expect((await repo.getCase(logged.caseId))?.priority).toBe('');
+  });
+
+  it.each([
+    ['tag', { tag: 'Punjab' }, { TAGS: 'NCR | Chandigarh' }, 'tags', []],
+    ['type', { type: 'OEM' }, { TYPES: 'Alpha | Beta' }, 'type', ''],
+    ['priority', { priority: 'High' }, { PRIORITIES: 'Urgent | Routine' }, 'priority', '']
+  ] as const)(
+    'does not let quick-log create a new customer with a retired %s',
+    async (_label, newCustomerField, settingRows, field, empty) => {
+      const { repo, service } = makeService();
+      repo.settingRows = settingRows;
+
+      const logged = await service.quickLog(sales, {
+        newCustomer: { name: 'Fresh Co', ...newCustomerField },
+        title: 'Site visit'
+      });
+
+      const storedCustomer = await repo.getCustomer(logged.customerId);
+      expect(storedCustomer).toMatchObject({ [field]: empty });
+    }
+  );
 });
 
 describe('setCasePriority', () => {
@@ -1502,5 +1543,94 @@ describe('setCasePriority', () => {
 
     await expect(service.setCasePriority(outsider, 'CASE-2026-0001', 'High')).rejects.toThrow(/do not have access/i);
     expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('Low');
+  });
+
+  it('accepts the case\'s own current priority even after it has been retired, but still rejects a value that is neither configured nor stored', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
+    // 'High' is retired - only 'Urgent' and 'Routine' remain configured.
+    repo.settingRows = { PRIORITIES: 'Urgent | Routine' };
+
+    // Re-saving the case's own (now-retired) priority must succeed and be a no-op.
+    await service.setCasePriority(sales, 'CASE-2026-0001', 'High');
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+
+    // A value that is neither configured nor already stored is still rejected.
+    await expect(service.setCasePriority(sales, 'CASE-2026-0001', 'Medium')).rejects.toThrow(/not a valid priority/i);
+    expect((await repo.getCase('CASE-2026-0001'))?.priority).toBe('High');
+  });
+});
+
+describe('case service validates priorities and won categories against the live settings list', () => {
+  it('validates a case priority against the stored list, not the hardcoded defaults', async () => {
+    const { repo, service } = makeService();
+    repo.settingRows = { PRIORITIES: 'Urgent | Routine' };
+
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Live priority case', priority: 'Urgent' });
+
+    expect((await repo.getCase(created.id))?.priority).toBe('Urgent');
+  });
+
+  it('does not let a NEW case use a retired priority', async () => {
+    // Creation paths pass no stored value, so retired options stay unavailable.
+    const { repo, service } = makeService();
+    repo.settingRows = { PRIORITIES: 'Urgent | Routine' };
+
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Stale priority case', priority: 'High' });
+
+    // validOne returns '' rather than throwing on the create path.
+    expect((await repo.getCase(created.id))?.priority).toBe('');
+  });
+
+  it('validates won categories against the stored list, not the hardcoded defaults', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', stage: 'Quoted' })];
+    repo.settingRows = { CATEGORIES: 'Alpha | Beta' };
+
+    await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', { orderValue: 5000, categories: ['Alpha'] });
+
+    expect(repo.cases[0]).toMatchObject({ outcome: 'Won', wonCategories: ['Alpha'] });
+  });
+
+  it('does not let a brand-new Won order use a retired product category', async () => {
+    // createCase's own Won-order path is a creation path: no `stored` argument to
+    // validCategories, so a retired category cannot pass, and the missing-category
+    // rule (validated later in this describe block) then rejects the order outright
+    // rather than silently creating it with no category.
+    const { repo, service } = makeService();
+    repo.settingRows = { CATEGORIES: 'Alpha | Beta' };
+
+    await expect(
+      service.createCase(sales, 'CUST-0001', {
+        title: 'Win order',
+        order: true,
+        orderValue: 5000,
+        categories: ['VFDs']
+      })
+    ).rejects.toThrow('Select at least one product category for the order');
+  });
+
+  it('keeps a retired won category when the outcome is re-saved', async () => {
+    // setCaseOutcome is the single update path in cases/service.ts that validates
+    // categories. An admin retiring 'VFDs' must not strip it from a case that was
+    // already won with it, even when the Won outcome is resubmitted unchanged.
+    const { repo, service } = makeService();
+    repo.cases = [
+      caseRow({
+        id: 'CASE-2026-0001',
+        stage: 'Quoted',
+        outcome: 'Won',
+        orderValue: 5000,
+        wonCategories: ['VFDs'],
+        closedOn: '2026-08-01T00:00:00.000Z',
+        assignee: ''
+      })
+    ];
+    // 'VFDs' is retired - only 'Alpha' and 'Beta' remain configured.
+    repo.settingRows = { CATEGORIES: 'Alpha | Beta' };
+
+    await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', { orderValue: 5000, categories: ['VFDs'] });
+
+    expect(repo.cases[0]).toMatchObject({ outcome: 'Won', wonCategories: ['VFDs'] });
   });
 });

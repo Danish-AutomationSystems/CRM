@@ -51,7 +51,7 @@ function bootPayload() {
       outcomes: ['Won', 'Lost', 'Hold'],
       priorities: ['High', 'Medium', 'Low'],
       categories: ['Lighting'],
-      sources: ['Sales Team'],
+      seiNames: ['Ravi Kumar', 'Anita Rao'],
       taxPct: 18,
       currency: 'INR',
       company: 'Automation Systems NG Pvt Ltd'
@@ -338,13 +338,13 @@ test('mocked authenticated session renders critical CRM route containers', async
   await page.getByRole('button', { name: 'Customers' }).first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'customers');
   await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
-  await expect(page.getByPlaceholder('Search customers by name, location, type or area…')).toBeVisible();
+  await expect(page.locator('#custQ')).toBeVisible();
   await expect(page.locator('table.grid input.ce').first()).toHaveValue(customerSummary.name);
 
   await page.getByRole('button', { name: 'Cases' }).click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'cases');
   await expect(page.getByRole('heading', { name: 'Cases' })).toBeVisible();
-  await expect(page.getByPlaceholder('Search title / ID / customer')).toBeVisible();
+  await expect(page.locator('#cf_q')).toBeVisible();
 
   await page.getByText('Panel upgrade').first().click();
   await expect(page.getByTestId('crm-route')).toHaveAttribute('data-route', 'case');
@@ -1056,6 +1056,27 @@ test('P10 - a case creator is not mislabelled as the account handler', async ({ 
   const body = page.locator('#mbody');
   await expect(body).toContainText('created this case');
   await expect(body).not.toContainText('account handler — owner of every case on the account');
+});
+
+test('Admin config cards show configured items with edit/delete controls, and Case sources is gone', async ({
+  context,
+  page
+}) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/admin');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+
+  const locationsCard = page.locator('.card', { has: page.getByText('Customer locations (geographies)') });
+  await expect(locationsCard).toBeVisible();
+  const punjabRow = locationsCard.locator('.qr', { hasText: 'Punjab' });
+  await expect(punjabRow).toBeVisible();
+  await expect(punjabRow.getByRole('button', { name: 'edit' })).toBeVisible();
+  await expect(punjabRow.getByRole('button', { name: 'delete' })).toBeVisible();
+
+  await expect(page.getByText('SEI names')).toBeVisible();
+  await expect(page.getByText('Case sources')).toHaveCount(0);
 });
 
 test('the cases list shows a priority badge only for cases that have one', async ({ context, page }) => {

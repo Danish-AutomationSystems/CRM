@@ -3,12 +3,14 @@ import type { Sql, TransactionSql } from 'postgres';
 import { ensureAdmin } from '../auth/access';
 import type { CrmContext } from '../auth/context';
 import { sql, withTransaction } from '../db/client';
+import { RENAME_TARGETS, type RenameTarget } from '../settings/config-targets';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS, CRM_ROLES, CRM_TABLES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, directVirtualUser, isDirect } from '../domain/direct';
 import { isBackendRole } from '../customers/service';
 import { joinPipe, normalizeEmail, parseList, parsePipe } from '../domain/lists';
-import { DEFAULT_SETTINGS, type DefaultSettingKey } from '../settings/defaults';
+import { DEFAULT_SETTINGS, TAG_TO_BE_FILLED, type DefaultSettingKey } from '../settings/defaults';
+import { loadSettings, type ConfigListKey } from '../settings/live';
 
 const IMPORT_CAP = 500;
 
@@ -109,6 +111,8 @@ export type AdminActivityLogEntry = {
 
 export type AdminRepository = {
   withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T>;
+  /** Rewrite one column that stores a copy of a config value. See settings/config-targets.ts. */
+  renameConfigValue(target: RenameTarget, oldValue: string, newValue: string): Promise<void>;
   lockCustomerName(name: string): Promise<void>;
   listUsers(): Promise<AdminUserRow[]>;
   getUser(email: string): Promise<AdminUserRow | null>;
@@ -116,6 +120,22 @@ export type AdminRepository = {
   updateUser(email: string, fields: Partial<AdminUserRow>): Promise<void>;
   listSettings(): Promise<AdminSettingRow[]>;
   setSetting(key: AdminSettingRow['key'], value: string): Promise<void>;
+  /**
+   * Reads one settings row and holds a row lock on it for the rest of the
+   * transaction, so two concurrent config mutations of the same key serialise
+   * rather than interleaving into a lost update. Without it the loser's write
+   * strands a value: the data rewrite lands but the list no longer contains the
+   * value, so it is unselectable, invisible in admin, and unrenameable - and for
+   * TAGS that is silent access loss, since locations gate customer visibility.
+   *
+   * `for update` locks an existing row only. Every configurable key is seeded by
+   * migration 0001_initial_schema.sql, so in practice the row always exists by
+   * the time this is called; a database where a key was never seeded has nothing
+   * to lock and two concurrent first-inserts of that key could still race. That
+   * gap is accepted, not silently: it requires a hand-edited database that skipped
+   * seeding, which defaultSettingRows()/the migration rule out for a normal deploy.
+   */
+  lockSetting(key: AdminSettingRow['key']): Promise<string | null>;
   nextCustomerId(): Promise<string>;
   nextContactId(): Promise<string>;
   listCustomers(): Promise<AdminCustomerRow[]>;
@@ -307,6 +327,89 @@ function cleanList(value: unknown): string[] {
   return (Array.isArray(value) ? value : [])
     .map((item) => String(item ?? '').trim())
     .filter(Boolean);
+}
+
+const CONFIGURABLE_KEYS: readonly ConfigListKey[] = ['TAGS', 'TYPES', 'PRIORITIES', 'CATEGORIES', 'SEI_NAMES'];
+
+function configKey(value: unknown): ConfigListKey {
+  const key = asText(value).toUpperCase();
+  const match = CONFIGURABLE_KEYS.find((candidate) => candidate === key);
+  if (!match) {
+    throw new Error(`"${asText(value)}" is not configurable.`);
+  }
+  return match;
+}
+
+/**
+ * `|` is the list separator in public.settings and in pipe-joined columns.
+ * `,` matters because parseList (domain/lists.ts:5) splits on /[|,]/, so a comma
+ * inside a location or SEI name would be silently split into two values on the
+ * next save of any record holding it.
+ */
+function configValue(value: unknown): string {
+  const text = asText(value).trim();
+  if (!text) throw new Error('Enter a value.');
+  if (text.includes('|') || text.includes(',')) {
+    throw new Error('A config value cannot contain "|" or ",".');
+  }
+  return reservedConfigValue(text);
+}
+
+const ALLOWED_TAGS_WILDCARD = '*';
+
+/**
+ * The two values no config list may hold, checked in one place.
+ *
+ * TAG_TO_BE_FILLED is the location-backfill placeholder (0007_backfill_customer_locations.sql):
+ * it is written into customers that predate locations and must stay recognisable.
+ * '*' is the allowed_tags wildcard meaning "every location"; a list entry named '*'
+ * would grant every user every customer the moment it was assigned, and renaming
+ * '*' would rewrite users.allowed_tags rows into a state that
+ * users_star_tag_check (0001_initial_schema.sql:15) forbids.
+ *
+ * Add-, delete- and rename-from all route through here rather than repeating the
+ * check, so a third reserved value is one edit, not three.
+ */
+function reservedConfigValue(text: string): string {
+  if (text === TAG_TO_BE_FILLED) {
+    throw new Error(`"${TAG_TO_BE_FILLED}" is reserved.`);
+  }
+  if (text === ALLOWED_TAGS_WILDCARD) {
+    throw new Error(`"${ALLOWED_TAGS_WILDCARD}" is reserved.`);
+  }
+  return text;
+}
+
+/**
+ * Every configurable list must keep at least one item, except SEI_NAMES, which
+ * loadSettings (settings/live.ts) deliberately does not fall back for: an admin
+ * may empty it. Every other list, if emptied, parses back to '' on the next read,
+ * and loadSettings falls back to DEFAULT_SETTINGS - resurrecting built-in values
+ * the admin deleted, which then get treated as live and can be persisted right
+ * back into public.settings. Shared by deleteConfigItem and saveSettings so the
+ * two admin paths to the same list can't drift out of sync on this rule.
+ */
+const KEEP_AT_LEAST_ONE_KEYS: readonly ConfigListKey[] = CONFIGURABLE_KEYS.filter((key) => key !== 'SEI_NAMES');
+
+function assertKeepsAtLeastOne(key: ConfigListKey, next: readonly string[]): void {
+  if (KEEP_AT_LEAST_ONE_KEYS.includes(key) && next.length === 0) {
+    throw new Error('Keep at least one item.');
+  }
+}
+
+function listForKey(settings: Awaited<ReturnType<typeof loadSettings>>, key: ConfigListKey): string[] {
+  switch (key) {
+    case 'TAGS':
+      return settings.tags;
+    case 'TYPES':
+      return settings.types;
+    case 'PRIORITIES':
+      return settings.priorities;
+    case 'CATEGORIES':
+      return settings.categories;
+    case 'SEI_NAMES':
+      return settings.seiNames;
+  }
 }
 
 function localName(email: string): string {
@@ -527,12 +630,20 @@ export function createAdminService(repo: AdminRepository) {
         if (!tags.length) throw new Error('Keep at least one tag.');
         writes.push({ key: 'TAGS', value: joinPipe(tags) });
       }
-      if (input.types !== undefined) writes.push({ key: 'TYPES', value: joinPipe(cleanList(input.types)) });
+      if (input.types !== undefined) {
+        const types = cleanList(input.types);
+        assertKeepsAtLeastOne('TYPES', types);
+        writes.push({ key: 'TYPES', value: joinPipe(types) });
+      }
       if (input.priorities !== undefined) {
-        writes.push({ key: 'PRIORITIES', value: joinPipe(cleanList(input.priorities)) });
+        const priorities = cleanList(input.priorities);
+        assertKeepsAtLeastOne('PRIORITIES', priorities);
+        writes.push({ key: 'PRIORITIES', value: joinPipe(priorities) });
       }
       if (input.categories !== undefined) {
-        writes.push({ key: 'CATEGORIES', value: joinPipe(cleanList(input.categories)) });
+        const categories = cleanList(input.categories);
+        assertKeepsAtLeastOne('CATEGORIES', categories);
+        writes.push({ key: 'CATEGORIES', value: joinPipe(categories) });
       }
       // P8: the SEI name list is admin-managed and may legitimately be empty.
       if (input.seiNames !== undefined) {
@@ -556,6 +667,131 @@ export function createAdminService(repo: AdminRepository) {
           entity: '',
           customerId: '',
           details: 'Settings updated',
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    async addConfigItem(user: CrmContext, key: unknown, value: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const item = configValue(value);
+
+      // Read inside the transaction (as runImport does, service.ts's runImport
+      // below), not before it: an outer read races a concurrent admin's write,
+      // and the loser's stale list clobbers the winner's change when it is
+      // written back. See Important 2 in the task-5 code review.
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        // Lock the row before reading it: see lockSetting's doc comment on
+        // AdminRepository. Taken from trx (the transaction handle), not repo -
+        // a lock taken outside the transaction releases immediately and
+        // guards nothing.
+        await trx.lockSetting(listKey);
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        if (current.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
+          throw new Error(`"${item}" already exists.`);
+        }
+        const next = [...current, item];
+
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_ADD',
+          entity: listKey,
+          customerId: '',
+          details: item,
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    async deleteConfigItem(user: CrmContext, key: unknown, value: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const item = reservedConfigValue(asText(value).trim());
+
+      // Read inside the transaction; see addConfigItem above.
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        // Lock the row before reading it; see addConfigItem above.
+        await trx.lockSetting(listKey);
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        const next = current.filter((existing) => existing !== item);
+        assertKeepsAtLeastOne(listKey, next);
+
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_DELETE',
+          entity: listKey,
+          customerId: '',
+          details: item,
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    /**
+     * Rename a config value and rewrite every record that holds a copy of it.
+     *
+     * The client sends {key, oldValue, newValue} rather than a whole edited list,
+     * because a diff of two lists cannot tell a rename from a delete plus an add -
+     * and those have opposite data consequences.
+     *
+     * Exact-match and case-sensitive: renaming 'Punjab' must not also catch
+     * 'punjab', which is a different stored value that an older import may have
+     * written. Renaming onto an existing entry is refused case-insensitively,
+     * because that is a merge of two config values, which has different data
+     * consequences (two locations collapsing into one) and is out of scope here.
+     *
+     * Everything happens in one transaction, with the settings row written last:
+     * a rewrite that fails halfway must not leave the list advertising a rename
+     * that never reached the data. Missing a target column is worse than an
+     * error - RENAME_TARGETS covers users.allowed_tags precisely because a stale
+     * value there silently revokes a user's sight of those customers.
+     */
+    async renameConfigItem(user: CrmContext, key: unknown, oldValue: unknown, newValue: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const from = asText(oldValue).trim();
+      if (!from) throw new Error('Enter a value.');
+      reservedConfigValue(from);
+      const to = configValue(newValue);
+
+      // Read inside the transaction; see addConfigItem above.
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        // Lock the row before reading it; see addConfigItem above.
+        await trx.lockSetting(listKey);
+        const settings = await loadSettings(trx);
+        const current = listForKey(settings, listKey);
+        if (!current.includes(from)) {
+          throw new Error(`"${from}" was not found in that list.`);
+        }
+        if (current.some((existing) => existing !== from && existing.toLowerCase() === to.toLowerCase())) {
+          throw new Error(`"${to}" already exists.`);
+        }
+        const next = current.map((existing) => (existing === from ? to : existing));
+
+        for (const target of RENAME_TARGETS[listKey]) {
+          await trx.renameConfigValue(target, from, to);
+        }
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_RENAME',
+          entity: listKey,
+          customerId: '',
+          details: `${from} -> ${to}`,
           who: normalizeEmail(user.email)
         });
         return undefined;
@@ -830,6 +1066,79 @@ export class PostgresAdminRepository implements AdminRepository {
     await this.db`select pg_advisory_xact_lock(hashtext(${customerNameLockKey(name)}))`;
   }
 
+  /**
+   * Rewrite one column that stores a copy of a renamed config value.
+   *
+   * `this.db(name)` is postgres.js's identifier helper: a bare string argument
+   * becomes an Identifier, which is escaped and quoted (postgres/src/types.js
+   * escapeIdentifier) rather than bound as a parameter, exactly as
+   * scripts/backup-database.mjs does with `sql(table)`. Every other interpolation
+   * here is a bound parameter. Nothing is concatenated into SQL text, so the
+   * query is non-injectable by construction, not merely because table and column
+   * names happen to come from the frozen RENAME_TARGETS map.
+   *
+   * The three kinds are genuinely different statements; see
+   * settings/config-targets.ts for the same rules in testable form.
+   */
+  async renameConfigValue(target: RenameTarget, oldValue: string, newValue: string): Promise<void> {
+    const table = this.db(`public.${target.table}`);
+    const column = this.db(target.column);
+
+    if (target.kind === 'scalar') {
+      await this.db`update ${table} set ${column} = ${newValue} where ${column} = ${oldValue}`;
+      return;
+    }
+
+    if (target.kind === 'array') {
+      // array_replace only touches elements equal to oldValue, so the '*'
+      // wildcard in users.allowed_tags is left alone and the element count never
+      // changes - which is what keeps users_star_tag_check satisfiable.
+      await this.db`
+        update ${table}
+        set ${column} = array_replace(${column}, ${oldValue}, ${newValue})
+        where ${oldValue} = any(${column})
+      `;
+      return;
+    }
+
+    // pipe: joinPipe writes ' | ' with spaces (domain/lists.ts:27) while parsePipe
+    // splits on '|' and trims (:16), so the stored text is 'VFDs | PLC'. Splitting
+    // on '|' alone yields ['VFDs ', ' PLC'], and an exact-match replace would never
+    // fire - a silent no-op. Trim per element, match exactly, re-join in joinPipe's
+    // format. A plain string replace is the other wrong answer: the live category
+    // list holds both 'Other' and 'Others', and 'Panels' beside 'Switchgear'.
+    //
+    // btrim(part, E' \t\r\n') rather than one-argument btrim(part): the single-arg
+    // form strips ASCII spaces only, while parsePipe's JS .trim() (domain/lists.ts:16)
+    // also strips tabs, CRs and newlines. A hand-edited row or a legacy import can
+    // hold a tab beside a separator - not reachable from joinPipe, but reachable
+    // from stored data - and without the matching character set here, this SQL and
+    // the renamePipe reference function (settings/config-targets.ts) would disagree
+    // about whether a rewrite happened at all.
+    //
+    // `with ordinality` plus `order by` is load-bearing: string_agg over an unnest
+    // has no guaranteed input order, so without it a category list would silently
+    // reshuffle on every rename.
+    await this.db`
+      update ${table}
+      set ${column} = (
+        select coalesce(
+          string_agg(
+            case when btrim(part, E' \t\r\n') = ${oldValue} then ${newValue} else btrim(part, E' \t\r\n') end,
+            ' | '
+            order by position
+          ),
+          ''
+        )
+        from unnest(string_to_array(${column}, '|')) with ordinality as element(part, position)
+        where btrim(part, E' \t\r\n') <> ''
+      )
+      where ${oldValue} = any(
+        select btrim(part, E' \t\r\n') from unnest(string_to_array(${column}, '|')) as part
+      )
+    `;
+  }
+
   async listUsers(): Promise<AdminUserRow[]> {
     const rows = (await this.db`
       select email, name, role, allowed_tags, active, added_at, added_by
@@ -887,6 +1196,13 @@ export class PostgresAdminRepository implements AdminRepository {
       values (${key}, ${value})
       on conflict (key) do update set value = excluded.value
     `;
+  }
+
+  async lockSetting(key: AdminSettingRow['key']): Promise<string | null> {
+    const rows = (await this.db`
+      select value from public.settings where key = ${key} for update
+    `) as Array<{ value: string | null }>;
+    return rows[0]?.value ?? null;
   }
 
   async nextCustomerId(): Promise<string> {

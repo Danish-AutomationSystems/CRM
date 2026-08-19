@@ -2,7 +2,8 @@ import type { CrmContext } from '../auth/context';
 import { accessLevel, caseOwners, caseVisible } from '../auth/access';
 import type { CaseCustomerRow, CaseRepository, CaseService } from '../cases/service';
 import type { CustomerService } from '../customers/service';
-import { DEFAULT_SETTINGS, SELECTABLE_TAGS } from '../settings/defaults';
+import { DEFAULT_SETTINGS } from '../settings/defaults';
+import { loadSettings, selectableTags } from '../settings/live';
 import {
   DIRECT_EMAIL,
   DIRECT_NAME,
@@ -25,6 +26,7 @@ export type DashboardActivityRow = {
 export type DashboardRepository = CaseRepository & {
   listActivity(limit?: number): Promise<DashboardActivityRow[]>;
   getCustomersByIds(ids: string[]): Promise<CaseCustomerRow[]>;
+  listSettings(): Promise<Array<{ key: string; value: string }>>;
 };
 
 type DashboardDependencies = {
@@ -229,7 +231,7 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
 
   return {
     async bootstrap(user: CrmContext) {
-      const [users, recent] = await Promise.all([repo.listUsers(), recentActivity(user)]);
+      const [users, recent, live] = await Promise.all([repo.listUsers(), recentActivity(user), loadSettings(repo)]);
       const level = roleLevel(user);
       const idx = userIndex(users);
       const peers =
@@ -259,17 +261,19 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
       return {
         user: { email: normalizeEmail(user.email), name: user.name, role: user.role, level },
         settings: {
+          // `cases.stage` carries a database CHECK constraint (0001_initial_schema.sql:70),
+          // so stages are not admin-editable; same reasoning keeps outcomes hardcoded.
           stages: [...DEFAULT_SETTINGS.STAGES],
           outcomes: [...DEFAULT_SETTINGS.OUTCOMES],
           // P7: the backfill placeholder is recognised server-side but never offered.
-          tags: [...SELECTABLE_TAGS],
-          types: [...DEFAULT_SETTINGS.TYPES],
-          priorities: [...DEFAULT_SETTINGS.PRIORITIES],
-          categories: [...DEFAULT_SETTINGS.CATEGORIES],
-          sources: [...DEFAULT_SETTINGS.SOURCES],
-          taxPct: DEFAULT_SETTINGS.TAX_PCT,
-          currency: DEFAULT_SETTINGS.CURRENCY,
-          company: DEFAULT_SETTINGS.COMPANY
+          tags: selectableTags(live),
+          types: live.types,
+          priorities: live.priorities,
+          categories: live.categories,
+          taxPct: live.taxPct,
+          currency: live.currency,
+          company: live.company,
+          seiNames: live.seiNames
         },
         nav: { admin: level >= 6 },
         isL1: level <= 1,

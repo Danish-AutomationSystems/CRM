@@ -41,8 +41,10 @@ class FakeQuoteRepository implements QuoteRepository {
   quotes: QuoteRow[] = [];
   blocks: Awaited<ReturnType<QuoteRepository['listBoqBlocks']>> = [];
   logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }> = [];
+  settings: Array<{ key: string; value: string }> = [];
 
   async withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T> { return fn(this); }
+  async listSettings() { return this.settings; }
   async lockQuoteFamily(): Promise<void> {}
   async nextQuoteNo(): Promise<string> { return 'QTN-2026-0001'; }
   async nextCaseId(): Promise<string> { return 'CASE-2026-0001'; }
