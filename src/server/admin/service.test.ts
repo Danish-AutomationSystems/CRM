@@ -779,9 +779,15 @@ describe('admin service config items', () => {
   /**
    * Row-lock ordering, pinned by the ops trace. A real Postgres `for update`
    * lock can't be reproduced by an in-memory fake, but the sequence it must be
-   * called in can: lock the row, THEN read the list, THEN write it back. Locking
-   * after the read (or not at all) is exactly the shape of the race this exists
-   * to close - see task-5-lock-report.md.
+   * called in can: lock the row, THEN read the list, THEN write it back.
+   *
+   * Locking after the read (or not locking at all) reopens the race
+   * lockSetting exists to close (see its doc comment in admin/service.ts):
+   * two concurrent config mutations of the same key both read the
+   * pre-mutation list, and whichever writes last silently discards the
+   * other's change - the loser's added or deleted item vanishes from
+   * public.settings with nothing erroring, and for TAGS that is a silent
+   * access-control regression since locations gate customer visibility.
    */
   it('addConfigItem locks the settings row before reading the list', async () => {
     const { repo, service } = makeService();

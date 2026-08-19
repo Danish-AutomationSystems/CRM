@@ -2181,13 +2181,13 @@ function renderAdmin(users, links){
 function configCard(title, key, items, hint){
   var rows = (items||[]).map(function(item){
     return '<div class="qr"><div style="flex:1">'+esc(item)+'</div>'+
-      '<button class="btn lk" onclick="cfgRename(\''+key+'\',\''+esc(item)+'\')">edit</button> · '+
-      '<button class="btn lk" onclick="cfgDelete(\''+key+'\',\''+esc(item)+'\')">delete</button></div>';
+      '<button class="btn lk" onclick="cfgRename(\''+esc(key)+'\',\''+esc(item)+'\')">edit</button> · '+
+      '<button class="btn lk" onclick="cfgDelete(\''+esc(key)+'\',\''+esc(item)+'\')">delete</button></div>';
   }).join('') || '<div class="empty">Nothing configured yet.</div>';
   return '<div class="card"><div class="ovl">'+esc(title)+'</div>'+rows+
     (hint?'<p class="hint">'+esc(hint)+'</p>':'')+
-    '<div class="frow" style="margin-top:10px"><div style="flex:1"><input id="cfg_'+key+'"></div>'+
-    '<div style="display:flex;align-items:flex-end"><button class="btn sm" onclick="cfgAdd(\''+key+'\')">Add</button></div></div></div>';
+    '<div class="frow" style="margin-top:10px"><div style="flex:1"><label>New value</label><input id="cfg_'+key+'"></div>'+
+    '<div style="display:flex;align-items:flex-end"><button class="btn sm" onclick="cfgAdd(\''+esc(key)+'\')">Add</button></div></div></div>';
 }
 function cfgAdd(key){
   var val = v('cfg_'+key);
