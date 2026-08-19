@@ -30,6 +30,11 @@ export function registerAdminRpcs(registry: Pick<RpcRegistry, 'registerRpc'>, ad
     { read: false }
   );
   registry.registerRpc(
+    'api_admin_renameConfigItem',
+    ({ args, context }) => adminService.renameConfigItem(context, args[0], args[1], args[2]),
+    { read: false }
+  );
+  registry.registerRpc(
     'api_admin_restoreCustomer',
     ({ args, context }) => adminService.restoreCustomer(context, String(args[0] ?? '')),
     { read: false }

@@ -3,6 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { ensureAdmin } from '../auth/access';
 import type { CrmContext } from '../auth/context';
 import { sql, withTransaction } from '../db/client';
+import { RENAME_TARGETS, type RenameTarget } from '../settings/config-targets';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS, CRM_ROLES, CRM_TABLES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, directVirtualUser, isDirect } from '../domain/direct';
@@ -110,6 +111,8 @@ export type AdminActivityLogEntry = {
 
 export type AdminRepository = {
   withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T>;
+  /** Rewrite one column that stores a copy of a config value. See settings/config-targets.ts. */
+  renameConfigValue(target: RenameTarget, oldValue: string, newValue: string): Promise<void>;
   lockCustomerName(name: string): Promise<void>;
   listUsers(): Promise<AdminUserRow[]>;
   getUser(email: string): Promise<AdminUserRow | null>;
@@ -333,8 +336,30 @@ function configValue(value: unknown): string {
   if (text.includes('|') || text.includes(',')) {
     throw new Error('A config value cannot contain "|" or ",".');
   }
+  return reservedConfigValue(text);
+}
+
+const ALLOWED_TAGS_WILDCARD = '*';
+
+/**
+ * The two values no config list may hold, checked in one place.
+ *
+ * TAG_TO_BE_FILLED is the location-backfill placeholder (0007_backfill_customer_locations.sql):
+ * it is written into customers that predate locations and must stay recognisable.
+ * '*' is the allowed_tags wildcard meaning "every location"; a list entry named '*'
+ * would grant every user every customer the moment it was assigned, and renaming
+ * '*' would rewrite users.allowed_tags rows into a state that
+ * users_star_tag_check (0001_initial_schema.sql:15) forbids.
+ *
+ * Add-, delete- and rename-from all route through here rather than repeating the
+ * check, so a third reserved value is one edit, not three.
+ */
+function reservedConfigValue(text: string): string {
   if (text === TAG_TO_BE_FILLED) {
     throw new Error(`"${TAG_TO_BE_FILLED}" is reserved.`);
+  }
+  if (text === ALLOWED_TAGS_WILDCARD) {
+    throw new Error(`"${ALLOWED_TAGS_WILDCARD}" is reserved.`);
   }
   return text;
 }
@@ -640,10 +665,7 @@ export function createAdminService(repo: AdminRepository) {
     async deleteConfigItem(user: CrmContext, key: unknown, value: unknown) {
       ensureAdmin(user);
       const listKey = configKey(key);
-      const item = asText(value).trim();
-      if (item === TAG_TO_BE_FILLED) {
-        throw new Error(`"${TAG_TO_BE_FILLED}" is reserved.`);
-      }
+      const item = reservedConfigValue(asText(value).trim());
 
       const settings = await loadSettings(repo);
       const current = listForKey(settings, listKey);
@@ -660,6 +682,62 @@ export function createAdminService(repo: AdminRepository) {
           entity: listKey,
           customerId: '',
           details: item,
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
+      });
+
+      return { ok: true };
+    },
+
+    /**
+     * Rename a config value and rewrite every record that holds a copy of it.
+     *
+     * The client sends {key, oldValue, newValue} rather than a whole edited list,
+     * because a diff of two lists cannot tell a rename from a delete plus an add -
+     * and those have opposite data consequences.
+     *
+     * Exact-match and case-sensitive: renaming 'Punjab' must not also catch
+     * 'punjab', which is a different stored value that an older import may have
+     * written. Renaming onto an existing entry is refused case-insensitively,
+     * because that is a merge of two config values, which has different data
+     * consequences (two locations collapsing into one) and is out of scope here.
+     *
+     * Everything happens in one transaction, with the settings row written last:
+     * a rewrite that fails halfway must not leave the list advertising a rename
+     * that never reached the data. Missing a target column is worse than an
+     * error - RENAME_TARGETS covers users.allowed_tags precisely because a stale
+     * value there silently revokes a user's sight of those customers.
+     */
+    async renameConfigItem(user: CrmContext, key: unknown, oldValue: unknown, newValue: unknown) {
+      ensureAdmin(user);
+      const listKey = configKey(key);
+      const from = asText(oldValue).trim();
+      if (!from) throw new Error('Enter a value.');
+      reservedConfigValue(from);
+      const to = configValue(newValue);
+
+      const settings = await loadSettings(repo);
+      const current = listForKey(settings, listKey);
+      if (!current.includes(from)) {
+        throw new Error(`"${from}" was not found in that list.`);
+      }
+      if (current.some((existing) => existing.toLowerCase() === to.toLowerCase())) {
+        throw new Error(`"${to}" already exists.`);
+      }
+      const next = current.map((existing) => (existing === from ? to : existing));
+
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        for (const target of RENAME_TARGETS[listKey]) {
+          await trx.renameConfigValue(target, from, to);
+        }
+        await trx.setSetting(listKey, joinPipe(next));
+        await trx.logActivity({
+          action: 'CONFIG_RENAME',
+          entity: listKey,
+          customerId: '',
+          details: `${from} -> ${to}`,
           who: normalizeEmail(user.email)
         });
         return undefined;
@@ -932,6 +1010,71 @@ export class PostgresAdminRepository implements AdminRepository {
 
   async lockCustomerName(name: string): Promise<void> {
     await this.db`select pg_advisory_xact_lock(hashtext(${customerNameLockKey(name)}))`;
+  }
+
+  /**
+   * Rewrite one column that stores a copy of a renamed config value.
+   *
+   * `this.db(name)` is postgres.js's identifier helper: a bare string argument
+   * becomes an Identifier, which is escaped and quoted (postgres/src/types.js
+   * escapeIdentifier) rather than bound as a parameter, exactly as
+   * scripts/backup-database.mjs does with `sql(table)`. Every other interpolation
+   * here is a bound parameter. Nothing is concatenated into SQL text, so the
+   * query is non-injectable by construction, not merely because table and column
+   * names happen to come from the frozen RENAME_TARGETS map.
+   *
+   * The three kinds are genuinely different statements; see
+   * settings/config-targets.ts for the same rules in testable form.
+   */
+  async renameConfigValue(target: RenameTarget, oldValue: string, newValue: string): Promise<void> {
+    const table = this.db(`public.${target.table}`);
+    const column = this.db(target.column);
+
+    if (target.kind === 'scalar') {
+      await this.db`update ${table} set ${column} = ${newValue} where ${column} = ${oldValue}`;
+      return;
+    }
+
+    if (target.kind === 'array') {
+      // array_replace only touches elements equal to oldValue, so the '*'
+      // wildcard in users.allowed_tags is left alone and the element count never
+      // changes - which is what keeps users_star_tag_check satisfiable.
+      await this.db`
+        update ${table}
+        set ${column} = array_replace(${column}, ${oldValue}, ${newValue})
+        where ${oldValue} = any(${column})
+      `;
+      return;
+    }
+
+    // pipe: joinPipe writes ' | ' with spaces (domain/lists.ts:27) while parsePipe
+    // splits on '|' and trims (:16), so the stored text is 'VFDs | PLC'. Splitting
+    // on '|' alone yields ['VFDs ', ' PLC'], and an exact-match replace would never
+    // fire - a silent no-op. Trim per element, match exactly, re-join in joinPipe's
+    // format. A plain string replace is the other wrong answer: the live category
+    // list holds both 'Other' and 'Others', and 'Panels' beside 'Switchgear'.
+    //
+    // `with ordinality` plus `order by` is load-bearing: string_agg over an unnest
+    // has no guaranteed input order, so without it a category list would silently
+    // reshuffle on every rename.
+    await this.db`
+      update ${table}
+      set ${column} = (
+        select coalesce(
+          string_agg(
+            case when btrim(part) = ${oldValue} then ${newValue} else btrim(part) end,
+            ' | '
+            order by position
+          ),
+          ''
+        )
+        from unnest(string_to_array(${column}, '|')) with ordinality as element(part, position)
+        where btrim(part) <> ''
+      )
+      where ${oldValue} = any(
+        select btrim(part) from unnest(string_to_array(${column}, '|')) as part
+      )
+    `;
   }
 
   async listUsers(): Promise<AdminUserRow[]> {

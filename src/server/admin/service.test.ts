@@ -2,6 +2,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
 import { createRpcRegistry } from '../rpc/registry';
+import {
+  RENAME_TARGETS,
+  renameArray,
+  renamePipe,
+  renameScalar,
+  type RenameTarget
+} from '../settings/config-targets';
 import { registerAdminRpcs } from './rpc';
 import { createAdminService, type AdminRepository } from './service';
 
@@ -30,6 +37,25 @@ const manager: CrmContext = {
   active: true
 };
 
+type FakeState = {
+  users: UserRow[];
+  customers: CustomerRow[];
+  contacts: ContactRow[];
+  handlers: HandlerRow[];
+  settings: SettingRow[];
+  importCustomers: ImportCustomerRow[];
+  importContacts: ImportContactRow[];
+  recycle: RecycleRow[];
+  logs: Array<{ action: string; entity: string; customerId: string; details: string; who: string }>;
+  tableRows: Record<string, Array<Record<string, string | string[]>>>;
+  renames: Array<{ table: string; column: string; from: string; to: string }>;
+};
+
+function clone<T>(value: T): T {
+  const copy: T = JSON.parse(JSON.stringify(value));
+  return copy;
+}
+
 class FakeAdminRepository implements AdminRepository {
   users: UserRow[] = [];
   customers: CustomerRow[] = [];
@@ -44,8 +70,85 @@ class FakeAdminRepository implements AdminRepository {
   customerSeq = 1;
   contactSeq = 1;
 
+  /**
+   * Raw rows keyed by table and database column name, used only by
+   * renameConfigValue. A rename is the one operation that reaches columns this
+   * repository has no typed accessor for - users.allowed_tags and
+   * cases.won_categories among them - so it is modelled at the column level,
+   * exactly as the SQL sees it, applying the shared semantics in
+   * settings/config-targets.ts.
+   */
+  tableRows: Record<string, Array<Record<string, string | string[]>>> = {};
+  renames: Array<{ table: string; column: string; from: string; to: string }> = [];
+  /** Set to a table name to make its rewrite throw, standing in for a database error. */
+  failRenameOn: string | null = null;
+  committed = false;
+  /** Ordered trace of writes inside the current transaction, for ordering assertions. */
+  ops: string[] = [];
+
+  /**
+   * A real transaction, not just a callback runner: a rollback test is worthless
+   * if the fake keeps every partial write the failed callback made.
+   */
   async withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T> {
-    return fn(this);
+    const snapshot = this.snapshot();
+    try {
+      const result = await fn(this);
+      this.committed = true;
+      return result;
+    } catch (error) {
+      this.restore(snapshot);
+      throw error;
+    }
+  }
+
+  private snapshot(): FakeState {
+    return clone({
+      users: this.users,
+      customers: this.customers,
+      contacts: this.contacts,
+      handlers: this.handlers,
+      settings: this.settings,
+      importCustomers: this.importCustomers,
+      importContacts: this.importContacts,
+      recycle: this.recycle,
+      logs: this.logs,
+      tableRows: this.tableRows,
+      renames: this.renames
+    });
+  }
+
+  private restore(state: FakeState): void {
+    this.users = state.users;
+    this.customers = state.customers;
+    this.contacts = state.contacts;
+    this.handlers = state.handlers;
+    this.settings = state.settings;
+    this.importCustomers = state.importCustomers;
+    this.importContacts = state.importContacts;
+    this.recycle = state.recycle;
+    this.logs = state.logs;
+    this.tableRows = state.tableRows;
+    this.renames = state.renames;
+  }
+
+  async renameConfigValue(target: RenameTarget, oldValue: string, newValue: string): Promise<void> {
+    this.ops.push(`rename:${target.table}.${target.column}`);
+    if (this.failRenameOn === target.table) {
+      throw new Error(`simulated database failure rewriting ${target.table}`);
+    }
+    this.renames.push({ table: target.table, column: target.column, from: oldValue, to: newValue });
+
+    for (const row of this.tableRows[target.table] ?? []) {
+      const stored = row[target.column];
+      if (target.kind === 'array') {
+        row[target.column] = renameArray(Array.isArray(stored) ? stored : [], oldValue, newValue);
+      } else if (target.kind === 'pipe') {
+        row[target.column] = renamePipe(typeof stored === 'string' ? stored : '', oldValue, newValue);
+      } else {
+        row[target.column] = renameScalar(typeof stored === 'string' ? stored : '', oldValue, newValue);
+      }
+    }
   }
 
   async lockCustomerName(name: string): Promise<void> {
@@ -75,6 +178,7 @@ class FakeAdminRepository implements AdminRepository {
   }
 
   async setSetting(key: SettingRow['key'], value: string): Promise<void> {
+    this.ops.push(`setSetting:${key}`);
     const existing = this.settings.find((setting) => setting.key === key);
     if (existing) existing.value = value;
     else this.settings.push({ key, value });
@@ -150,6 +254,7 @@ class FakeAdminRepository implements AdminRepository {
   }
 
   async logActivity(entry: { action: string; entity: string; customerId: string; details: string; who: string }): Promise<void> {
+    this.ops.push(`log:${entry.action}`);
     this.logs.push(entry);
   }
 }
@@ -642,6 +747,279 @@ describe('admin service config items', () => {
   });
 });
 
+describe('admin service config rename', () => {
+  /** A stored value in this column's shape, holding the value being renamed plus a neighbour. */
+  function seed(target: RenameTarget): string | string[] {
+    if (target.kind === 'array') return ['Old', 'Keep'];
+    if (target.kind === 'pipe') return 'Old | Keep';
+    return 'Old';
+  }
+
+  function expected(target: RenameTarget): string | string[] {
+    if (target.kind === 'array') return ['New', 'Keep'];
+    if (target.kind === 'pipe') return 'New | Keep';
+    return 'New';
+  }
+
+  const CONFIG_KEYS = ['TAGS', 'TYPES', 'PRIORITIES', 'CATEGORIES', 'SEI_NAMES'] as const;
+
+  it('renames the item in the stored list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'PUN | NCR' });
+  });
+
+  // One test per target column. Derived from the map rather than hand-listed, so a
+  // column added to RENAME_TARGETS cannot ship without a test proving it is rewritten.
+  for (const key of CONFIG_KEYS) {
+    for (const target of RENAME_TARGETS[key]) {
+      it(`rewrites ${target.table}.${target.column} when a ${key} value is renamed`, async () => {
+        const { repo, service } = makeService();
+        repo.settings = [{ key, value: 'Old | Keep' }];
+        repo.tableRows = { [target.table]: [{ [target.column]: seed(target) }] };
+
+        await service.renameConfigItem(admin, key, 'Old', 'New');
+
+        expect(repo.tableRows[target.table][0][target.column]).toEqual(expected(target));
+        expect(repo.renames).toContainEqual({
+          table: target.table,
+          column: target.column,
+          from: 'Old',
+          to: 'New'
+        });
+      });
+    }
+  }
+
+  it('rewrites every record holding the old location, including user access', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.renames).toContainEqual({ table: 'customers', column: 'tags', from: 'Punjab', to: 'PUN' });
+    expect(repo.renames).toContainEqual({
+      table: 'users',
+      column: 'allowed_tags',
+      from: 'Punjab',
+      to: 'PUN'
+    });
+    expect(repo.renames).toContainEqual({ table: 'recycle_bin', column: 'tags', from: 'Punjab', to: 'PUN' });
+  });
+
+  it('rewrites users.allowed_tags, so nobody silently loses sight of those customers', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+    repo.tableRows = {
+      users: [{ allowed_tags: ['Punjab'] }, { allowed_tags: ['NCR'] }],
+      customers: [{ tags: ['Punjab'] }]
+    };
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.tableRows.users[0].allowed_tags).toEqual(['PUN']);
+    expect(repo.tableRows.users[1].allowed_tags).toEqual(['NCR']);
+    expect(repo.tableRows.customers[0].tags).toEqual(['PUN']);
+  });
+
+  it('leaves the "*" wildcard in allowed_tags untouched', async () => {
+    // users_star_tag_check (0001_initial_schema.sql:15) forbids '*' beside any
+    // other tag, so a rewrite that grew or altered a wildcard row would both
+    // change access and break the constraint.
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+    repo.tableRows = { users: [{ allowed_tags: ['*'] }, { allowed_tags: ['Punjab'] }] };
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.tableRows.users[0].allowed_tags).toEqual(['*']);
+    expect(repo.tableRows.users[1].allowed_tags).toEqual(['PUN']);
+  });
+
+  it('refuses to rename the "*" wildcard itself', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', '*', 'PUN')).rejects.toThrow(/reserved/i);
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('refuses to rename the location backfill placeholder', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | TO BE FILLED' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'TO BE FILLED', 'PUN')).rejects.toThrow(
+      /reserved/i
+    );
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('refuses to rename onto the reserved placeholder', async () => {
+    const { service } = makeService();
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'TO BE FILLED')).rejects.toThrow(
+      /reserved/i
+    );
+  });
+
+  it('rewrites a won-category without corrupting a name it is a prefix of', async () => {
+    // The live CATEGORIES list holds both 'Other' and 'Others'. A substring
+    // replace would turn 'Others' into 'Miscs'.
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'CATEGORIES', value: 'VFDs | Other | Others' }];
+    repo.tableRows = { cases: [{ won_categories: 'VFDs | Other | Others' }] };
+
+    await service.renameConfigItem(admin, 'CATEGORIES', 'Other', 'Misc');
+
+    expect(repo.tableRows.cases[0].won_categories).toBe('VFDs | Misc | Others');
+    expect(repo.settings).toContainEqual({ key: 'CATEGORIES', value: 'VFDs | Misc | Others' });
+  });
+
+  it('preserves the order of a won-category list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'CATEGORIES', value: 'Panels | VFDs | PLC | SCADA | Switchgear' }];
+    repo.tableRows = { cases: [{ won_categories: 'Panels | VFDs | PLC | SCADA | Switchgear' }] };
+
+    await service.renameConfigItem(admin, 'CATEGORIES', 'PLC', 'PLCs');
+
+    expect(repo.tableRows.cases[0].won_categories).toBe('Panels | VFDs | PLCs | SCADA | Switchgear');
+  });
+
+  it('matches a pipe element after trimming, since the stored format has spaces', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'CATEGORIES', value: 'VFDs | PLC' }];
+    repo.tableRows = { cases: [{ won_categories: 'VFDs | PLC' }] };
+
+    await service.renameConfigItem(admin, 'CATEGORIES', 'PLC', 'PLCs');
+
+    expect(repo.tableRows.cases[0].won_categories).toBe('VFDs | PLCs');
+  });
+
+  it('refuses to rename to a value that already exists', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'NCR')).rejects.toThrow(/already/i);
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'ncr')).rejects.toThrow(/already/i);
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('refuses to rename a value that is not in the list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Nowhere', 'PUN')).rejects.toThrow(/not found/i);
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('is case-sensitive about which value it renames', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'punjab', 'PUN')).rejects.toThrow(/not found/i);
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('writes the settings row only after every record has been rewritten', async () => {
+    // The other order would let a failed rewrite leave the list advertising a
+    // rename that never reached the data.
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.ops).toEqual([
+      'rename:customers.tags',
+      'rename:users.allowed_tags',
+      'rename:recycle_bin.tags',
+      'setSetting:TAGS',
+      'log:CONFIG_RENAME'
+    ]);
+  });
+
+  it('rolls back every column when one rewrite fails', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+    repo.tableRows = {
+      customers: [{ tags: ['Punjab'] }],
+      users: [{ allowed_tags: ['Punjab'] }],
+      recycle_bin: [{ tags: ['Punjab'] }]
+    };
+    repo.failRenameOn = 'users';
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN')).rejects.toThrow();
+
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'Punjab | NCR' });
+    expect(repo.committed).toBe(false);
+    expect(repo.renames).toEqual([]);
+    expect(repo.tableRows.customers[0].tags).toEqual(['Punjab']);
+    expect(repo.tableRows.users[0].allowed_tags).toEqual(['Punjab']);
+    expect(repo.tableRows.recycle_bin[0].tags).toEqual(['Punjab']);
+    expect(repo.logs).toEqual([]);
+  });
+
+  it('logs CONFIG_RENAME with the old and new value', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
+
+    expect(repo.logs).toContainEqual({
+      action: 'CONFIG_RENAME',
+      entity: 'TAGS',
+      customerId: '',
+      details: 'Punjab -> PUN',
+      who: 'admin@automationsystems.org'
+    });
+  });
+
+  it('refuses a non-admin', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(manager, 'TAGS', 'Punjab', 'PUN')).rejects.toThrow();
+    expect(repo.renames).toEqual([]);
+  });
+
+  it('checks admin access before inspecting the key or either value', async () => {
+    const { service } = makeService();
+
+    await expect(service.renameConfigItem(manager, 'NOT_A_REAL_KEY', '', '')).rejects.toThrow(
+      'Admin access requires L6'
+    );
+  });
+
+  it('refuses an unknown config key', async () => {
+    const { service } = makeService();
+
+    await expect(service.renameConfigItem(admin, 'STAGES', 'Lead', 'Leads')).rejects.toThrow(
+      /not configurable/i
+    );
+  });
+
+  it('refuses a new value containing a pipe or a comma', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'A | B')).rejects.toThrow(
+      /cannot contain/i
+    );
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', 'A, B')).rejects.toThrow(
+      /cannot contain/i
+    );
+  });
+
+  it('refuses an empty new value', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    await expect(service.renameConfigItem(admin, 'TAGS', 'Punjab', '   ')).rejects.toThrow();
+  });
+});
+
 describe('admin RPC registration', () => {
   it('registers the exact legacy admin RPC names', () => {
     const registry = createRpcRegistry();
@@ -660,5 +1038,25 @@ describe('admin RPC registration', () => {
       'api_admin_restoreCustomer',
       'api_admin_purgeCustomer'
     ].every((name) => registry.hasRpc(name))).toBe(true);
+  });
+
+  it('registers the rename RPC as a write, so the client cache is busted', async () => {
+    const registry = createRpcRegistry();
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TAGS', value: 'Punjab | NCR' }];
+
+    registerAdminRpcs(registry, service);
+
+    expect(registry.hasRpc('api_admin_renameConfigItem')).toBe(true);
+
+    const result = await registry.callRpc(
+      'api_admin_renameConfigItem',
+      ['TAGS', 'Punjab', 'PUN'],
+      new Request('https://crm.test/api'),
+      admin
+    );
+
+    expect(result.metadata).toEqual({ bustClientCache: true });
+    expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'PUN | NCR' });
   });
 });
