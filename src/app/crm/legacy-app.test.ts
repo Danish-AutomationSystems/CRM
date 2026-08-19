@@ -1892,3 +1892,28 @@ describe('form fields carry no placeholder text', () => {
     expect(indexHtml).toContain('Name · Designation · Phone · Email');
   });
 });
+
+describe('the old paste-based bulk-add tool is gone', () => {
+  const indexHtml = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'docs', 'source-appscript', 'Index.html'),
+    'utf8'
+  );
+
+  test('has no Bulk add button on the Customers page', () => {
+    expect(indexHtml).not.toContain('mBulkCustomers()');
+  });
+
+  test('has none of the old customer-specific bulk-add functions', () => {
+    for (const name of ['function mBulkCustomers(', 'function previewBulkCust(', 'function saveBulkCust(']) {
+      expect(indexHtml, `${name} should have been removed`).not.toContain(name);
+    }
+  });
+
+  test('kept parseBulkRows, which the contacts bulk-add tool still uses', () => {
+    // parseBulkRows is a shared paste-row parser. mBulkContacts (bk_paste) calls
+    // it too, so deleting it alongside the customer-only bulk-add functions would
+    // break the unrelated contacts bulk-add feature.
+    expect(indexHtml).toContain('function parseBulkRows(');
+    expect(indexHtml).toContain('parseBulkRows(el(\'bk_paste\').value)');
+  });
+});

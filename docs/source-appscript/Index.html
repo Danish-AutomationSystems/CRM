@@ -627,8 +627,7 @@ var searchT = null;
 function vCustomers(){
   S.route='customers'; S.routeArg=null; setTab('customers');
   el('main').innerHTML =
-    '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div>'+
-    '<button class="btn ghost" onclick="mBulkCustomers()">Bulk add</button></div>'+
+    '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div></div>'+
     '<div class="card"><label>Search customers by name, location, type or area</label><input id="custQ" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
     '<div id="custBody"></div>';
   el('custQ').focus();
@@ -1053,51 +1052,16 @@ function saveEditCustomer(id){
     .catch(function(e){ el('saveBtn').disabled=false; oops(e); });
 }
 
-/* ---------------- bulk add customers ---------------- */
-function mBulkCustomers(){
-  openModal('Bulk add customers',
-    '<p class="sub" style="margin-bottom:8px">Paste rows from Excel (one customer per line). Columns, in order:</p>'+
-    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area</p>'+
-    '<p class="hint">Only Name is required. Location must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
-    '<textarea id="bc_paste" style="min-height:130px;margin-top:10px;font-family:var(--mono);font-size:12px"></textarea>'+
-    '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkCust()">Preview</button></div>'+
-    '<div id="bc_prev" style="margin-top:10px"></div>',
-    '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
-    '<button class="btn" id="bc_save" style="display:none" onclick="saveBulkCust()">Add customers</button>', true);
-  el('bc_paste').focus();
-}
+/* parseBulkRows: shared paste-row parser. The customer-bulk-add UI that used
+   to call it is gone, but the contacts bulk-add tool (mBulkContacts, bk_paste
+   below) still depends on it - keep it. */
 function parseBulkRows(raw){
-  return raw.split(/\r?\n/).map(function(l){ return l.replace(/\u00A0/g,' '); })
+  return raw.split(/\r?\n/).map(function(l){ return l.replace(/ /g,' '); })
     .filter(function(l){ return l.trim()!==''; })
     .map(function(l){
       var parts = l.indexOf('\t')>-1 ? l.split('\t') : l.split(',');
       return parts.map(function(p){ return p.trim(); });
     });
-}
-var BCROWS = [];
-function previewBulkCust(){
-  var rows = parseBulkRows(el('bc_paste').value);
-  if(!rows.length){ toast('Paste at least one row.', true); return; }
-  BCROWS = rows.map(function(r){ return { name:r[0]||'', tag:r[1]||'', type:r[2]||'', priority:r[3]||'', area:r[4]||'' }; })
-    .filter(function(r){ return r.name; });
-  if(!BCROWS.length){ toast('No valid rows (every row needs a name).', true); el('bc_prev').innerHTML=''; el('bc_save').style.display='none'; return; }
-  var html = '<div class="ovl">Preview — '+BCROWS.length+' customer'+(BCROWS.length===1?'':'s')+'</div>'+
-    '<table><tr><th>Name</th><th>Location</th><th>Type</th><th>Priority</th><th>Area</th></tr>';
-  BCROWS.slice(0,10).forEach(function(r){
-    html += '<tr><td><b>'+esc(r.name)+'</b></td><td>'+esc(r.tag||'—')+'</td><td>'+esc(r.type||'—')+'</td><td>'+esc(r.priority||'—')+'</td><td>'+esc(r.area||'—')+'</td></tr>';
-  });
-  html += '</table>'+(BCROWS.length>10?'<div class="hint">…and '+(BCROWS.length-10)+' more.</div>':'');
-  el('bc_prev').innerHTML = html;
-  el('bc_save').style.display='';
-}
-function saveBulkCust(){
-  if(!BCROWS.length){ toast('Nothing to add.', true); return; }
-  el('bc_save').disabled = true;
-  gs('api_bulkCustomers', BCROWS).then(function(r){
-    closeModal();
-    toast(r.created+' added'+(r.skipped.length?', '+r.skipped.length+' skipped (duplicates)':'')+'.');
-    vCustomers();
-  }).catch(function(e){ el('bc_save').disabled=false; oops(e); });
 }
 
 /* =====================================================================
