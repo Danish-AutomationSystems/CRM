@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
 <base target="_top">
@@ -1056,7 +1056,7 @@ function saveEditCustomer(id){
    to call it is gone, but the contacts bulk-add tool (mBulkContacts, bk_paste
    below) still depends on it - keep it. */
 function parseBulkRows(raw){
-  return raw.split(/\r?\n/).map(function(l){ return l.replace(/ /g,' '); })
+  return raw.split(/\r?\n/).map(function(l){ return l.replace(/\u00A0/g,' '); })
     .filter(function(l){ return l.trim()!==''; })
     .map(function(l){
       var parts = l.indexOf('\t')>-1 ? l.split('\t') : l.split(',');
@@ -2260,3 +2260,4 @@ if(BOOT && BOOT.ok){ init(); } else { renderLock(); }
 </script>
 </body>
 </html>
+
