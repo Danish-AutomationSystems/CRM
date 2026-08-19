@@ -700,8 +700,15 @@ export function createAdminService(repo: AdminRepository) {
         const settings = await loadSettings(trx);
         const current = listForKey(settings, listKey);
         const next = current.filter((existing) => existing !== item);
-        if (listKey === 'TAGS' && next.length === 0) {
-          throw new Error('Keep at least one tag.');
+        // Every configurable list must keep at least one item, except SEI_NAMES,
+        // which loadSettings (settings/live.ts) deliberately does not fall back
+        // for: an admin may empty it. Every other list, if emptied, parses back
+        // to '' on the next read, and loadSettings falls back to
+        // DEFAULT_SETTINGS - resurrecting built-in values the admin deleted,
+        // which then get treated as live and can be persisted right back into
+        // public.settings. Blocking the last delete here is what prevents that.
+        if (listKey !== 'SEI_NAMES' && next.length === 0) {
+          throw new Error('Keep at least one item.');
         }
 
         await trx.setSetting(listKey, joinPipe(next));

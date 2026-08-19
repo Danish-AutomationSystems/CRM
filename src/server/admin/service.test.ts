@@ -716,6 +716,31 @@ describe('admin service config items', () => {
     await expect(service.deleteConfigItem(admin, 'TAGS', 'Punjab')).rejects.toThrow(/at least one/i);
   });
 
+  // Every configurable list except SEI_NAMES must keep at least one item.
+  // Emptying one to '' would make loadSettings (settings/live.ts) fall back to
+  // DEFAULT_SETTINGS on the next read, resurrecting built-in values the admin
+  // just deleted - and those can then be persisted right back into
+  // public.settings by a subsequent edit, which is the bug this guards against.
+  it.each(['TYPES', 'PRIORITIES', 'CATEGORIES'] as const)(
+    'refuses to delete the last remaining %s item',
+    async (key) => {
+      const { repo, service } = makeService();
+      repo.settings = [{ key, value: 'Only' }];
+
+      await expect(service.deleteConfigItem(admin, key, 'Only')).rejects.toThrow(/at least one/i);
+      expect(repo.settings).toContainEqual({ key, value: 'Only' });
+    }
+  );
+
+  it('allows SEI_NAMES to be emptied to zero items, unlike every other configurable list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'SEI_NAMES', value: 'Only' }];
+
+    await service.deleteConfigItem(admin, 'SEI_NAMES', 'Only');
+
+    expect(repo.settings).toContainEqual({ key: 'SEI_NAMES', value: '' });
+  });
+
   it('refuses to touch the location backfill placeholder', async () => {
     const { repo, service } = makeService();
     repo.settings = [{ key: 'TAGS', value: 'Punjab | TO BE FILLED' }];
