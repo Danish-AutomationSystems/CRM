@@ -1919,11 +1919,27 @@ describe('the old paste-based bulk-add tool is gone', () => {
 });
 
 describe('admin bulk-add repeatable rows', () => {
+  // api_bulkCustomers is wired into the same beforeEach handler (rather than
+  // re-stubbing fetch mid-test) because LegacyFullCrmApp captures
+  // window.__AS_CRM_FETCH__ as a bound reference to whatever `fetch` was
+  // current at mount time - a later `mockRpc()` call inside a test replaces
+  // global fetch, but the legacy client keeps calling the old, already-bound
+  // function, so the new handler would never be reached.
+  let bulkCustomersCalls: unknown[][] = [];
+  let bulkCustomersResult: { created: number; skipped: string[] } = { created: 0, skipped: [] };
+
   beforeEach(async () => {
-    mockRpc((fn) => {
+    bulkCustomersCalls = [];
+    bulkCustomersResult = { created: 0, skipped: [] };
+
+    mockRpc((fn, args) => {
       if (fn === 'api_workspace') return workspace('L6');
       if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['*'], active: true }];
       if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_bulkCustomers') {
+        bulkCustomersCalls.push(args);
+        return bulkCustomersResult;
+      }
       throw new Error(`Unexpected RPC ${fn}`);
     });
 
@@ -1932,6 +1948,7 @@ describe('admin bulk-add repeatable rows', () => {
     await screen.findByRole('heading', { name: 'Overview' });
     window.eval('nav("admin")');
     await screen.findByRole('heading', { name: 'Admin' });
+    await waitFor(() => expect(document.getElementById('bc_name_0')).toBeTruthy());
   });
 
   test('starts with exactly one row', () => {
@@ -1966,5 +1983,32 @@ describe('admin bulk-add repeatable rows', () => {
   test('shows a remove button on every row once there are two or more', () => {
     (window as any).bcAddRow();
     expect(document.querySelectorAll('#bc_rows [data-bc-remove]').length).toBe(2);
+  });
+
+  test('bcSubmit drops blank rows and calls the RPC with only the named ones', async () => {
+    bulkCustomersResult = { created: 1, skipped: [] };
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+    (window as any).bcAddRow();
+    // row 1 left blank
+
+    (window as any).bcSubmit();
+
+    await waitFor(() => {
+      expect(bulkCustomersCalls).toHaveLength(1);
+    });
+
+    const rows = bulkCustomersCalls[0]?.[0] as Array<{ name: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Alpha Panels');
+  });
+
+  test('bcSubmit shows an error and calls no RPC when every row is blank', async () => {
+    (window as any).bcSubmit();
+
+    await waitFor(() => {
+      expect(document.getElementById('toast')?.textContent).toContain('every row needs a name');
+    });
+
+    expect(bulkCustomersCalls).toHaveLength(0);
   });
 });

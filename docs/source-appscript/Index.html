@@ -2141,11 +2141,28 @@ function vAdmin(){
   S.route='admin'; S.routeArg=null; setTab('admin');
   if(!isAdmin()){ el('main').innerHTML = '<div class="card"><div class="empty">The Admin area needs L5.</div></div>'; return; }
   el('main').innerHTML = '<div class="pagehead"><div class="grow"><h1>Admin</h1>'+
-    '<div class="sub">Users, lists, import and database links.</div></div></div><div id="admBody"><div class="sub">Loading…</div></div>'+
-    '<div id="bc_rows"></div>';
-  bcRenderRows();
+    '<div class="sub">Users, lists, import and database links.</div></div></div><div id="admBody"><div class="sub">Loading…</div></div>';
   Promise.all([ gs('api_admin_listUsers'), gs('api_admin_links').catch(function(){ return null; }) ])
     .then(function(res){ renderAdmin(res[0], res[1]); }).catch(oops);
+}
+
+function bcSubmit(){
+  bcCapture();
+  var rows = BC.rows
+    .filter(function(r){ return (r.name||'').trim(); })
+    .map(function(r){
+      return { name: (r.name||'').trim(), tags: r.tags||[], type: r.type||'', priority: r.priority||'', area: r.area||'' };
+    });
+  if(!rows.length){ toast('No valid rows (every row needs a name).', true); return; }
+  el('bcSaveBtn').disabled = true;
+  gs('api_bulkCustomers', rows).then(function(r){
+    el('bcSaveBtn').disabled = false;
+    toast(r.created+' added'+(r.skipped.length?', '+r.skipped.length+' skipped (duplicates)':'')+'.');
+    bcResetRows();
+  }).catch(function(e){
+    el('bcSaveBtn').disabled = false;
+    oops(e);
+  });
 }
 function renderAdmin(users, links){
   var html = '<div class="card"><div class="ovl">Users &amp; access levels</div>';
@@ -2161,6 +2178,14 @@ function renderAdmin(users, links){
   html += '</table><div style="margin-top:10px"><button class="btn" onclick="mUser(null)">+ Add user</button></div>'+
     '<div class="kv" style="margin-top:14px;grid-template-columns:42px 1fr">'+
     Object.keys({L1:1,L2:1,L3:1,L4:1,L5:1,L6:1}).map(function(k){ return '<b>'+k+'</b><span class="sub">'+esc(LEVEL_DESC[k])+'</span>'; }).join('')+
+    '</div></div>';
+
+  html += '<div class="card"><div class="ovl">Add customers</div>'+
+    '<p class="hint" style="margin-top:-4px">Fill as many rows as you need, then add them all at once. Only Name is required.</p>'+
+    '<div id="bc_rows"></div>'+
+    '<div style="display:flex;gap:8px;margin-top:8px">'+
+    '<button type="button" class="btn ghost sm" onclick="bcAddRow()">+ Add another customer</button>'+
+    '<button type="button" class="btn" id="bcSaveBtn" onclick="bcSubmit()">Add customers</button>'+
     '</div></div>';
 
   html += '<div class="row"><div class="col">'+
@@ -2181,7 +2206,7 @@ function renderAdmin(users, links){
   html += '<div class="card"><div class="ovl">Import customers from the sheet</div>'+
     '<p style="margin-bottom:8px">Open the database sheet (link below), paste rows into the <b>Import</b> tab under these columns, then run import:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area · Address · GSTIN · ContactName · ContactDesignation · ContactPhone · ContactEmail · Handlers</p>'+
-    '<p class="hint">Handlers accept comma-separated emails (must be active users). Rows whose Name already exists are skipped. Processed rows are cleared. Tip: for everyday use the in-app “Bulk add” on the Customers page is faster.</p>'+
+    '<p class="hint">Handlers accept comma-separated emails (must be active users). Rows whose Name already exists are skipped. Processed rows are cleared. Tip: for everyday use the "Add customers" card above instead.</p>'+
     '<div style="margin-top:10px;display:flex;gap:10px;align-items:center"><button class="btn" id="impBtn" onclick="runImport()">Run customer import</button><span id="impRes" class="sub"></span></div></div>';
 
   html += '<div class="card"><div class="ovl">Import contacts from the sheet</div>'+
@@ -2201,6 +2226,7 @@ function renderAdmin(users, links){
       '<a class="btn ghost sm" href="'+esc(links.quotes)+'" target="_blank" rel="noopener">Generated quotations folder</a></div></div>';
   }
   el('admBody').innerHTML = html;
+  bcRenderRows();
   loadRecycle();
 }
 function configCard(title, key, items, hint){

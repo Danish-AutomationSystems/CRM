@@ -1079,6 +1079,67 @@ test('Admin config cards show configured items with edit/delete controls, and Ca
   await expect(page.getByText('Case sources')).toHaveCount(0);
 });
 
+test('the Admin page has an Add customers card with one row by default', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/admin');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+
+  const card = page.locator('.card', { has: page.locator('.ovl', { hasText: 'Add customers' }) });
+  await expect(card).toBeVisible();
+  await expect(card.locator('[id^="bc_name_"]')).toHaveCount(1);
+  await expect(card.getByRole('button', { name: 'Add another customer' })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Add customers' })).toBeVisible();
+});
+
+test('the Customers page no longer has a Bulk add button', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.goto('/crm/customers');
+  await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Bulk add', exact: true })).toHaveCount(0);
+});
+
+test('submitting two named rows and one blank row sends only the named rows', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  let bulkArgs: unknown[] | undefined;
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_bulkCustomers') {
+      bulkArgs = body.args;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: { created: 2, skipped: [] } })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/admin');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+
+  await page.locator('#bc_name_0').fill('Alpha Panels');
+  await page.getByRole('button', { name: 'Add another customer' }).click();
+  await page.locator('#bc_name_1').fill('Beta Traders');
+  await page.getByRole('button', { name: 'Add another customer' }).click();
+  // row 2 left blank
+  await page.getByRole('button', { name: 'Add customers' }).click();
+
+  await expect(page.locator('#toast')).toBeVisible();
+  expect(bulkArgs).toBeDefined();
+  const rows = bulkArgs?.[0] as Array<{ name: string }>;
+  expect(rows).toHaveLength(2);
+  expect(rows.map((r) => r.name)).toEqual(['Alpha Panels', 'Beta Traders']);
+
+  await expect(page.locator('[id^="bc_name_"]')).toHaveCount(1);
+});
+
 test('the cases list shows a priority badge only for cases that have one', async ({ context, page }) => {
   test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
   await context.addCookies([
