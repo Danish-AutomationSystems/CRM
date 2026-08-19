@@ -800,7 +800,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           if (!(value > 0)) throw new Error('Enter the order value (the amount at which the order was won).');
           // Update path: the case's existing categories stay acceptable even if an
           // admin has since retired one, so re-saving a Won case cannot strip them.
-          const categories = validCategories(data.categories, (await loadSettings(repo)).categories, row.wonCategories);
+          const categories = validCategories(data.categories, (await loadSettings(trx)).categories, row.wonCategories);
           if (!categories.length) throw new Error('Select at least one product category for the won order.');
           fields.orderValue = Math.round(value * 100) / 100;
           fields.wonCategories = categories;
