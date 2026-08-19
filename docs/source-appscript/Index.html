@@ -2078,11 +2078,72 @@ function newRevision(){
 /* =====================================================================
  * ADMIN
  * =================================================================== */
+/* ---------------- Admin: bulk-add customers ----------------
+   Repeatable rows, following the same capture-before-mutate pattern the
+   quote builder's BOQ blocks already use (captureBlocks(), qb_bt_<i>): read
+   the DOM back into state before any add/remove, then fully re-render with
+   contiguous 0..n-1 ids. This is what stops an add/remove from silently
+   discarding text already typed into another row. */
+var BC = { rows: [{}] };
+
+function bcCapture(){
+  BC.rows.forEach(function(r,i){
+    if(!el('bc_name_'+i)) return; // not yet rendered (e.g. right after a reset)
+    r.name = v('bc_name_'+i);
+    r.tags = pickerVal('bc_tags_'+i);
+    r.type = v('bc_type_'+i);
+    r.priority = v('bc_priority_'+i);
+    r.area = v('bc_area_'+i);
+  });
+}
+
+function bcRowHTML(row, i){
+  row = row || {};
+  var removeBtn = BC.rows.length > 1
+    ? '<button type="button" class="btn ghost sm" data-bc-remove onclick="bcRemoveRow('+i+')">Remove</button>'
+    : '';
+  return '<div class="card" style="background:#FAFBFA;padding:12px;margin-bottom:8px">'+
+    '<div class="frow"><div style="flex:2"><label class="req">Name</label><input id="bc_name_'+i+'" value="'+esc(row.name||'')+'"></div>'+
+    '<div style="flex:0;display:flex;align-items:flex-end">'+removeBtn+'</div></div>'+
+    '<div class="frow"><div style="flex:1"><label>Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], false)+'</div></div>'+
+    '<div class="frow">'+
+    '<div><label>Type</label><select id="bc_type_'+i+'"><option value="">—</option>'+selOptions(S.settings.types, row.type)+'</select></div>'+
+    '<div><label>Priority</label><select id="bc_priority_'+i+'"><option value="">—</option>'+selOptions(S.settings.priorities, row.priority)+'</select></div>'+
+    '<div><label>Area</label><input id="bc_area_'+i+'" value="'+esc(row.area||'')+'"></div>'+
+    '</div></div>';
+}
+
+function bcRenderRows(){
+  var body = el('bc_rows');
+  if(!body) return;
+  body.innerHTML = BC.rows.map(function(r,i){ return bcRowHTML(r,i); }).join('');
+}
+
+function bcAddRow(){
+  bcCapture();
+  BC.rows.push({});
+  bcRenderRows();
+}
+
+function bcRemoveRow(i){
+  if(BC.rows.length <= 1) return;
+  bcCapture();
+  BC.rows.splice(i,1);
+  bcRenderRows();
+}
+
+function bcResetRows(){
+  BC.rows = [{}];
+  bcRenderRows();
+}
+
 function vAdmin(){
   S.route='admin'; S.routeArg=null; setTab('admin');
   if(!isAdmin()){ el('main').innerHTML = '<div class="card"><div class="empty">The Admin area needs L5.</div></div>'; return; }
   el('main').innerHTML = '<div class="pagehead"><div class="grow"><h1>Admin</h1>'+
-    '<div class="sub">Users, lists, import and database links.</div></div></div><div id="admBody"><div class="sub">Loading…</div></div>';
+    '<div class="sub">Users, lists, import and database links.</div></div></div><div id="admBody"><div class="sub">Loading…</div></div>'+
+    '<div id="bc_rows"></div>';
+  bcRenderRows();
   Promise.all([ gs('api_admin_listUsers'), gs('api_admin_links').catch(function(){ return null; }) ])
     .then(function(res){ renderAdmin(res[0], res[1]); }).catch(oops);
 }

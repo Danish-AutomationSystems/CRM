@@ -1917,3 +1917,54 @@ describe('the old paste-based bulk-add tool is gone', () => {
     expect(indexHtml).toContain('parseBulkRows(el(\'bk_paste\').value)');
   });
 });
+
+describe('admin bulk-add repeatable rows', () => {
+  beforeEach(async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['*'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+  });
+
+  test('starts with exactly one row', () => {
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(1);
+  });
+
+  test('adding a row does not lose text already typed into another row', () => {
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+    (document.getElementById('bc_area_0') as HTMLInputElement).value = 'Ludhiana';
+    (window as any).bcAddRow();
+    expect((document.getElementById('bc_name_0') as HTMLInputElement).value).toBe('Alpha Panels');
+    expect((document.getElementById('bc_area_0') as HTMLInputElement).value).toBe('Ludhiana');
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(2);
+  });
+
+  test('removing a row keeps the surviving rows contiguous and their values intact', () => {
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha';
+    (window as any).bcAddRow();
+    (document.getElementById('bc_name_1') as HTMLInputElement).value = 'Beta';
+    (window as any).bcAddRow();
+    (document.getElementById('bc_name_2') as HTMLInputElement).value = 'Gamma';
+    (window as any).bcRemoveRow(1); // remove the middle row (Beta)
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(2);
+    expect((document.getElementById('bc_name_0') as HTMLInputElement).value).toBe('Alpha');
+    expect((document.getElementById('bc_name_1') as HTMLInputElement).value).toBe('Gamma');
+  });
+
+  test('does not show a remove button when there is only one row', () => {
+    expect(document.querySelector('#bc_rows [data-bc-remove]')).toBeNull();
+  });
+
+  test('shows a remove button on every row once there are two or more', () => {
+    (window as any).bcAddRow();
+    expect(document.querySelectorAll('#bc_rows [data-bc-remove]').length).toBe(2);
+  });
+});
