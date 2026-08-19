@@ -428,6 +428,14 @@ describe('admin service settings and links', () => {
     await expect(service.saveSettings(admin, { tags: [] })).rejects.toThrow('Keep at least one tag');
   });
 
+  it('refuses to save an empty TYPES/PRIORITIES/CATEGORIES list, matching deleteConfigItem', async () => {
+    const { service } = makeService();
+
+    await expect(service.saveSettings(admin, { types: [] })).rejects.toThrow('Keep at least one item');
+    await expect(service.saveSettings(admin, { priorities: [] })).rejects.toThrow('Keep at least one item');
+    await expect(service.saveSettings(admin, { categories: [] })).rejects.toThrow('Keep at least one item');
+  });
+
   it('P8: an L6 can edit the SEI_NAMES list through the existing settings RPC', async () => {
     const { repo, service } = makeService();
 

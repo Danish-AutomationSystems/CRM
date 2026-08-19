@@ -380,6 +380,23 @@ function reservedConfigValue(text: string): string {
   return text;
 }
 
+/**
+ * Every configurable list must keep at least one item, except SEI_NAMES, which
+ * loadSettings (settings/live.ts) deliberately does not fall back for: an admin
+ * may empty it. Every other list, if emptied, parses back to '' on the next read,
+ * and loadSettings falls back to DEFAULT_SETTINGS - resurrecting built-in values
+ * the admin deleted, which then get treated as live and can be persisted right
+ * back into public.settings. Shared by deleteConfigItem and saveSettings so the
+ * two admin paths to the same list can't drift out of sync on this rule.
+ */
+const KEEP_AT_LEAST_ONE_KEYS: readonly ConfigListKey[] = CONFIGURABLE_KEYS.filter((key) => key !== 'SEI_NAMES');
+
+function assertKeepsAtLeastOne(key: ConfigListKey, next: readonly string[]): void {
+  if (KEEP_AT_LEAST_ONE_KEYS.includes(key) && next.length === 0) {
+    throw new Error('Keep at least one item.');
+  }
+}
+
 function listForKey(settings: Awaited<ReturnType<typeof loadSettings>>, key: ConfigListKey): string[] {
   switch (key) {
     case 'TAGS':
@@ -613,12 +630,20 @@ export function createAdminService(repo: AdminRepository) {
         if (!tags.length) throw new Error('Keep at least one tag.');
         writes.push({ key: 'TAGS', value: joinPipe(tags) });
       }
-      if (input.types !== undefined) writes.push({ key: 'TYPES', value: joinPipe(cleanList(input.types)) });
+      if (input.types !== undefined) {
+        const types = cleanList(input.types);
+        assertKeepsAtLeastOne('TYPES', types);
+        writes.push({ key: 'TYPES', value: joinPipe(types) });
+      }
       if (input.priorities !== undefined) {
-        writes.push({ key: 'PRIORITIES', value: joinPipe(cleanList(input.priorities)) });
+        const priorities = cleanList(input.priorities);
+        assertKeepsAtLeastOne('PRIORITIES', priorities);
+        writes.push({ key: 'PRIORITIES', value: joinPipe(priorities) });
       }
       if (input.categories !== undefined) {
-        writes.push({ key: 'CATEGORIES', value: joinPipe(cleanList(input.categories)) });
+        const categories = cleanList(input.categories);
+        assertKeepsAtLeastOne('CATEGORIES', categories);
+        writes.push({ key: 'CATEGORIES', value: joinPipe(categories) });
       }
       // P8: the SEI name list is admin-managed and may legitimately be empty.
       if (input.seiNames !== undefined) {
@@ -700,16 +725,7 @@ export function createAdminService(repo: AdminRepository) {
         const settings = await loadSettings(trx);
         const current = listForKey(settings, listKey);
         const next = current.filter((existing) => existing !== item);
-        // Every configurable list must keep at least one item, except SEI_NAMES,
-        // which loadSettings (settings/live.ts) deliberately does not fall back
-        // for: an admin may empty it. Every other list, if emptied, parses back
-        // to '' on the next read, and loadSettings falls back to
-        // DEFAULT_SETTINGS - resurrecting built-in values the admin deleted,
-        // which then get treated as live and can be persisted right back into
-        // public.settings. Blocking the last delete here is what prevents that.
-        if (listKey !== 'SEI_NAMES' && next.length === 0) {
-          throw new Error('Keep at least one item.');
-        }
+        assertKeepsAtLeastOne(listKey, next);
 
         await trx.setSetting(listKey, joinPipe(next));
         await trx.logActivity({
