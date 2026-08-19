@@ -184,6 +184,11 @@ class FakeAdminRepository implements AdminRepository {
     else this.settings.push({ key, value });
   }
 
+  async lockSetting(key: SettingRow['key']): Promise<string | null> {
+    this.ops.push(`lock:${key}`);
+    return this.settings.find((setting) => setting.key === key)?.value ?? null;
+  }
+
   async nextCustomerId(): Promise<string> {
     return `CUST-${String(this.customerSeq++).padStart(4, '0')}`;
   }
@@ -747,6 +752,70 @@ describe('admin service config items', () => {
   });
 
   /**
+   * Row-lock ordering, pinned by the ops trace. A real Postgres `for update`
+   * lock can't be reproduced by an in-memory fake, but the sequence it must be
+   * called in can: lock the row, THEN read the list, THEN write it back. Locking
+   * after the read (or not at all) is exactly the shape of the race this exists
+   * to close - see task-5-lock-report.md.
+   */
+  it('addConfigItem locks the settings row before reading the list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha' }];
+
+    await service.addConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.ops).toEqual(['lock:TYPES', 'setSetting:TYPES', 'log:CONFIG_ADD']);
+  });
+
+  it('deleteConfigItem locks the settings row before reading the list', async () => {
+    const { repo, service } = makeService();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha | Beta' }];
+
+    await service.deleteConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.ops).toEqual(['lock:TYPES', 'setSetting:TYPES', 'log:CONFIG_DELETE']);
+  });
+
+  /**
+   * The lock must be taken from the transaction handle (the object the
+   * `withTransaction` callback receives), never from the outer repository - a
+   * lock acquired outside the transaction releases immediately (or, for an
+   * advisory-style stand-in, guards nothing the transaction can see) and
+   * closes nothing. This outer repo's own lockSetting throws if reached; only
+   * the child instance handed to the callback (mirroring how
+   * PostgresAdminRepository.withTransaction hands the callback a repository
+   * wrapping the transaction's own connection) has a working one.
+   */
+  it('locks from the transaction handle, not the outer repository', async () => {
+    class TransactionHandleFakeAdminRepository extends FakeAdminRepository {
+      async lockSetting(): Promise<string | null> {
+        throw new Error('lockSetting must be called on the transaction handle, not the outer repository');
+      }
+      async withTransaction<T>(fn: (repo?: AdminRepository) => Promise<T>): Promise<T> {
+        const trx = new FakeAdminRepository();
+        trx.settings = this.settings;
+        trx.logs = this.logs;
+        trx.ops = this.ops;
+        trx.customers = this.customers;
+        trx.tableRows = this.tableRows;
+        trx.renames = this.renames;
+        trx.users = this.users;
+        const result = await fn(trx);
+        this.committed = trx.committed;
+        return result;
+      }
+    }
+    const repo = new TransactionHandleFakeAdminRepository();
+    repo.settings = [{ key: 'TYPES', value: 'Alpha' }];
+    const service = createAdminService(repo);
+
+    await service.addConfigItem(admin, 'TYPES', 'Beta');
+
+    expect(repo.settings).toContainEqual({ key: 'TYPES', value: 'Alpha | Beta' });
+    expect(repo.ops).toContain('lock:TYPES');
+  });
+
+  /**
    * Stands in for a second admin's transaction committing in the gap between
    * this request's pre-check read and the point where its own transaction
    * begins. If the service reads settings before withTransaction, it works
@@ -992,6 +1061,7 @@ describe('admin service config rename', () => {
     await service.renameConfigItem(admin, 'TAGS', 'Punjab', 'PUN');
 
     expect(repo.ops).toEqual([
+      'lock:TAGS',
       'rename:customers.tags',
       'rename:users.allowed_tags',
       'rename:recycle_bin.tags',

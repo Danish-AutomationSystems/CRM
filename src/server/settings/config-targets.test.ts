@@ -335,3 +335,30 @@ describe('the SQL that implements a rename', () => {
     expect(body).not.toContain('unsafe(');
   });
 });
+
+/**
+ * PostgresAdminRepository.lockSetting cannot be run against a real Postgres from
+ * this suite either, so its one load-bearing property - that it actually takes a
+ * row lock rather than a plain SELECT - is checked against the source. A `for
+ * update` typo or an accidental revert to a bare `select` would compile and pass
+ * every in-memory fake test, since the fakes cannot distinguish a locking read
+ * from a non-locking one; only this guards it.
+ */
+describe('the SQL that implements lockSetting', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'admin', 'service.ts'), 'utf8');
+  // Bound by the NEXT method, not a named one: see the renameConfigValue block
+  // above for why a name that also occurs earlier (e.g. in the AdminRepository
+  // interface) makes the slice run backwards and every assertion pass vacuously.
+  const start = source.indexOf('  async lockSetting(');
+  const next = source.indexOf('\n  async ', start + 1);
+  const body = start === -1 ? '' : source.slice(start, next === -1 ? source.length : next);
+
+  it('was found in the repository', () => {
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain('select value from public.settings');
+  });
+
+  it('takes a row lock rather than a plain read', () => {
+    expect(body).toMatch(/for update/i);
+  });
+});

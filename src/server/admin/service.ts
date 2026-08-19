@@ -120,6 +120,22 @@ export type AdminRepository = {
   updateUser(email: string, fields: Partial<AdminUserRow>): Promise<void>;
   listSettings(): Promise<AdminSettingRow[]>;
   setSetting(key: AdminSettingRow['key'], value: string): Promise<void>;
+  /**
+   * Reads one settings row and holds a row lock on it for the rest of the
+   * transaction, so two concurrent config mutations of the same key serialise
+   * rather than interleaving into a lost update. Without it the loser's write
+   * strands a value: the data rewrite lands but the list no longer contains the
+   * value, so it is unselectable, invisible in admin, and unrenameable - and for
+   * TAGS that is silent access loss, since locations gate customer visibility.
+   *
+   * `for update` locks an existing row only. Every configurable key is seeded by
+   * migration 0001_initial_schema.sql, so in practice the row always exists by
+   * the time this is called; a database where a key was never seeded has nothing
+   * to lock and two concurrent first-inserts of that key could still race. That
+   * gap is accepted, not silently: it requires a hand-edited database that skipped
+   * seeding, which defaultSettingRows()/the migration rule out for a normal deploy.
+   */
+  lockSetting(key: AdminSettingRow['key']): Promise<string | null>;
   nextCustomerId(): Promise<string>;
   nextContactId(): Promise<string>;
   listCustomers(): Promise<AdminCustomerRow[]>;
@@ -645,6 +661,11 @@ export function createAdminService(repo: AdminRepository) {
       // written back. See Important 2 in the task-5 code review.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        // Lock the row before reading it: see lockSetting's doc comment on
+        // AdminRepository. Taken from trx (the transaction handle), not repo -
+        // a lock taken outside the transaction releases immediately and
+        // guards nothing.
+        await trx.lockSetting(listKey);
         const settings = await loadSettings(trx);
         const current = listForKey(settings, listKey);
         if (current.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
@@ -674,6 +695,8 @@ export function createAdminService(repo: AdminRepository) {
       // Read inside the transaction; see addConfigItem above.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        // Lock the row before reading it; see addConfigItem above.
+        await trx.lockSetting(listKey);
         const settings = await loadSettings(trx);
         const current = listForKey(settings, listKey);
         const next = current.filter((existing) => existing !== item);
@@ -725,6 +748,8 @@ export function createAdminService(repo: AdminRepository) {
       // Read inside the transaction; see addConfigItem above.
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        // Lock the row before reading it; see addConfigItem above.
+        await trx.lockSetting(listKey);
         const settings = await loadSettings(trx);
         const current = listForKey(settings, listKey);
         if (!current.includes(from)) {
@@ -1148,6 +1173,13 @@ export class PostgresAdminRepository implements AdminRepository {
       values (${key}, ${value})
       on conflict (key) do update set value = excluded.value
     `;
+  }
+
+  async lockSetting(key: AdminSettingRow['key']): Promise<string | null> {
+    const rows = (await this.db`
+      select value from public.settings where key = ${key} for update
+    `) as Array<{ value: string | null }>;
+    return rows[0]?.value ?? null;
   }
 
   async nextCustomerId(): Promise<string> {
