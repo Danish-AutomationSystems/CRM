@@ -1892,3 +1892,123 @@ describe('form fields carry no placeholder text', () => {
     expect(indexHtml).toContain('Name · Designation · Phone · Email');
   });
 });
+
+describe('the old paste-based bulk-add tool is gone', () => {
+  const indexHtml = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'docs', 'source-appscript', 'Index.html'),
+    'utf8'
+  );
+
+  test('has no Bulk add button on the Customers page', () => {
+    expect(indexHtml).not.toContain('mBulkCustomers()');
+  });
+
+  test('has none of the old customer-specific bulk-add functions', () => {
+    for (const name of ['function mBulkCustomers(', 'function previewBulkCust(', 'function saveBulkCust(']) {
+      expect(indexHtml, `${name} should have been removed`).not.toContain(name);
+    }
+  });
+
+  test('kept parseBulkRows, which the contacts bulk-add tool still uses', () => {
+    // parseBulkRows is a shared paste-row parser. mBulkContacts (bk_paste) calls
+    // it too, so deleting it alongside the customer-only bulk-add functions would
+    // break the unrelated contacts bulk-add feature.
+    expect(indexHtml).toContain('function parseBulkRows(');
+    expect(indexHtml).toContain('parseBulkRows(el(\'bk_paste\').value)');
+  });
+});
+
+describe('admin bulk-add repeatable rows', () => {
+  // api_bulkCustomers is wired into the same beforeEach handler (rather than
+  // re-stubbing fetch mid-test) because LegacyFullCrmApp captures
+  // window.__AS_CRM_FETCH__ as a bound reference to whatever `fetch` was
+  // current at mount time - a later `mockRpc()` call inside a test replaces
+  // global fetch, but the legacy client keeps calling the old, already-bound
+  // function, so the new handler would never be reached.
+  let bulkCustomersCalls: unknown[][] = [];
+  let bulkCustomersResult: { created: number; skipped: string[] } = { created: 0, skipped: [] };
+
+  beforeEach(async () => {
+    bulkCustomersCalls = [];
+    bulkCustomersResult = { created: 0, skipped: [] };
+
+    mockRpc((fn, args) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['*'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_bulkCustomers') {
+        bulkCustomersCalls.push(args);
+        return bulkCustomersResult;
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+    await waitFor(() => expect(document.getElementById('bc_name_0')).toBeTruthy());
+  });
+
+  test('starts with exactly one row', () => {
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(1);
+  });
+
+  test('adding a row does not lose text already typed into another row', () => {
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+    (document.getElementById('bc_area_0') as HTMLInputElement).value = 'Ludhiana';
+    (window as any).bcAddRow();
+    expect((document.getElementById('bc_name_0') as HTMLInputElement).value).toBe('Alpha Panels');
+    expect((document.getElementById('bc_area_0') as HTMLInputElement).value).toBe('Ludhiana');
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(2);
+  });
+
+  test('removing a row keeps the surviving rows contiguous and their values intact', () => {
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha';
+    (window as any).bcAddRow();
+    (document.getElementById('bc_name_1') as HTMLInputElement).value = 'Beta';
+    (window as any).bcAddRow();
+    (document.getElementById('bc_name_2') as HTMLInputElement).value = 'Gamma';
+    (window as any).bcRemoveRow(1); // remove the middle row (Beta)
+    expect(document.querySelectorAll('[id^="bc_name_"]').length).toBe(2);
+    expect((document.getElementById('bc_name_0') as HTMLInputElement).value).toBe('Alpha');
+    expect((document.getElementById('bc_name_1') as HTMLInputElement).value).toBe('Gamma');
+  });
+
+  test('does not show a remove button when there is only one row', () => {
+    expect(document.querySelector('#bc_rows [data-bc-remove]')).toBeNull();
+  });
+
+  test('shows a remove button on every row once there are two or more', () => {
+    (window as any).bcAddRow();
+    expect(document.querySelectorAll('#bc_rows [data-bc-remove]').length).toBe(2);
+  });
+
+  test('bcSubmit drops blank rows and calls the RPC with only the named ones', async () => {
+    bulkCustomersResult = { created: 1, skipped: [] };
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+    (window as any).bcAddRow();
+    // row 1 left blank
+
+    (window as any).bcSubmit();
+
+    await waitFor(() => {
+      expect(bulkCustomersCalls).toHaveLength(1);
+    });
+
+    const rows = bulkCustomersCalls[0]?.[0] as Array<{ name: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Alpha Panels');
+  });
+
+  test('bcSubmit shows an error and calls no RPC when every row is blank', async () => {
+    (window as any).bcSubmit();
+
+    await waitFor(() => {
+      expect(document.getElementById('toast')?.textContent).toContain('every row needs a name');
+    });
+
+    expect(bulkCustomersCalls).toHaveLength(0);
+  });
+});

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
 <base target="_top">
@@ -627,8 +627,7 @@ var searchT = null;
 function vCustomers(){
   S.route='customers'; S.routeArg=null; setTab('customers');
   el('main').innerHTML =
-    '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div>'+
-    '<button class="btn ghost" onclick="mBulkCustomers()">Bulk add</button></div>'+
+    '<div class="pagehead"><div class="grow"><h1>Customers</h1><div class="sub">Search first — if the customer isn\'t there, create it from the search result.</div></div></div>'+
     '<div class="card"><label>Search customers by name, location, type or area</label><input id="custQ" value="'+esc(S.custQ)+'" oninput="custTyped()"></div>'+
     '<div id="custBody"></div>';
   el('custQ').focus();
@@ -1053,19 +1052,9 @@ function saveEditCustomer(id){
     .catch(function(e){ el('saveBtn').disabled=false; oops(e); });
 }
 
-/* ---------------- bulk add customers ---------------- */
-function mBulkCustomers(){
-  openModal('Bulk add customers',
-    '<p class="sub" style="margin-bottom:8px">Paste rows from Excel (one customer per line). Columns, in order:</p>'+
-    '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area</p>'+
-    '<p class="hint">Only Name is required. Location must be one of: '+esc(S.settings.tags.join(', '))+'. Type: '+esc(S.settings.types.join('/'))+'. Priority: '+esc(S.settings.priorities.join('/'))+'. You become the handler for each.</p>'+
-    '<textarea id="bc_paste" style="min-height:130px;margin-top:10px;font-family:var(--mono);font-size:12px"></textarea>'+
-    '<div style="margin-top:8px"><button class="btn sm" onclick="previewBulkCust()">Preview</button></div>'+
-    '<div id="bc_prev" style="margin-top:10px"></div>',
-    '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
-    '<button class="btn" id="bc_save" style="display:none" onclick="saveBulkCust()">Add customers</button>', true);
-  el('bc_paste').focus();
-}
+/* parseBulkRows: shared paste-row parser. The customer-bulk-add UI that used
+   to call it is gone, but the contacts bulk-add tool (mBulkContacts, bk_paste
+   below) still depends on it - keep it. */
 function parseBulkRows(raw){
   return raw.split(/\r?\n/).map(function(l){ return l.replace(/\u00A0/g,' '); })
     .filter(function(l){ return l.trim()!==''; })
@@ -1073,31 +1062,6 @@ function parseBulkRows(raw){
       var parts = l.indexOf('\t')>-1 ? l.split('\t') : l.split(',');
       return parts.map(function(p){ return p.trim(); });
     });
-}
-var BCROWS = [];
-function previewBulkCust(){
-  var rows = parseBulkRows(el('bc_paste').value);
-  if(!rows.length){ toast('Paste at least one row.', true); return; }
-  BCROWS = rows.map(function(r){ return { name:r[0]||'', tag:r[1]||'', type:r[2]||'', priority:r[3]||'', area:r[4]||'' }; })
-    .filter(function(r){ return r.name; });
-  if(!BCROWS.length){ toast('No valid rows (every row needs a name).', true); el('bc_prev').innerHTML=''; el('bc_save').style.display='none'; return; }
-  var html = '<div class="ovl">Preview — '+BCROWS.length+' customer'+(BCROWS.length===1?'':'s')+'</div>'+
-    '<table><tr><th>Name</th><th>Location</th><th>Type</th><th>Priority</th><th>Area</th></tr>';
-  BCROWS.slice(0,10).forEach(function(r){
-    html += '<tr><td><b>'+esc(r.name)+'</b></td><td>'+esc(r.tag||'—')+'</td><td>'+esc(r.type||'—')+'</td><td>'+esc(r.priority||'—')+'</td><td>'+esc(r.area||'—')+'</td></tr>';
-  });
-  html += '</table>'+(BCROWS.length>10?'<div class="hint">…and '+(BCROWS.length-10)+' more.</div>':'');
-  el('bc_prev').innerHTML = html;
-  el('bc_save').style.display='';
-}
-function saveBulkCust(){
-  if(!BCROWS.length){ toast('Nothing to add.', true); return; }
-  el('bc_save').disabled = true;
-  gs('api_bulkCustomers', BCROWS).then(function(r){
-    closeModal();
-    toast(r.created+' added'+(r.skipped.length?', '+r.skipped.length+' skipped (duplicates)':'')+'.');
-    vCustomers();
-  }).catch(function(e){ el('bc_save').disabled=false; oops(e); });
 }
 
 /* =====================================================================
@@ -2114,6 +2078,65 @@ function newRevision(){
 /* =====================================================================
  * ADMIN
  * =================================================================== */
+/* ---------------- Admin: bulk-add customers ----------------
+   Repeatable rows, following the same capture-before-mutate pattern the
+   quote builder's BOQ blocks already use (captureBlocks(), qb_bt_<i>): read
+   the DOM back into state before any add/remove, then fully re-render with
+   contiguous 0..n-1 ids. This is what stops an add/remove from silently
+   discarding text already typed into another row. */
+var BC = { rows: [{}] };
+
+function bcCapture(){
+  BC.rows.forEach(function(r,i){
+    if(!el('bc_name_'+i)) return; // not yet rendered (e.g. right after a reset)
+    r.name = v('bc_name_'+i);
+    r.tags = pickerVal('bc_tags_'+i);
+    r.type = v('bc_type_'+i);
+    r.priority = v('bc_priority_'+i);
+    r.area = v('bc_area_'+i);
+  });
+}
+
+function bcRowHTML(row, i){
+  row = row || {};
+  var removeBtn = BC.rows.length > 1
+    ? '<button type="button" class="btn ghost sm" data-bc-remove onclick="bcRemoveRow('+i+')">Remove</button>'
+    : '';
+  return '<div class="card" style="background:#FAFBFA;padding:12px;margin-bottom:8px">'+
+    '<div class="frow"><div style="flex:2"><label class="req">Name</label><input id="bc_name_'+i+'" value="'+esc(row.name||'')+'"></div>'+
+    '<div style="flex:0;display:flex;align-items:flex-end">'+removeBtn+'</div></div>'+
+    '<div class="frow"><div style="flex:1"><label>Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], false)+'</div></div>'+
+    '<div class="frow">'+
+    '<div><label>Type</label><select id="bc_type_'+i+'"><option value="">—</option>'+selOptions(S.settings.types, row.type)+'</select></div>'+
+    '<div><label>Priority</label><select id="bc_priority_'+i+'"><option value="">—</option>'+selOptions(S.settings.priorities, row.priority)+'</select></div>'+
+    '<div><label>Area</label><input id="bc_area_'+i+'" value="'+esc(row.area||'')+'"></div>'+
+    '</div></div>';
+}
+
+function bcRenderRows(){
+  var body = el('bc_rows');
+  if(!body) return;
+  body.innerHTML = BC.rows.map(function(r,i){ return bcRowHTML(r,i); }).join('');
+}
+
+function bcAddRow(){
+  bcCapture();
+  BC.rows.push({});
+  bcRenderRows();
+}
+
+function bcRemoveRow(i){
+  if(BC.rows.length <= 1) return;
+  bcCapture();
+  BC.rows.splice(i,1);
+  bcRenderRows();
+}
+
+function bcResetRows(){
+  BC.rows = [{}];
+  bcRenderRows();
+}
+
 function vAdmin(){
   S.route='admin'; S.routeArg=null; setTab('admin');
   if(!isAdmin()){ el('main').innerHTML = '<div class="card"><div class="empty">The Admin area needs L5.</div></div>'; return; }
@@ -2121,6 +2144,25 @@ function vAdmin(){
     '<div class="sub">Users, lists, import and database links.</div></div></div><div id="admBody"><div class="sub">Loading…</div></div>';
   Promise.all([ gs('api_admin_listUsers'), gs('api_admin_links').catch(function(){ return null; }) ])
     .then(function(res){ renderAdmin(res[0], res[1]); }).catch(oops);
+}
+
+function bcSubmit(){
+  bcCapture();
+  var rows = BC.rows
+    .filter(function(r){ return (r.name||'').trim(); })
+    .map(function(r){
+      return { name: (r.name||'').trim(), tags: r.tags||[], type: r.type||'', priority: r.priority||'', area: r.area||'' };
+    });
+  if(!rows.length){ toast('No valid rows (every row needs a name).', true); return; }
+  el('bcSaveBtn').disabled = true;
+  gs('api_bulkCustomers', rows).then(function(r){
+    el('bcSaveBtn').disabled = false;
+    toast(r.created+' added'+(r.skipped.length?', '+r.skipped.length+' skipped (duplicates)':'')+'.');
+    bcResetRows();
+  }).catch(function(e){
+    el('bcSaveBtn').disabled = false;
+    oops(e);
+  });
 }
 function renderAdmin(users, links){
   var html = '<div class="card"><div class="ovl">Users &amp; access levels</div>';
@@ -2136,6 +2178,14 @@ function renderAdmin(users, links){
   html += '</table><div style="margin-top:10px"><button class="btn" onclick="mUser(null)">+ Add user</button></div>'+
     '<div class="kv" style="margin-top:14px;grid-template-columns:42px 1fr">'+
     Object.keys({L1:1,L2:1,L3:1,L4:1,L5:1,L6:1}).map(function(k){ return '<b>'+k+'</b><span class="sub">'+esc(LEVEL_DESC[k])+'</span>'; }).join('')+
+    '</div></div>';
+
+  html += '<div class="card"><div class="ovl">Add customers</div>'+
+    '<p class="hint" style="margin-top:-4px">Fill as many rows as you need, then add them all at once. Only Name is required.</p>'+
+    '<div id="bc_rows"></div>'+
+    '<div style="display:flex;gap:8px;margin-top:8px">'+
+    '<button type="button" class="btn ghost sm" onclick="bcAddRow()">+ Add another customer</button>'+
+    '<button type="button" class="btn" id="bcSaveBtn" onclick="bcSubmit()">Add customers</button>'+
     '</div></div>';
 
   html += '<div class="row"><div class="col">'+
@@ -2156,7 +2206,7 @@ function renderAdmin(users, links){
   html += '<div class="card"><div class="ovl">Import customers from the sheet</div>'+
     '<p style="margin-bottom:8px">Open the database sheet (link below), paste rows into the <b>Import</b> tab under these columns, then run import:</p>'+
     '<p class="mono" style="font-size:12px;background:#FAFBFA;border:1px solid var(--line);border-radius:7px;padding:9px">Name · Location · Type · Priority · Area · Address · GSTIN · ContactName · ContactDesignation · ContactPhone · ContactEmail · Handlers</p>'+
-    '<p class="hint">Handlers accept comma-separated emails (must be active users). Rows whose Name already exists are skipped. Processed rows are cleared. Tip: for everyday use the in-app “Bulk add” on the Customers page is faster.</p>'+
+    '<p class="hint">Handlers accept comma-separated emails (must be active users). Rows whose Name already exists are skipped. Processed rows are cleared. Tip: for everyday use the "Add customers" card above instead.</p>'+
     '<div style="margin-top:10px;display:flex;gap:10px;align-items:center"><button class="btn" id="impBtn" onclick="runImport()">Run customer import</button><span id="impRes" class="sub"></span></div></div>';
 
   html += '<div class="card"><div class="ovl">Import contacts from the sheet</div>'+
@@ -2176,6 +2226,7 @@ function renderAdmin(users, links){
       '<a class="btn ghost sm" href="'+esc(links.quotes)+'" target="_blank" rel="noopener">Generated quotations folder</a></div></div>';
   }
   el('admBody').innerHTML = html;
+  bcRenderRows();
   loadRecycle();
 }
 function configCard(title, key, items, hint){
@@ -2296,3 +2347,4 @@ if(BOOT && BOOT.ok){ init(); } else { renderLock(); }
 </script>
 </body>
 </html>
+
