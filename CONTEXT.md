@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-08-11 (legacy generator repaired, case-ownership re-architecture, four new migrations)
+Last updated: 2026-08-19 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed)
 
 ## Project Purpose
 
@@ -139,9 +139,38 @@ Completed:
     - `0006_remove_l5_l6_handlers.sql` - deletes existing L5/L6 handler rows. **MUST run after `0005`** - under the old model, deleting a handler row would have silently stripped that person from every case (including closed ones); with `0005` already applied, case ownership is materialised, so this migration is inert with respect to `public.cases` (a check inside the migration asserts it writes zero rows there).
     - `0007_backfill_customer_locations.sql` - backfills empty `customers.tags` to `['TO BE FILLED']`, asserts row count and empty-count invariants.
     - `0008_customer_sei_multi_select.sql` - converts `customers.sei` (and `recycle_bin.sei`) from `text` to `text[]`, drops the old btree index first (recreate if needed), seeds `SEI_NAMES` empty in `public.settings`.
-    - **None of these four migrations have been applied to any database (local, staging, or production) as of this entry.** Run them in order via `scripts/apply-migrations.mjs` before this work is considered live anywhere.
+    - All four (`0005`-`0008`) are applied in every environment, including production. See the Supabase Migrations section below for the full, current, applied list (now through `0011`).
   - New docs from this pass: `docs/role-matrix.md`, `docs/security-audit.md`, `docs/scalability-and-storage.md`.
   - Design doc: `docs/superpowers/specs/2026-08-11-crm-points-manager-feedback-design.md`.
+
+- Drive-first quotation upload (2026-08-13, commit `ffa5678`):
+  - Uploaded quotation files (as opposed to generated ones, which already went to Drive) used to be written straight into Postgres as `quotations.upload_data bytea`, capped at ~8 MB. A scalability audit (`docs/scalability-and-storage.md`, spec `docs/superpowers/specs/2026-08-13-quotation-drive-first-upload-design.md`) measured stored files at roughly 40x the storage cost of every other CRM record combined, putting Supabase Free's 500 MB ceiling within reach at only 5-8 active users.
+  - `uploadQuotation` (`src/server/quotes/service.ts`) now uploads straight to Google Drive via `deps.getDriveClient()`/`deps.getQuotationsFolderId()` and writes `uploadDataB64: ''` on the created row - no bytes ever reach Postgres for a new upload. It throws a user-facing error if Drive is not configured, rather than silently falling back to the DB.
+  - `quotations.upload_data`/`upload_mime_type` **still exist** and are still read (`src/server/quotes/repository.ts`'s `getQuote`, `encode(upload_data, 'base64')`) so any file uploaded before this change remains downloadable. Do not treat the column as dead - it is legacy-read-only, not removed.
+
+- Ticket handover notes (2026-08-14, commit `e44a342`):
+  - Reassigning a case can carry an optional internal note, stored on `activity_log.note` (migration `0009_activity_log_note.sql`, `text not null default ''`). Written only by `src/server/cases/repository.ts`'s `logActivity`; the other three `logActivity` call sites (customers, quotes, admin) don't touch the column.
+  - Design: `docs/superpowers/specs/2026-08-14-ticket-handover-notes-design.md`.
+
+- Case-list customer batching (2026-08-14, `51fd057`):
+  - `listCases` no longer issues one `getCustomer` call per case. `src/server/cases/service.ts` now collects every needed customer id and calls `repo.getCustomersByIds(ids)` once, the same pattern already applied to `recentActivity()` on 2026-08-11. This closes the "still outstanding" N+1 item recorded in the 2026-08-11 latency notes - see the Known Live Latency section below, which has been corrected.
+  - Design: `docs/superpowers/specs/2026-08-14-case-list-batch-customers-design.md`.
+
+- Case attachments (2026-08-14, `cecce07`):
+  - A ticket handover response can attach documents. Files live in Google Drive; only metadata is stored in the new `public.case_attachments` table (migration `0010_case_attachments.sql`): `activity_id` (FK to `activity_log`, cascade-deletes), `case_id`, `drive_file_id` (unique - one row per Drive file, enforced by the DB so two concurrent reassignments can't both claim the same file), `drive_view_link`, `file_name`, `mime_type`, `size_bytes`, `uploaded_by`. RLS denies all direct client access, same pattern as other tables.
+  - `scripts/` gained a reaper for abandoned Drive uploads (attachments uploaded to Drive but never committed to a case) and a backup/restore path for `case_attachments`.
+  - Design: `docs/superpowers/specs/2026-08-14-case-attachments-design.md`.
+
+- Optional case priority (2026-08-18, merge commit `459f924`):
+  - Cases can now carry a priority (High/Medium/Low, or `''` for not set), mirroring `customers.priority`'s existing shape. `cases.priority text not null default ''` (migration `0011_case_priority.sql`). Deliberately **no** database CHECK constraint - same reasoning as `customers.priority`: an L6 admin can edit the `PRIORITIES` list in Admin, and a DB constraint would start rejecting saves the UI itself offers. Validation is server-side only, via `validOne(input, live.priorities)`.
+  - New RPC `api_setCasePriority`, logged as `CASE_PRIORITY`. Priority can also be set at case creation. Carried through both dashboard case lists and the customer-detail case payload.
+  - The priority filter on the Cases tab is applied in JavaScript inside `listCases`, not pushed into SQL, so no index was added on the column - a later migration should add one if that filtering ever moves into SQL.
+  - Design: `docs/superpowers/specs/2026-08-18-case-priority-design.md`.
+
+- Admin config module and placeholder removal (2026-08-19, merge commit `d1205d4`, this branch):
+  - The settings-drift bug (see the corrected "Known Issue" section below, now fixed) and a full admin config module (add/rename/delete individual config items, propagated everywhere they're referenced) shipped together. See "What The Admin Config Module Needs A Future Maintainer To Know" below for the load-bearing details.
+  - Every form placeholder (`placeholder="..."` ghost text) was removed from the legacy client (`ec2bfcb`) as a separate, smaller change bundled into the same merge.
+  - Design: `docs/superpowers/specs/2026-08-18-admin-config-module-design.md`, `docs/superpowers/specs/2026-08-18-form-placeholder-removal-design.md`.
 
 ### Resolved: the legacy generator is fixed and back in normal use (2026-08-11)
 
@@ -284,7 +313,10 @@ Migrations:
 - `supabase/migrations/0006_remove_l5_l6_handlers.sql` - deletes L5/L6 handler rows; depends on `0005` having already materialised case ownership.
 - `supabase/migrations/0007_backfill_customer_locations.sql` - backfills empty `customers.tags` to `['TO BE FILLED']`.
 - `supabase/migrations/0008_customer_sei_multi_select.sql` - converts `customers.sei`/`recycle_bin.sei` from `text` to `text[]`, seeds `SEI_NAMES` empty.
-- **`0005`-`0008` have not been applied to any database (local, staging, or production) as of 2026-08-11.**
+- `supabase/migrations/0009_activity_log_note.sql` - adds `activity_log.note text not null default ''` for ticket handover notes.
+- `supabase/migrations/0010_case_attachments.sql` - creates `public.case_attachments` for handover-note Drive attachments.
+- `supabase/migrations/0011_case_priority.sql` - adds `cases.priority text not null default ''`.
+- **All 11 migrations are applied in every environment, including production.** `public.schema_migrations` currently holds 11 rows. Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
 
@@ -296,7 +328,7 @@ Admin seed helper:
 
 Important schema note:
 
-- `quotations.upload_data` and `quotations.upload_mime_type` are required for storing external uploaded quotation bytes and downloading them from the CRM.
+- `quotations.upload_data`/`upload_mime_type` are **no longer how a new uploaded quotation is stored** (changed 2026-08-13, `docs/superpowers/specs/2026-08-13-quotation-drive-first-upload-design.md`). A new upload goes straight to Google Drive (`uploadQuotation` in `src/server/quotes/service.ts`) and the created row's `uploadDataB64` is written empty. The columns still exist and are still read (`src/server/quotes/repository.ts`'s `getQuote`) purely so any file uploaded before this change stays downloadable - do not remove them, and do not assume a new upload will ever populate them again.
 
 ## Vercel
 
@@ -605,32 +637,60 @@ npx playwright test
 - `docs/superpowers/plans/2026-07-29-vercel-supabase-crm-migration.md`
 - `docs/superpowers/specs/2026-07-31-crm-tab-routing-design.md`
 - `docs/superpowers/specs/2026-08-11-crm-points-manager-feedback-design.md`
+- `docs/superpowers/specs/2026-08-13-quotation-drive-first-upload-design.md`
+- `docs/superpowers/specs/2026-08-14-case-attachments-design.md`
+- `docs/superpowers/specs/2026-08-14-case-list-batch-customers-design.md`
+- `docs/superpowers/specs/2026-08-14-ticket-handover-notes-design.md`
+- `docs/superpowers/specs/2026-08-18-admin-config-module-design.md`
+- `docs/superpowers/specs/2026-08-18-case-priority-design.md`
+- `docs/superpowers/specs/2026-08-18-form-placeholder-removal-design.md`
 - `docs/role-matrix.md`
 - `docs/security-audit.md`
 - `docs/scalability-and-storage.md`
 - `docs/superpowers/agent-reports/*`
 
-## Known Issue: `public.settings` table is write-only from the app's perspective (2026-08-11, PARTIALLY FIXED same day)
+## Fixed: `public.settings` used to be write-only from the app's perspective (was open 2026-08-11, fixed 2026-08-19)
 
-- `api_admin_saveSettings` writes `TAGS`/`TYPES`/`PRIORITIES`/`CATEGORIES`/`SOURCES`/`TAX_PCT`/`CURRENCY`/`COMPANY` into `public.settings` and it round-trips correctly through `admin/service.ts`'s own read path (`listSettings()` / `settingsFromRows()`), which is used only by `runImport`/`runImportContacts`.
-- Every other consumer - `dashboard/service.ts` `bootstrap()` (the settings block sent to the client), `customers/service.ts`, `cases/service.ts` (valid-tag/type/priority/category/stage/outcome checks) - imports the hardcoded `DEFAULT_SETTINGS` constant from `src/server/settings/defaults.ts` directly and never reads the `settings` table.
-- Net effect: an L6 admin editing tags/types/priorities/categories/sources/tax/currency/company in Admin writes to the DB, the write succeeds, but the rest of the app (dashboard, customer/case validation, quote defaults) keeps using the original hardcoded values until `defaults.ts` itself is edited and redeployed. Only the CSV-style bulk-import flows honor the DB row.
-- **One exception carved out the same day, as part of the P8 SEI multi-select work (see Current Production Status above): `SEI_NAMES` now reads LIVE from `public.settings`** - `customers/service.ts` reads `SEI_NAMES_SETTING_KEY` directly via `repo.getSetting()` on every request, not from `DEFAULT_SETTINGS`, so an L6 admin's edit to the SEI names list takes effect immediately with no redeploy. This is a narrow, deliberate exception, not a fix to the general pattern - `TAGS`/`TYPES`/`PRIORITIES`/`CATEGORIES`/`SOURCES`/`TAX_PCT`/`CURRENCY`/`COMPANY` are all still served from the hardcoded `DEFAULT_SETTINGS` and remain unfixed.
-- Confirm with Himanshu whether Admin > Settings editing is expected to be live for the remaining hardcoded fields before treating this as a bug to close - it may be intentional (defaults.ts as the single source of truth, settings table reserved for import-time overrides/SEI_NAMES only), but as shipped it is surprising UI behavior.
+This used to be the top gotcha in this file - an L6 admin's edit to Admin > Settings saved to the DB but every consumer except CSV import kept reading the hardcoded `DEFAULT_SETTINGS` constant instead. **It is fixed.** Recorded here so a future agent recognizes the shape of the bug if it starts to reappear, and because the guard that prevents regression is worth knowing about.
+
+- `src/server/settings/live.ts`'s `loadSettings(repo)` is now the one place the request path learns what the configurable lists (`TAGS`, `TYPES`, `PRIORITIES`, `CATEGORIES`, `SEI_NAMES`) and scalar settings (`TAX_PCT`, `CURRENCY`, `COMPANY`) actually contain. It reads `public.settings` live, falling back to `DEFAULT_SETTINGS` only for a genuinely-absent/blank row (`SEI_NAMES` is the one list allowed to be empty on purpose, so it has no fallback). Cached per request, deliberately never process-wide - a serverless process-wide cache would make one warm instance serve stale config while another serves fresh, which is worse than no cache at all.
+- `dashboard/service.ts`'s `bootstrap()` (the settings block sent to the client) and the save-time validation in `customers/service.ts`/`cases/service.ts`/`quotes/service.ts` all call `loadSettings()` now, not `DEFAULT_SETTINGS` directly. `DEFAULT_SETTINGS` (`src/server/settings/defaults.ts`) is demoted to seed-and-fallback only.
+- `SELECTABLE_TAGS` (a derived re-export of `DEFAULT_SETTINGS.TAGS`, filtered) was the actual path the original bug reached the customer page through - `customerMeta` read that binding, not `DEFAULT_SETTINGS.TAGS` directly, so a naive "grep for `DEFAULT_SETTINGS.TAGS`" fix would have missed it.
+- **Regression guard: `src/server/settings/no-hardcoded-reads.test.ts`.** It scans `dashboard/service.ts`, `customers/service.ts`, `cases/service.ts`, `quotes/service.ts` for any read of a configurable key off `DEFAULT_SETTINGS` - direct property access, destructuring, *and* known derived re-exports (`DERIVED_CONSTANT_BINDINGS`, currently just `SELECTABLE_TAGS -> TAGS`). Add an entry to `DERIVED_CONSTANT_BINDINGS` for any future derived export of a configurable key, or this guard goes back to missing that shape of bug. `STAGES`/`OUTCOMES`/`QUOTE_STATUSES`/`ROLES` are deliberately exempt - those are enforced by a database CHECK constraint, so reading them from the constant is correct, not a bug.
 
 ## Known Live Latency / Architecture Notes (2026-08-11)
 
 - `recentActivity()`'s sequential-per-row Supabase query bug is **fixed**: `src/server/dashboard/service.ts` now collects every customer id an activity row needs and makes one batched `repo.getCustomersByIds(ids)` call instead of one `getCustomer` call per row (see `src/server/dashboard/service.test.ts` for the batching assertions).
+- `listCases`'s per-case `getCustomer` N+1 is also **fixed** (2026-08-14, `51fd057`): `src/server/cases/service.ts` now batches with `repo.getCustomersByIds(ids)`, the same pattern as `recentActivity`. Design: `docs/superpowers/specs/2026-08-14-case-list-batch-customers-design.md`.
 - Still outstanding, worth flagging for whoever picks this area up next:
   - `listCustomers()`/`listCases()` still read whole tables into memory and filter/paginate in JS rather than pushing filters down into SQL.
-  - `listCases` still issues one `getCustomer` call per case (the same N+1 pattern `recentActivity` had, not yet applied there).
   - The Supabase database region is `ap-northeast-1` (Tokyo) while Vercel compute (`vercel.json`) is `bom1` (Mumbai) - every query pays this cross-region hop on top of the query cost itself.
-- None of these are regressions from today's work; they're pre-existing and documented here because they were surfaced during the same audit pass.
+- None of these are regressions from any of the work in this file; they're pre-existing and documented here because they were surfaced during an audit pass.
+
+## What The Admin Config Module Needs A Future Maintainer To Know
+
+Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-config-module-design.md`). Admin > Settings now supports item-level add/rename/delete on each configurable list (`TAGS`, `TYPES`, `PRIORITIES`, `CATEGORIES`, `SEI_NAMES`), propagated to every row that references the value, not just the settings row. The following each cost a review cycle to find - read them before touching `src/server/admin/service.ts`:
+
+- **Rename propagates everywhere the value is stored; delete does not need to, because delete is refused if anything still uses the value... except that's not how it works.** More precisely: `validOne(value, allowed, stored)` (`src/server/customers/service.ts`, `src/server/cases/service.ts`) accepts a value that is currently configured **or** that is unchanged from what's already stored on the row being edited. That's what makes deletion safe without a cascading check - a record that already holds a retired value keeps it until someone edits that specific field, instead of every read of that record suddenly failing validation. Creation paths deliberately call `validOne(input.x, live.x)` with **no** `stored` argument, so a retired option can never be chosen on a brand-new record.
+- **`users.allowed_tags` is in the rename map** (`src/server/admin/service.ts`, the `kind: 'array'` target using `array_replace`) because tags are locations, and locations gate which customers a user can see. A rename that missed this column would silently revoke a user's visibility into accounts they should still see, not just mislabel a field. The `'*'` wildcard (meaning "every location") is deliberately left alone by `array_replace` since it never matches a real tag name.
+- **`cases.won_categories` is pipe-joined text, not an array column**, written as `' | '` (with spaces, via `joinPipe`) but parsed by splitting on `'|'` and trimming each element (`parsePipe`). The rename SQL trims per element with `btrim(part, E' \t\r\n')` (matching `parsePipe`'s JS `.trim()`, which also strips tabs/CRs/newlines, not just ASCII spaces) before comparing - SQL that compares the raw untrimmed element would silently rewrite nothing. A plain string `replace()` is the other wrong answer: the live category list holds both `Other` and `Others`, so a substring replace of `Other` would corrupt `Others`.
+- **Config mutations take a row lock (`lockSetting`, `for update`) on the settings row, inside the transaction**, before reading the current list. Without it, two concurrent admin actions on the same list race: a lost update can strand a value that ends up unselectable on new records, invisible in the admin UI list, and unrenameable (rename reads the same un-locked list to find it).
+- **`SEI_NAMES` may legitimately be emptied to zero items; every other configurable list must keep at least one.** Enforced by one shared helper used by both `deleteConfigItem` and `saveSettings`, so the two paths can't drift into disagreeing about which lists are allowed to go empty.
+- **`'TO BE FILLED'` is reserved.** It's migration `0007`'s backfill placeholder for customers with no location (see the case-ownership re-architecture entry above). It can never be added, deleted, or offered as a selectable option - it's a marker for "needs a human to pick a real value," not a real value.
+- **The client is generated - edit the source, not the artifact.** Edit `docs/source-appscript/Index.html`, then run `node scripts/port-legacy-index.mjs` to regenerate `src/app/crm/legacy-full.generated.ts`. Never hand-edit the generated file directly (this used to be a necessary workaround while the generator was broken; it is fixed as of 2026-08-11 and hand-editing is no longer acceptable). Config values that need to reach an inline `onclick` handler go through the generator's `jsArg()` rewrite (JSON-stringify then HTML-escape), not hand-rolled string escaping - see `scripts/port-legacy-index.mjs`'s `jsArg`/`jsJsonArg` injection.
+- **Case sources is gone from the admin panel, but the underlying data is not.** `srcOptions()` (the client-side dropdown builder) was deleted, and there is no more UI to add/rename/delete a case source. `cases.source` the database column, and the server-side plumbing that reads/writes it (`src/server/cases/service.ts`, `repository.ts`), are unchanged and still fully functional - only the admin-editable-list UI for it was removed.
+
+## Open Items
+
+- **`SOURCES` is an orphan settings key.** `api_admin_saveSettings` still accepts `input.sources` and still writes it to `public.settings` (`src/server/admin/service.ts`), but nothing reads it anymore now that `srcOptions()` is gone from the client. Harmless as shipped, but a future cleanup pass should either wire it back up or remove the write path - don't be surprised to find a settings row nothing consumes.
+- **The database password has been exposed in a transcript and has not been rotated.** Treat `DATABASE_URL`'s current password as compromised. Rotating it (Supabase dashboard -> Database -> reset password, then update `DATABASE_URL` in Vercel and every local `.env.local`) has not happened as of this entry.
+- **Vercel is on the Hobby plan**, which forbids commercial use. This CRM is being used for real company business. Upgrading to a paid plan is unresolved.
 
 ## Session Log
 
 - 2026-08-11: Full data-flow / schema audit (no code changes). Confirmed via `git status --short` the working tree has no pending source changes (only untracked local tool dirs: `.agent/`, `.claude-code-history/`, `.codex-history/`). `npx vercel whoami` returned "Not authorized" in this environment - could not pull `npx vercel env ls` output; env var names/values were not re-verified this session, only the names already documented above. Found and documented the `public.settings` drift issue above.
-- 2026-08-11 (later same day): CRM points-manager feedback implementation landed on `feat/crm-points-manager-feedback` - repaired `scripts/port-legacy-index.mjs` (statement-terminator scanning, DOM-rewrite ordering), re-architected case ownership onto `cases.extra_owners` (`caseOwners()` no longer takes an ownership argument; `caseHandlerOwners()` removed), rejected L5/L6 as account handlers, added the `Direct` virtual account (`src/server/domain/direct.ts`), made customer location mandatory, converted `customers.sei` to a multi-select `text[]` validated against a live `SEI_NAMES` setting, and added `owned`/`assigned` filters to `api_listCases`. Four new migrations (`0005`-`0008`) ship this work but **have not been applied to any database yet**. New docs: `docs/role-matrix.md`, `docs/security-audit.md`, `docs/scalability-and-storage.md`. This `CONTEXT.md` update corrects the now-stale "treat the legacy artifact as frozen" instruction from earlier in this file and documents all of the above - see the Current Production Status and Architecture Overview sections.
+- 2026-08-11 (later same day): CRM points-manager feedback implementation landed on `feat/crm-points-manager-feedback` - repaired `scripts/port-legacy-index.mjs` (statement-terminator scanning, DOM-rewrite ordering), re-architected case ownership onto `cases.extra_owners` (`caseOwners()` no longer takes an ownership argument; `caseHandlerOwners()` removed), rejected L5/L6 as account handlers, added the `Direct` virtual account (`src/server/domain/direct.ts`), made customer location mandatory, converted `customers.sei` to a multi-select `text[]` validated against a live `SEI_NAMES` setting, and added `owned`/`assigned` filters to `api_listCases`. Four new migrations (`0005`-`0008`) shipped with this work; they were **not yet applied to any database as of this entry** - since then, all four have been applied everywhere (see the corrected Supabase Migrations section). New docs: `docs/role-matrix.md`, `docs/security-audit.md`, `docs/scalability-and-storage.md`. This `CONTEXT.md` update corrects the now-stale "treat the legacy artifact as frozen" instruction from earlier in this file and documents all of the above - see the Current Production Status and Architecture Overview sections.
+- 2026-08-19: `CONTEXT.md` correction pass (no code changes), verified against `git log`, the migration files, and source rather than trusting the prior draft. Corrected: the `public.settings` write-only issue is fixed (`src/server/settings/live.ts`, guarded by `no-hardcoded-reads.test.ts`); migrations `0005`-`0011` are all applied (`schema_migrations` holds 11 rows); `quotations.upload_data` is legacy-read-only now that uploads go to Drive; the `listCases` customer N+1 is fixed. Added entries for every feature shipped since 2026-08-11 (Drive-first upload `ffa5678`, handover notes `e44a342`, case-list batching `51fd057`, case attachments `cecce07`, case priority merge `459f924`, admin config module + placeholder removal merge `d1205d4`) and a "What The Admin Config Module Needs A Future Maintainer To Know" section. Verified HEAD is `d1205d4` on `main`.
 
 ## If A New Agent Takes Over
 
