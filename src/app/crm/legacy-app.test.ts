@@ -2119,6 +2119,19 @@ describe('admin bulk-add repeatable rows', () => {
       expect(window.eval('daysSinceIST("not-a-date")')).toBeNull();
     });
 
+    test('daysSinceIST returns null instead of throwing if Intl.DateTimeFormat fails', async () => {
+      await bootDashboard();
+      const original = window.Intl.DateTimeFormat;
+      (window.Intl as any).DateTimeFormat = function () {
+        throw new RangeError('unsupported time zone');
+      };
+      try {
+        expect(window.eval('daysSinceIST("2026-08-20T10:00:00.000Z")')).toBeNull();
+      } finally {
+        window.Intl.DateTimeFormat = original;
+      }
+    });
+
     test('agingChip is empty at 0-1 days, amber at exactly 2, red at 3+', async () => {
       await bootDashboard();
       vi.useFakeTimers();
@@ -2161,6 +2174,9 @@ describe('admin bulk-add repeatable rows', () => {
     });
 
     test('the Cases tab shows a stale badge on an Open case and none on a closed one', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
       mockRpc((fn, args) => {
         if (fn === 'api_workspace') return workspace('L6');
         if (fn === 'api_listCases') {
@@ -2207,12 +2223,14 @@ describe('admin bulk-add repeatable rows', () => {
       });
 
       const main = document.getElementById('main') as HTMLElement;
-      // Check that agingChip markup is present - for stale open case
-      expect(main.innerHTML).toContain('stale');
+      // 2026-08-19 to 2026-08-24 is exactly 5 IST calendar days - pins the day-count math,
+      // not just "some" stale badge.
+      expect(main.innerHTML).toContain('5d stale');
 
       const rows = main.querySelectorAll('tr');
       const staleRow = Array.from(rows).find((row) => row.textContent?.includes('Stale open case'));
       const closedRow = Array.from(rows).find((row) => row.textContent?.includes('Old but closed'));
+      expect(staleRow?.innerHTML).toContain('5d stale');
       expect(staleRow?.innerHTML).toContain('b-red');
       expect(closedRow?.innerHTML).not.toContain('b-red');
       expect(closedRow?.innerHTML).not.toContain('stale');
