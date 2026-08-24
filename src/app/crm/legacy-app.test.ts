@@ -2011,4 +2011,73 @@ describe('admin bulk-add repeatable rows', () => {
 
     expect(bulkCustomersCalls).toHaveLength(0);
   });
+
+  describe('IST timestamp formatting', () => {
+    async function bootDashboard() {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+    }
+
+    test('fmtDateTime renders a UTC ISO timestamp as its IST wall-clock time, including the date shift across midnight', async () => {
+      await bootDashboard();
+
+      // 2026-08-23T19:00:00.000Z is IST (UTC+5:30) 2026-08-24 00:30 - the
+      // date itself rolls to the next day, which a naive "strip the Z and
+      // reformat in UTC" implementation would get wrong.
+      const result = window.eval('fmtDateTime("2026-08-23T19:00:00.000Z")') as string;
+
+      expect(result).toContain('24 Aug 2026');
+      expect(result).toContain('12:30');
+      expect(result.toLowerCase()).toContain('am');
+    });
+
+    test('fmtDateTime returns the empty-cell placeholder for null, undefined, and empty input', async () => {
+      await bootDashboard();
+
+      expect(window.eval('fmtDateTime(null)')).toBe('—');
+      expect(window.eval('fmtDateTime(undefined)')).toBe('—');
+      expect(window.eval('fmtDateTime("")')).toBe('—');
+    });
+
+    test("the customer detail view's Created line renders through fmtDateTime instead of a raw ISO string", async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCustomer') {
+          return customerDetail({
+            customer: {
+              id: 'CUST-1',
+              name: 'Acme Controls',
+              tags: ['Punjab'],
+              type: 'OEM',
+              priority: 'High',
+              area: 'Mohali',
+              sei: [],
+              remarks: '',
+              address: '',
+              gstin: '',
+              website: '',
+              notes: '',
+              status: '',
+              createdOn: '2026-08-23T19:00:00.000Z',
+              createdBy: 'admin@automationsystems.org'
+            }
+          });
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Acme Controls' });
+
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.textContent).toContain('24 Aug 2026');
+      expect(main.textContent).not.toMatch(/2026-08-23T19:00:00/);
+    });
+  });
 });

@@ -280,6 +280,21 @@ function fmtBytes(n){
   if(v < 1024*1024) return (v/1024).toFixed(1)+' KB';
   return (v/(1024*1024)).toFixed(1)+' MB';
 }
+/* Renders a server-sent ISO-8601 UTC timestamp as a clean IST (Asia/Kolkata)
+   wall-clock string, e.g. "24 Aug 2026, 12:30 am". Never manual UTC-offset
+   math - always via Intl.DateTimeFormat, which handles the IST date shift
+   correctly. Empty/invalid input renders the standard empty-cell dash. */
+function fmtDateTime(v){
+  if(v===null||v===undefined||v==='') return '—';
+  var d = new Date(v);
+  if(isNaN(d.getTime())) return '—';
+  try{
+    return new Intl.DateTimeFormat('en-IN',{
+      timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric',
+      hour:'numeric', minute:'2-digit', hour12:true
+    }).format(d);
+  }catch(e){ return '—'; }
+}
 function attachmentLinksHtml(list){
   if(!list || !list.length) return '';
   return '<div class="d" style="margin-top:4px">'+list.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>';
@@ -606,7 +621,7 @@ function recentHTML(recent){
   if(!recent || !recent.length) return '<div class="empty">Nothing yet.</div>';
   var html = '<ul class="tlx">';
   recent.forEach(function(r){
-    html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details||r.entity)+'</div></li>';
+    html += '<li><div class="w">'+fmtDateTime(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details||r.entity)+'</div></li>';
   });
   return html+'</ul>';
 }
@@ -1103,7 +1118,7 @@ function renderCustomer(d){
       '<b>GSTIN</b><span class="mono">'+esc(c.gstin||'—')+'</span>'+
       '<b>Website</b><span>'+(c.website?'<a href="'+esc(c.website)+'" target="_blank" rel="noopener">'+esc(c.website)+'</a>':'—')+'</span>'+
       '<b>Notes</b><span>'+esc(c.notes||'—')+'</span>'+
-      '<b>Created</b><span class="sub">'+esc(c.createdOn)+' by '+esc(c.createdBy)+'</span></div></div>';
+      '<b>Created</b><span class="sub">'+fmtDateTime(c.createdOn)+' by '+esc(c.createdBy)+'</span></div></div>';
 
     html += '<div class="card"><div class="ovl">Account handlers</div>';
     (d.handlers||[]).forEach(function(h){
@@ -1150,7 +1165,7 @@ function renderCustomer(d){
           '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
           '<td class="sub">'+(o.outcome ? '—' : esc(o.assignee||'—'))+'</td>'+
           '<td class="tnum-r mono">'+esc(o.quotes)+'</td>'+
-          '<td class="sub mono">'+esc(o.updatedOn)+'</td></tr>';
+          '<td class="sub mono">'+fmtDateTime(o.updatedOn)+'</td></tr>';
       });
       html += '</table>';
     }
@@ -1164,7 +1179,7 @@ function renderCustomer(d){
         html += '<tr class="clk" onclick="mQuoteViewer(\''+esc(q.quoteNo)+'\','+q.rev+')">'+
           '<td class="mono">'+esc(q.quoteNo)+' R'+q.rev+'</td><td>'+esc(q.title)+'</td>'+
           '<td class="tnum-r">'+moneyCell(q.currency,q.total)+'</td><td>'+qStatusChip(q.status)+'</td>'+
-          '<td class="sub mono">'+esc(q.date)+'</td>'+
+          '<td class="sub mono">'+fmtDateTime(q.date)+'</td>'+
           '<td>'+(q.pdf?'<a href="'+esc(q.pdf)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">PDF</a>':'')+'</td></tr>';
       });
       html += '</table>';
@@ -1404,9 +1419,9 @@ function renderCase(d){
     if(o.outcome==='Won'){
       html += '<p style="margin-bottom:8px">'+outcomeChip('Won')+' <b class="money">'+esc(S.settings.currency)+' '+fmtMoney(o.orderValue)+'</b> — '+
         (o.wonCategories||[]).map(function(c){ return '<span class="chip">'+esc(c)+'</span>'; }).join('')+
-        (o.closedOn?' <span class="sub mono">· '+esc(o.closedOn)+'</span>':'')+'</p>';
+        (o.closedOn?' <span class="sub mono">· '+fmtDateTime(o.closedOn)+'</span>':'')+'</p>';
     }else if(o.outcome==='Lost'){
-      html += '<p style="margin-bottom:8px">'+outcomeChip('Lost')+(o.outcomeNote?' <span class="sub">— '+esc(o.outcomeNote)+'</span>':'')+(o.closedOn?' <span class="sub mono">· '+esc(o.closedOn)+'</span>':'')+'</p>';
+      html += '<p style="margin-bottom:8px">'+outcomeChip('Lost')+(o.outcomeNote?' <span class="sub">— '+esc(o.outcomeNote)+'</span>':'')+(o.closedOn?' <span class="sub mono">· '+fmtDateTime(o.closedOn)+'</span>':'')+'</p>';
     }else if(o.outcome==='Hold'){
       html += '<p style="margin-bottom:8px">'+outcomeChip('Hold')+(o.outcomeNote?' <span class="sub">— '+esc(o.outcomeNote)+'</span>':'')+' <span class="sub">(stage kept at '+esc(o.stage)+')</span></p>';
     }
@@ -1441,7 +1456,7 @@ function renderCase(d){
         html += '<div style="margin-bottom:14px"><div class="mono" style="font-weight:600;margin-bottom:6px">'+esc(no)+'</div>';
         groups[no].forEach(function(q){
           html += '<div class="qr"><span class="mono">R'+q.rev+'</span>'+qStatusChip(q.status)+
-            '<div style="flex:1;min-width:140px">'+esc(q.title)+'<div class="sub mono">'+esc(q.date)+' · '+esc(q.by)+'</div></div>'+
+            '<div style="flex:1;min-width:140px">'+esc(q.title)+'<div class="sub mono">'+fmtDateTime(q.date)+' · '+esc(q.by)+'</div></div>'+
             '<span class="money">'+esc(q.currency)+' '+fmtMoney(q.total)+'</span>'+
             (q.pdf?'<a href="'+esc(q.pdf)+'" target="_blank" rel="noopener">PDF</a>':'')+
             '<button class="btn ghost sm" onclick="mQuoteViewer(\''+esc(q.quoteNo)+'\','+q.rev+')">Open</button></div>';
@@ -1456,7 +1471,7 @@ function renderCase(d){
     if(!(d.history||[]).length) html += '<div class="empty">No activity logged yet.</div>';
     else{
       html += '<ul class="tlx">';
-      d.history.forEach(function(r){ html += '<li><div class="w">'+esc(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+attachmentLinksHtml(r.attachments)+'</li>'; });
+      d.history.forEach(function(r){ html += '<li><div class="w">'+fmtDateTime(r.when)+' · '+esc(r.who)+' · '+esc(r.action)+'</div><div class="d">'+esc(r.details)+'</div>'+(r.note?'<div class="d" style="margin-top:4px;font-style:italic;white-space:pre-wrap">'+esc(r.note)+'</div>':'')+attachmentLinksHtml(r.attachments)+'</li>'; });
       html += '</ul>';
     }
     html += '</div>';
@@ -1706,7 +1721,7 @@ function renderCases(list){
         '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
         '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
         '<td class="sub">'+(o.outcome ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
-        '<td class="sub mono">'+esc(o.updatedOn)+'</td></tr>';
+        '<td class="sub mono">'+fmtDateTime(o.updatedOn)+'</td></tr>';
     });
     el('caseRes').innerHTML = html+'</table></div><div class="hint">Showing up to 300 cases.</div>';
 }
@@ -1982,7 +1997,7 @@ function mQuoteViewer(quoteNo, rev){
     var q = d.quote;
     var html = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'+
       qStatusChip(q.status)+'<b>'+esc(q.title)+'</b><span class="sub">for '+esc(d.customer.name)+'</span>'+
-      '<span class="sub mono" style="margin-left:auto">'+esc(q.date)+' · '+esc(q.by)+'</span></div>';
+      '<span class="sub mono" style="margin-left:auto">'+fmtDateTime(q.date)+' · '+esc(q.by)+'</span></div>';
 
     var ext = q.source==='External';
     if(ext){
@@ -2021,7 +2036,7 @@ function mQuoteViewer(quoteNo, rev){
       d.revisions.forEach(function(r){
         var cur = r.rev===q.rev;
         html += '<div class="qr"'+(cur?' style="border-color:var(--brand)"':'')+'><span class="mono">R'+r.rev+'</span>'+qStatusChip(r.status)+
-          '<span class="sub mono">'+esc(r.date)+'</span><span class="money" style="margin-left:auto">'+esc(q.currency)+' '+fmtMoney(r.total)+'</span>'+
+          '<span class="sub mono">'+fmtDateTime(r.date)+'</span><span class="money" style="margin-left:auto">'+esc(q.currency)+' '+fmtMoney(r.total)+'</span>'+
           (cur?'<span class="badge b-green">Viewing</span>':'<button class="btn ghost sm" onclick="mQuoteViewer(\''+esc(quoteNo)+'\','+r.rev+')">View</button>')+'</div>';
       });
     }
@@ -2271,7 +2286,7 @@ function renderRecycle(d){
   d.customers.forEach(function(c){
     html+='<tr><td><b>'+esc(c.name)+'</b> <span class="sub mono">'+esc(c.id)+'</span></td>'+
       '<td>'+tagChips(c.tags)+'</td><td class="sub">'+esc(c.area||'—')+'</td>'+
-      '<td class="sub mono">'+esc(c.deletedOn||'')+(c.deletedBy?' · '+esc(c.deletedBy):'')+'</td>'+
+      '<td class="sub mono">'+fmtDateTime(c.deletedOn)+(c.deletedBy?' · '+esc(c.deletedBy):'')+'</td>'+
       '<td><button class="btn ghost sm" onclick="restoreCust(\''+esc(c.id)+'\')">Restore</button> '+
       '<button class="btn danger sm" onclick="purgeCust(\''+esc(c.id)+'\',\''+esc(c.name).replace(/'/g,"\\'")+'\')">Delete forever</button></td></tr>';
   });
