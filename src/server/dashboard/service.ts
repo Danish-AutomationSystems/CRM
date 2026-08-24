@@ -122,8 +122,8 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
         .filter(([, emails]) => emails.includes(subjectEmail))
         .map(([customerId]) => customerId)
     );
-    const openMine: Array<{ id: string; title: string; customerId: string; customerName: string; stage: string; priority: string }> = [];
-    const tickets: Array<{ id: string; title: string; customerId: string; customerName: string; stage: string; priority: string }> = [];
+    const openMine: Array<{ id: string; title: string; customerId: string; customerName: string; stage: string; priority: string; updatedOn: string }> = [];
+    const tickets: Array<{ id: string; title: string; customerId: string; customerName: string; stage: string; priority: string; updatedOn: string }> = [];
     let wonMonthValue = 0;
     let wonMonthCount = 0;
     let won2wValue = 0;
@@ -139,10 +139,10 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
       const owners = caseOwners(caseRecord(row));
       const mine = directSubject ? subjectHandles.has(row.customerId) : owners.includes(subjectEmail);
       if (mine && !row.outcome) {
-        openMine.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage, priority: row.priority });
+        openMine.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage, priority: row.priority, updatedOn: row.updatedAt });
       }
       if (normalizeEmail(row.assignee) === subjectEmail && !row.outcome) {
-        tickets.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage, priority: row.priority });
+        tickets.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage, priority: row.priority, updatedOn: row.updatedAt });
       }
       if (mine && row.outcome === 'Won') {
         const value = Number(row.orderValue || 0) || 0;

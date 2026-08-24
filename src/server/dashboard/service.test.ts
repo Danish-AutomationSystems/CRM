@@ -512,6 +512,16 @@ describe('dashboard service', () => {
     expect(dash.tickets[0].priority).toBe('High');
   });
 
+  it('carries the case updatedOn into both dashboard case lists', async () => {
+    const { repo, dashboard } = makeService();
+    repo.cases = [caseRow({ id: 'CASE-2026-0001', updatedAt: '2026-08-20T09:00:00.000Z' })];
+
+    const { dash } = await dashboard.dashboard(sales, sales.email);
+
+    expect(dash.cases[0].updatedOn).toBe('2026-08-20T09:00:00.000Z');
+    expect(dash.tickets[0].updatedOn).toBe('2026-08-20T09:00:00.000Z');
+  });
+
   it('composes workspace bootstrap, customers, and cases while tolerating partial failures', async () => {
     const { repo, dashboard } = makeService();
 
