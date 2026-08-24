@@ -2159,5 +2159,63 @@ describe('admin bulk-add repeatable rows', () => {
       expect(window.eval('agingChip(undefined, "")')).toBe('');
       expect(window.eval('agingChip("", "")')).toBe('');
     });
+
+    test('the Cases tab shows a stale badge on an Open case and none on a closed one', async () => {
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listCases') {
+          return [
+            {
+              id: 'CASE-STALE',
+              title: 'Stale open case',
+              customerName: 'Acme Controls',
+              stage: 'Lead',
+              outcome: '',
+              orderValue: '',
+              owners: [],
+              assignee: '',
+              updatedOn: '2026-08-19T10:00:00.000Z'
+            },
+            {
+              id: 'CASE-CLOSED',
+              title: 'Old but closed',
+              customerName: 'Acme Controls',
+              stage: 'Lead',
+              outcome: 'Won',
+              orderValue: 5000,
+              owners: [],
+              assignee: '',
+              updatedOn: '2026-08-19T10:00:00.000Z'
+            }
+          ];
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+
+      window.eval('nav("cases")');
+      await screen.findByRole('heading', { name: 'Cases' });
+
+      // Clear the outcome filter to show all cases
+      window.eval('document.getElementById("cf_outcome").value = ""; applyCaseF();');
+      // Wait for the cases to load
+      await waitFor(() => {
+        const m = document.getElementById('main') as HTMLElement;
+        expect(m.innerHTML).not.toContain('No cases match');
+      });
+
+      const main = document.getElementById('main') as HTMLElement;
+      // Check that agingChip markup is present - for stale open case
+      expect(main.innerHTML).toContain('stale');
+
+      const rows = main.querySelectorAll('tr');
+      const staleRow = Array.from(rows).find((row) => row.textContent?.includes('Stale open case'));
+      const closedRow = Array.from(rows).find((row) => row.textContent?.includes('Old but closed'));
+      expect(staleRow?.innerHTML).toContain('b-red');
+      expect(closedRow?.innerHTML).not.toContain('b-red');
+      expect(closedRow?.innerHTML).not.toContain('stale');
+    });
   });
 });

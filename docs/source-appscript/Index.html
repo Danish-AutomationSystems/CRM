@@ -1744,7 +1744,7 @@ function renderCases(list){
         '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
         '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
         '<td class="sub">'+(o.outcome ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
-        '<td class="sub mono">'+fmtDateTime(o.updatedOn)+'</td></tr>';
+        '<td class="sub mono">'+fmtDateTime(o.updatedOn)+' '+agingChip(o.updatedOn,o.outcome)+'</td></tr>';
     });
     el('caseRes').innerHTML = html+'</table></div><div class="hint">Showing up to 300 cases.</div>';
 }
