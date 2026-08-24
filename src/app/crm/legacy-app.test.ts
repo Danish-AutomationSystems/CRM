@@ -2217,5 +2217,46 @@ describe('admin bulk-add repeatable rows', () => {
       expect(closedRow?.innerHTML).not.toContain('b-red');
       expect(closedRow?.innerHTML).not.toContain('stale');
     });
+
+    test('the My work list (L1) shows a stale badge on an assigned ticket', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') {
+          const b = bootstrap('L1');
+          return {
+            boot: {
+              ...b,
+              self: {
+                ...b.self,
+                tickets: [
+                  {
+                    id: 'CASE-STALE',
+                    title: 'Stale ticket',
+                    customerId: 'CUST-1',
+                    customerName: 'Acme Controls',
+                    stage: 'Lead',
+                    priority: 'High',
+                    updatedOn: '2026-08-22T10:00:00.000Z',
+                    outcome: ''
+                  }
+                ]
+              }
+            },
+            customers: { scope: 'mine' as const, customers: [] },
+            cases: []
+          };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'My work' });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.innerHTML).toContain('b-amber');
+      expect(main.innerHTML).toContain('2d stale');
+    });
   });
 });

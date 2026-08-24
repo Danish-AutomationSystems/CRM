@@ -636,7 +636,7 @@ function openCasesHTML(list){
   if(!list || !list.length) return '<div class="empty">No open cases assigned to you.</div>';
   return list.map(function(c){
     return '<div class="qr"><div style="flex:1;min-width:150px;cursor:pointer" onclick="nav(\'case\',\''+esc(c.id)+'\')"><b>'+esc(c.title)+'</b>'+
-      '<div class="sub">'+esc(c.customerName)+'</div></div>'+stageChip(c.stage)+priChip(c.priority)+
+      '<div class="sub">'+esc(c.customerName)+'</div></div>'+stageChip(c.stage)+priChip(c.priority)+agingChip(c.updatedOn,c.outcome)+
       '<button class="btn ghost sm" onclick="event.stopPropagation();mAssign(\''+esc(c.id)+'\')">Reassign</button></div>';
   }).join('');
 }
