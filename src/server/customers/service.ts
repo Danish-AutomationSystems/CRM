@@ -595,10 +595,13 @@ export function createCustomerService(repo: CustomerRepository) {
         access: 'FULL' as const,
         canEditTags: roleLevel(user) >= 3,
         canEditPriority: roleLevel(user) >= 2,
-        customer,
+        customer: { ...customer, createdBy: nameOf(idx, customer.createdBy) },
         handlers: handlerList,
         contacts,
-        cases,
+        cases: cases.map((caseRow) => ({
+          ...caseRow,
+          owners: caseRow.owners.map((email) => nameOf(idx, email))
+        })),
         quotes
       };
     },

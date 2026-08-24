@@ -358,6 +358,74 @@ describe('customer service mutations', () => {
     expect(detail.cases[0].priority).toBe('High');
   });
 
+  it('resolves createdBy and each case owner email to a display name in the full customer detail response', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer({ createdBy: 'manager@automationsystems.org' })];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [];
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Panel upgrade',
+        stage: 'Opportunity',
+        priority: '',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        owners: ['backend@automationsystems.org', 'manager@automationsystems.org'],
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      }
+    ];
+
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+
+    expect(detail.customer.createdBy).toBe('Manager User');
+    expect(detail.cases[0].owners).toEqual(['Backend User', 'Manager User']);
+  });
+
+  it('falls back to the raw email for a case owner with no matching user, without dropping the entry', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [];
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Panel upgrade',
+        stage: 'Opportunity',
+        priority: '',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        owners: ['ghost@automationsystems.org'],
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      }
+    ];
+
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+
+    expect(detail.cases[0].owners).toEqual(['ghost@automationsystems.org']);
+  });
+
+  it('leaves the account handlers array (name + raw email) untouched by createdBy/owner name resolution', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [];
+    repo.cases = [];
+
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+
+    expect(detail.handlers).toEqual([{ email: baseUser.email, name: 'Sales User' }]);
+  });
+
   it('P7: requires at least one location on create and refuses to empty it on update', async () => {
     const { repo, service } = makeService();
 
