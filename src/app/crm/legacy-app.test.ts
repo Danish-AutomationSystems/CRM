@@ -2080,4 +2080,84 @@ describe('admin bulk-add repeatable rows', () => {
       expect(main.textContent).not.toMatch(/2026-08-23T19:00:00/);
     });
   });
+
+  describe('case aging indicator', () => {
+    async function bootDashboard() {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    test('daysSinceIST measures a calendar-day difference in IST, not elapsed hours', async () => {
+      await bootDashboard();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z')); // 2026-08-24, 3:30pm IST
+
+      // 2026-08-23T19:00:00.000Z is IST 2026-08-24 00:30 - same IST calendar day as "now",
+      // even though only ~15 real hours have passed. Must read as 0 days, proving this is
+      // calendar-date subtraction, not an hours-elapsed countdown.
+      expect(window.eval('daysSinceIST("2026-08-23T19:00:00.000Z")')).toBe(0);
+
+      // 2026-08-21T19:00:00.000Z is IST 2026-08-22 00:30 - two IST calendar days before
+      // 2026-08-24.
+      expect(window.eval('daysSinceIST("2026-08-21T19:00:00.000Z")')).toBe(2);
+    });
+
+    test('daysSinceIST returns null for empty or unparseable input', async () => {
+      await bootDashboard();
+
+      expect(window.eval('daysSinceIST(null)')).toBeNull();
+      expect(window.eval('daysSinceIST(undefined)')).toBeNull();
+      expect(window.eval('daysSinceIST("")')).toBeNull();
+      expect(window.eval('daysSinceIST("not-a-date")')).toBeNull();
+    });
+
+    test('agingChip is empty at 0-1 days, amber at exactly 2, red at 3+', async () => {
+      await bootDashboard();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
+      expect(window.eval('agingChip("2026-08-23T10:00:00.000Z", "")')).toBe(''); // 1 day
+      const two = window.eval('agingChip("2026-08-22T10:00:00.000Z", "")') as string;
+      expect(two).toContain('b-amber');
+      expect(two).toContain('2d');
+      const five = window.eval('agingChip("2026-08-19T10:00:00.000Z", "")') as string;
+      expect(five).toContain('b-red');
+      expect(five).toContain('5d');
+    });
+
+    test('agingChip is empty whenever outcome is truthy, no matter how stale', async () => {
+      await bootDashboard();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
+      expect(window.eval('agingChip("2026-08-01T10:00:00.000Z", "Won")')).toBe('');
+      expect(window.eval('agingChip("2026-08-01T10:00:00.000Z", "Lost")')).toBe('');
+      expect(window.eval('agingChip("2026-08-01T10:00:00.000Z", "Hold")')).toBe('');
+    });
+
+    test('agingChip treats a missing outcome as open (dashboard ticket rows never send one)', async () => {
+      await bootDashboard();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
+      const result = window.eval('agingChip("2026-08-19T10:00:00.000Z", undefined)') as string;
+      expect(result).toContain('b-red');
+    });
+
+    test('agingChip is empty for missing/invalid updatedOn', async () => {
+      await bootDashboard();
+
+      expect(window.eval('agingChip(null, "")')).toBe('');
+      expect(window.eval('agingChip(undefined, "")')).toBe('');
+      expect(window.eval('agingChip("", "")')).toBe('');
+    });
+  });
 });

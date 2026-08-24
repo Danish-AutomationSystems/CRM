@@ -295,6 +295,20 @@ function fmtDateTime(v){
     }).format(d);
   }catch(e){ return '—'; }
 }
+/* Calendar-day difference between `iso` and "now", both read as IST (Asia/Kolkata) wall-clock
+   dates - e.g. a case updated at 11pm IST yesterday is "1 day old" the moment today starts, not
+   after a full 24 hours. Deliberately NOT elapsed-hours math. Returns null for empty/unparseable
+   input. Uses the 'en-CA' locale purely because Intl formats it as YYYY-MM-DD, which round-trips
+   cleanly through `new Date(...)` for the day-count subtraction below. */
+function daysSinceIST(iso){
+  if(iso===null||iso===undefined||iso==='') return null;
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  var fmt = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'});
+  var thenMs = new Date(fmt.format(d)+'T00:00:00Z').getTime();
+  var nowMs = new Date(fmt.format(new Date())+'T00:00:00Z').getTime();
+  return Math.round((nowMs-thenMs)/86400000);
+}
 function attachmentLinksHtml(list){
   if(!list || !list.length) return '';
   return '<div class="d" style="margin-top:4px">'+list.map(function(a){ return '<a href="'+esc(a.viewLink)+'" target="_blank" rel="noopener">'+esc(a.fileName)+'</a>'; }).join(' · ')+'</div>';
@@ -367,6 +381,15 @@ function priChip(p){
   if(!p) return '';
   var k = p==='High'?'b-red':(p==='Medium'?'b-amber':'b-grey');
   return '<span class="badge '+k+'">'+esc(p)+'</span>';
+}
+/* Staleness badge for an Open case with no update in 2+ IST calendar days. Empty outcome/undefined
+   outcome both mean "open" - dashboard ticket rows never send an outcome field at all, because
+   they're already pre-filtered to open-only server-side, and this must still work there. */
+function agingChip(updatedOn, outcome){
+  if(outcome) return '';
+  var days = daysSinceIST(updatedOn);
+  if(days===null || days<2) return '';
+  return '<span class="badge '+(days>=3?'b-red':'b-amber')+'">'+days+'d stale</span>';
 }
 function typeChip(t){ return t ? '<span class="badge b-grey">'+esc(t)+'</span>' : ''; }
 function qStatusChip(s){
