@@ -2219,40 +2219,30 @@ describe('admin bulk-add repeatable rows', () => {
     });
 
     test('the My work list (L1) shows a stale badge on an assigned ticket', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
+
       mockRpc((fn) => {
         if (fn === 'api_workspace') {
-          const b = bootstrap('L1');
-          return {
-            boot: {
-              ...b,
-              self: {
-                ...b.self,
-                tickets: [
-                  {
-                    id: 'CASE-STALE',
-                    title: 'Stale ticket',
-                    customerId: 'CUST-1',
-                    customerName: 'Acme Controls',
-                    stage: 'Lead',
-                    priority: 'High',
-                    updatedOn: '2026-08-22T10:00:00.000Z',
-                    outcome: ''
-                  }
-                ]
-              }
-            },
-            customers: { scope: 'mine' as const, customers: [] },
-            cases: []
-          };
+          const w = workspace('L1');
+          (w.boot.self as any).tickets = [
+            {
+              id: 'CASE-STALE',
+              title: 'Stale ticket',
+              customerId: 'CUST-1',
+              customerName: 'Acme Controls',
+              stage: 'Lead',
+              priority: 'High',
+              updatedOn: '2026-08-22T10:00:00.000Z'
+            }
+          ];
+          return w;
         }
         throw new Error(`Unexpected RPC ${fn}`);
       });
 
       render(createElement(CrmApp));
       await screen.findByRole('heading', { name: 'My work' });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z'));
 
       const main = document.getElementById('main') as HTMLElement;
       expect(main.innerHTML).toContain('b-amber');
