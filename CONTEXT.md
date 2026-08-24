@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-08-24 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails)
+Last updated: 2026-08-24 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator)
 
 ## Project Purpose
 
@@ -185,6 +185,54 @@ Completed:
   - **IST date formatting:** every read-only date/timestamp the legacy client displays (customer "Created" line, case updated/closed dates, activity-log timestamps, quote dates, recycle-bin deleted-on) used to render as a raw ISO-8601 UTC string with zero formatting - `esc(x.createdOn)` etc, straight from the server. Fixed with one shared client-side helper, `fmtDateTime()` (`docs/source-appscript/Index.html`, next to `fmtMoney`/`fmtShort`/`fmtBytes`), using `Intl.DateTimeFormat('en-IN', {timeZone:'Asia/Kolkata', ...})` - deliberately not manual UTC-offset math, so DST/date-shift-across-midnight is handled by the platform. Empty/null/unparseable input returns `'—'`, matching the file's existing empty-cell convention. Form inputs (`type="date"`, `todayISO()`) and any date value still sent back to the server were left untouched - this is a display-only change.
   - **Customer view names not emails:** the customer-detail RPC response (`getCustomer`'s FULL-access branch, `src/server/customers/service.ts`) now maps `customer.createdBy` and each case's `owners` email array through the existing `nameOf(idx, email)` helper before returning to the client, so the "Created ... by" line and the Cases table's "Owners" column show names. **Deliberately does not touch the Account Handlers card** (still shows `h.name` *and* raw `h.email` - explicit project-owner instruction, that card stays as-is) or the case `assignee`/quote `by` fields (out of scope, noted by code review as a possible future follow-up if the owner wants it broader).
   - Both merged clean with zero file overlap; combined gate after merge: 575/575 tests, typecheck clean. Independent code review (git-range diff, not session-history-fed) returned zero Critical/Important findings before merge to `main`.
+
+- Case aging indicator (2026-08-24, merge commit `e43067e`):
+  - An Open case (no `outcome`) with no field update in 2+ calendar days shows a staleness badge -
+    `b-amber` at exactly 2 days, `b-red` at 3+ - on the Cases tab (admin-facing full case list) and the
+    "My work" / "assigned-to-me" dashboard ticket list. Reuses the existing `.badge.b-amber`/`.badge.b-red`
+    CSS (same classes `priChip`/`stageChip`/`outcomeChip` already use) - no new CSS.
+  - **Calendar-day IST math, not elapsed-hours.** `daysSinceIST(iso)` (`docs/source-appscript/Index.html`,
+    next to `fmtDateTime`) compares the IST calendar date of `iso` against today's IST calendar date via
+    `Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Kolkata', ...})` - a case updated yesterday evening is
+    already "1 day old" this morning, matching how a manager actually thinks about staleness, deliberately
+    not a strict 24h/48h/72h countdown. `agingChip(updatedOn, outcome)` wraps it and applies the band/gate.
+  - **Outcome gate: missing `outcome` must mean open, not closed.** The dashboard's ticket/case payload
+    (`src/server/dashboard/service.ts`) never sent an `outcome` field at all before this change - those
+    lists are already pre-filtered to open-only server-side - so `agingChip` treats `outcome` falsy
+    *or undefined* as open, and only a truthy `outcome` (Won/Lost/Hold) suppresses the badge. Getting this
+    backwards would have silently disabled every "My work" badge.
+  - **One small server addition was needed that the design didn't originally assume:** the dashboard's
+    `tickets`/`openMine` arrays didn't carry `updatedOn` at all - added as `updatedOn: row.updatedAt` on
+    both push sites and both type declarations. No migration, no new query - the value was already on the
+    row being mapped.
+  - **Execution: 4 SDD tasks, mixed parallel/sequential.** Tasks 1 (client helpers) and 2 (server field) are
+    file-disjoint - dispatched as parallel implementers in isolated git worktrees
+    (`dispatching-parallel-agents`), each independently task-reviewed, then merged. Tasks 3 and 4 (wiring
+    into the two render sites) are sequential, same file family, no worktree.
+  - **Lesson: a worktree-isolated agent forks from the last local `HEAD` at dispatch time, not from
+    whatever branch the controller *thinks* it's on.** Diffing a worktree agent's commit against the plan
+    doc's commit (which existed only on the controller's own unpushed branch) showed spurious "deleted"
+    files - the agent's branch point was actually the last commonly-reachable commit. Fix was diffing
+    against the real merge-base (`git merge-base <worktree-branch> origin/main`), not an assumed BASE SHA.
+    Generalize: after any worktree-isolated dispatch, verify the diff base with `git merge-base` before
+    building a review package, don't trust the SHA recorded before dispatch.
+  - **Lesson: an absolute path handed to a worktree-isolated agent resolves inside that worktree**, not at
+    the literal path on disk. Implementer reports written to `.../migrated-crm/.superpowers/sdd/.../taskN-report.md`
+    landed inside `.claude/worktrees/agent-<id>/.superpowers/sdd/...` instead - invisible to the controller
+    and to the next reviewer dispatch until manually copied out before the worktree is removed (worktree
+    removal deletes them). Generalize: after any worktree-isolated dispatch, copy report files out of the
+    worktree into the canonical SDD workspace before running `git worktree remove`.
+  - **The final whole-branch review caught two real issues no task-scoped review could see:** (1)
+    `daysSinceIST` had no `try/catch` around its `Intl.DateTimeFormat` call, unlike its sibling `fmtDateTime`
+    written the same day - a thrown `RangeError` would have taken out an entire table render, and an
+    unguarded `NaN` day-count would have rendered a literal `NaNd stale` badge on every open case; (2) one
+    task's own test had been quietly weakened from the plan's exact `'5d stale'` assertion to a bare
+    `'stale'`/`'b-red'` substring check while fixing an unrelated fake-timer bug - `b-red` collides with
+    `priChip`'s High-priority badge, so the weakened assertion could pass for the wrong reason. Both fixed
+    in one fix wave, one scoped re-review, before merge - the whole-branch review is the net for exactly
+    this class of defect, invisible to any single task's diff.
+  - Design: `docs/superpowers/specs/2026-08-24-case-aging-indicator-design.md`. Plan:
+    `docs/superpowers/plans/2026-08-24-case-aging-indicator.md`.
 
 ### Resolved: the legacy generator is fixed and back in normal use (2026-08-11)
 
