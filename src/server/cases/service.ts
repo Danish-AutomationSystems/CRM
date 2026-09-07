@@ -130,6 +130,8 @@ export type CaseRepository = {
   listHandlers(): Promise<CaseHandlerRow[]>;
   listUsers(): Promise<CaseUserRow[]>;
   getCase(id: string): Promise<CaseRow | null>;
+  /** Lock and re-read a case within an existing transaction. */
+  lockCase?(id: string): Promise<CaseRow | null>;
   listCases(): Promise<CaseRow[]>;
   createCase(row: CaseRow): Promise<void>;
   updateCase(id: string, fields: Partial<CaseRow>): Promise<void>;
@@ -726,10 +728,14 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (row.outcome === 'Won' || row.outcome === 'Lost') {
         throw new Error(`This case is closed as ${row.outcome}. Reopen it before changing the stage.`);
       }
-      if (row.stage === stage && !row.outcome) return { ok: true };
+      if (stage === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of changing the stage directly.');
+      }
+      if (row.stage === stage && !row.outcome && !(stage === 'Quoted' && row.assignee)) return { ok: true };
 
       const fields: Partial<CaseRow> = { stage, updatedAt: nowIso() };
       if (row.outcome === 'Hold') fields.outcome = '';
+      if (stage === 'Quoted') fields.assignee = '';
       await repo.updateCase(id, fields);
       await repo.logActivity({
         action: 'CASE_STAGE',
@@ -887,9 +893,12 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
      * see the case learns nothing and consumes nothing. Only `{ fileName,
      * sessionUrl }` crosses back: never the access token, never the folder id.
      */
-    async beginAttachmentUpload(user: CrmContext, caseId: string, files: unknown) {
+    async beginAttachmentUpload(user: CrmContext, caseId: string, files: unknown, requestRevision = false) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      if (row.stage === 'Quoted' && !requestRevision) {
+        throw new Error('Request a revision and select a ticket holder before preparing attachments.');
+      }
       const requested = validateRequestedUploads(files);
 
       const { drive, folderId: resolveFolderId } = requireDrive();
@@ -912,9 +921,15 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return sessions;
     },
 
-    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown, uploadsInput?: unknown) {
+    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown, uploadsInput?: unknown, requestRevision = false) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      if (row.stage === 'Quoted' && !requestRevision) {
+        throw new Error('Request a revision and select a ticket holder before assigning this case.');
+      }
+      if (requestRevision && row.stage !== 'Quoted' && row.stage !== 'Revision') {
+        throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+      }
       const note = asText(noteInput);
       if (note.length > 2000) throw new Error('That handover note is too long - please keep it under 2000 characters.');
       const users = userIndex(await repo.listUsers());
@@ -924,7 +939,14 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (reported.length === 0) {
         // Unchanged path: no transaction, no Drive call, identical details and
         // return value to before attachments existed.
-        await repo.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
+        await repo.withTransaction(async (tx) => {
+          const trx = tx ?? repo;
+          const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+          if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
+          if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+          await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
+        });
         await repo.logActivity({
           action: 'CASE_ASSIGN',
           entity: caseId,
@@ -933,7 +955,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           who: normalizeEmail(user.email),
           note
         });
-        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: requestRevision ? 'Revision' : row.stage };
       }
 
       // Checked before the cleanup-guarded block on purpose: these files back
@@ -999,7 +1021,11 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         // something this app can afford.
         return await repo.withTransaction(async (tx) => {
           const trx = tx ?? repo;
-          await trx.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
+          const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+          if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
+          if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+          await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
           const activityId = await trx.logActivity({
             action: 'CASE_ASSIGN',
             entity: caseId,
@@ -1023,7 +1049,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
               uploadedBy: normalizeEmail(user.email)
             }))
           );
-          return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+          return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: requestRevision ? 'Revision' : locked.stage };
         });
       } catch (error) {
         // The rename failed, or the database rolled back: these files are ours
@@ -1073,7 +1099,8 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return {
         canEdit: true,
         canAssign: roleLevel(user) >= 2,
-        canAssignTicket: !row.outcome,
+        canAssignTicket: !row.outcome && row.stage !== 'Quoted',
+        canRequestRevision: !row.outcome && row.stage === 'Quoted',
         case: formatCase(row, ownership, idx),
         customer: { id: customer.id, name: customer.name, tags: customer.tags },
         quotes: quotes

@@ -348,6 +348,39 @@ function makeAttachmentService() {
   return { repo, drive, service };
 }
 
+describe('quoted and revision lifecycle', () => {
+  it('clears a stale holder when entering Quoted, including a same-stage repair', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Opportunity', assignee: 'worker@automationsystems.org' })];
+
+    await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted');
+    expect(repo.cases[0].assignee).toBe('');
+
+    repo.cases[0].assignee = 'worker@automationsystems.org';
+    await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted');
+    expect(repo.cases[0].assignee).toBe('');
+  });
+
+  it('requires the explicit revision action to assign a Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Quoted', assignee: '' })];
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'worker')).rejects.toThrow('Request a revision');
+    const result = await service.assignTicket(sales, 'CASE-2026-0001', 'worker', '', [], true);
+    expect(result).toMatchObject({ ok: true, stage: 'Revision', assigneeEmail: 'worker@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org' });
+  });
+
+  it('does not issue attachment sessions for a Quoted case unless preparing a revision', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+
+    await expect(service.beginAttachmentUpload(sales, 'CASE-2026-0001', [{ fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }])).rejects.toThrow('Request a revision');
+    expect(drive.sessions).toHaveLength(0);
+  });
+});
+
 /** The UTC date buildDriveName stamps into the name, computed the same way. */
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -678,7 +711,7 @@ describe('assignTicket commits verified attachments', () => {
       { fileId: 'FILE-2', fileName: 'photo.jpg', mimeType: 'image/jpeg', sizeBytes: 4096 }
     ]);
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
 
     const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
@@ -809,11 +842,11 @@ describe('assignTicket without attachments is unchanged', () => {
     const withUndefined = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
     const withEmptyList = await service.assignTicket(sales, 'CASE-2026-0001', 'worker', 'A note.', []);
 
-    expect(withUndefined).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(withUndefined).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(withEmptyList).toEqual({
       ok: true,
       assignee: 'Ticket Worker',
-      assigneeEmail: 'worker@automationsystems.org'
+      assigneeEmail: 'worker@automationsystems.org', stage: 'Lead'
     });
 
     const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
@@ -837,7 +870,7 @@ describe('assignTicket without attachments is unchanged', () => {
 
     const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
   });
 });
 
@@ -935,7 +968,7 @@ describe('case service ownership and assignment', () => {
 
     const result = await service.assignTicket({ ...sales, email: 'worker@automationsystems.org', role: 'L1' }, 'CASE-2026-0001', 'other');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'inactive')).rejects.toThrow('not an active CRM user');
   });
@@ -957,7 +990,7 @@ describe('case service ownership and assignment', () => {
 
     const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     const logged = repo.logs.find((entry) => entry.action === 'CASE_ASSIGN')!;
     expect(logged.note ?? '').toBe('');
     expect(logged.details).toBe('Working on -> Other Sales');
@@ -1133,7 +1166,7 @@ describe('case service outcomes and stage rules', () => {
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other')).rejects.toThrow('ticket can no longer be reassigned');
 
     await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted', 'resumed');
-    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', outcome: '', assignee: 'worker@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', outcome: '', assignee: '' });
 
     await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', {
       orderValue: 5000,

@@ -35,7 +35,7 @@ export type DefaultSettingRow = {
 };
 
 export const DEFAULT_SETTINGS = {
-  STAGES: ['Lead', 'Opportunity', 'Quoted'],
+  STAGES: ['Lead', 'Opportunity', 'Quoted', 'Revision'],
   OUTCOMES: ['Won', 'Lost', 'Hold'],
   QUOTE_STATUSES: ['Draft', 'Sent', 'Superseded'],
   SOURCES: ['Direct Enquiry', 'Sales Team', 'Reference', 'Exhibition', 'Tender', 'Existing Customer', 'Other'],

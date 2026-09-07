@@ -129,6 +129,8 @@ export type QuoteRepository = {
   listUsers(): Promise<QuoteUserRow[]>;
   listHandlers(): Promise<QuoteHandlerRow[]>;
   getCase(id: string): Promise<QuoteCaseRow | null>;
+  /** Lock and re-read a case within an existing transaction. */
+  lockCase?(id: string): Promise<QuoteCaseRow | null>;
   createCase(row: QuoteCaseRow): Promise<void>;
   updateCase(id: string, fields: Partial<QuoteCaseRow>): Promise<void>;
   getQuote(quoteNo: string, rev: number): Promise<QuoteRow | null>;
@@ -377,7 +379,7 @@ async function createAutoCase(
     outcomeNote: '',
     owner: normalizeEmail(user.email),
     extraOwners: [],
-    assignee: normalizeEmail(user.email),
+    assignee: stage === 'Quoted' ? '' : normalizeEmail(user.email),
     closedOn: '',
     createdBy: normalizeEmail(user.email),
     createdAt: now,
@@ -394,9 +396,9 @@ async function createAutoCase(
 }
 
 async function bumpCaseToQuoted(repo: QuoteRepository, caseId: string): Promise<void> {
-  const row = await repo.getCase(caseId);
-  if (!row || row.outcome || row.stage === 'Quoted') return;
-  await repo.updateCase(caseId, { stage: 'Quoted', updatedAt: nowIso() });
+  const row = (await repo.lockCase?.(caseId)) ?? (await repo.getCase(caseId));
+  if (!row || row.outcome) return;
+  await repo.updateCase(caseId, { stage: 'Quoted', assignee: '', updatedAt: nowIso() });
 }
 
 async function loadQuote(repo: QuoteRepository, user: CrmContext, quoteNo: string, rev: number): Promise<LoadedQuote> {
@@ -467,6 +469,10 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         });
         caseId = allocation.caseId;
         if (caseId) await validateCase(trx, caseId, customer.id);
+        if (allocation.previous.length && caseId) {
+          const caseRow = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+          if (caseRow?.stage === 'Quoted') throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+        }
         await supersedePrevious(trx, allocation.previous);
         if (!caseId) {
           caseId = await createAutoCase(trx, user, customer, title, allocation.quoteNo, 'Opportunity', 'Auto-created with quotation');

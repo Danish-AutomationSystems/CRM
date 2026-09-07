@@ -3,6 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS } from '../db/schema';
+import { caseWritePatch } from '../db/case-write';
 import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
 import type {
   QuoteActivityLogEntry,
@@ -352,6 +353,16 @@ export class PostgresQuoteRepository implements QuoteRepository {
     return rows[0] ? toCase(rows[0]) : null;
   }
 
+  async lockCase(id: string): Promise<QuoteCaseRow | null> {
+    const rows = (await this.db`
+      select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
+             won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
+             created_by, created_at, updated_at
+      from public.cases where case_id = ${id} for update
+    `) as CaseDbRow[];
+    return rows[0] ? toCase(rows[0]) : null;
+  }
+
   async createCase(row: QuoteCaseRow): Promise<void> {
     await this.db`
       insert into public.cases (
@@ -369,6 +380,7 @@ export class PostgresQuoteRepository implements QuoteRepository {
   }
 
   async updateCase(id: string, fields: Partial<QuoteCaseRow>): Promise<void> {
+    fields = caseWritePatch(fields);
     const existing = await this.getCase(id);
     if (!existing) throw new Error(`Case ${id} was not found.`);
     const row = { ...existing, ...fields };
