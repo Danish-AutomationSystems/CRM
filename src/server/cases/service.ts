@@ -652,6 +652,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (!title) throw new Error('Give the case a short title.');
 
       const order = asBool(input.order);
+      if (!order && asText(input.stage) === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of creating a case in Revision.');
+      }
       const users = userIndex(await repo.listUsers());
       let assignee = '';
       if (order) {
@@ -898,6 +901,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
       if (row.stage === 'Quoted' && !requestRevision) {
         throw new Error('Request a revision and select a ticket holder before preparing attachments.');
+      }
+      if (requestRevision && row.stage !== 'Quoted' && row.stage !== 'Revision') {
+        throw new Error('A revision can only be requested from an open Quoted or Revision case.');
       }
       const requested = validateRequestedUploads(files);
 
@@ -1211,6 +1217,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async quickLog(user: CrmContext, input: QuickLogInput) {
       requireLevel(user, 2);
+      if (asText(input.stage) === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of creating a case in Revision.');
+      }
       // Creation path for both the case and any new customer: no `stored` below.
       const live = await loadSettings(repo);
       return repo.withTransaction(async (tx) => {

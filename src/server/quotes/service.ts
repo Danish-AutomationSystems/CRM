@@ -579,6 +579,10 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
           });
           caseId = allocation.caseId;
           if (caseId) await validateCase(trx, caseId, customer.id);
+          if (status === 'Draft' && allocation.previous.length && caseId) {
+            const caseRow = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+            if (caseRow?.stage === 'Quoted') throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+          }
           await supersedePrevious(trx, allocation.previous);
           if (!caseId) {
             caseId = await createAutoCase(

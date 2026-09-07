@@ -318,6 +318,70 @@ describe('quote service template listing', () => {
   });
 });
 
+describe('Sent holder invariant', () => {
+  it('rejects an uploaded Draft revision before a Quoted case requests Revision', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.uploadQuotation(sales, {
+      customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Draft revision',
+      fileName: 'revision.pdf', dataB64: 'YWJj', status: 'Draft'
+    })).rejects.toThrow('Request a revision');
+    expect(repo.quotes).toHaveLength(1);
+    expect(repo.quotes[0].status).toBe('Sent');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  // Removing assignee from bumpCaseToQuoted leaves each existing holder behind.
+  it.each(['Generated', 'External'] as const)('%s Sent clears holders in Opportunity, Revision and stale Quoted cases', async (source) => {
+    for (const stage of ['Opportunity', 'Revision', 'Quoted']) {
+      const { repo, service } = makeService();
+      repo.cases[0] = caseRow({ stage, extraOwners: ['manager@automationsystems.org'] });
+      if (source === 'Generated') {
+        repo.quotes = [makeQuote()];
+        await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
+      } else {
+        await service.uploadQuotation(sales, {
+          customerId: 'CUST-0001', caseId: 'CASE-2026-0001', title: 'Sent upload',
+          fileName: 'sent.pdf', dataB64: 'YWJj', total: 300, status: 'Sent'
+        });
+      }
+      expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '', owner: sales.email, extraOwners: ['manager@automationsystems.org'] });
+      expect(repo.quotes[0].status).toBe('Sent');
+    }
+  });
+
+  it.each(['Generated', 'External'] as const)('keeps a %s Draft revision assigned in Revision until it is Sent', async (source) => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Revision', extraOwners: ['manager@automationsystems.org'] });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    const revision = source === 'Generated' ? await service.createQuotation(sales, {
+      customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Revised offer',
+      templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }]
+    }) : await service.uploadQuotation(sales, { customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Draft', fileName: 'draft.pdf', dataB64: 'YWJj', status: 'Draft' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: sales.email });
+    expect(repo.quotes[1]).toMatchObject({ rev: 1, status: 'Draft' });
+    await service.setQuoteStatus(sales, revision.quoteNo, revision.rev, 'Sent');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '', owner: sales.email, extraOwners: ['manager@automationsystems.org'] });
+  });
+
+  it.each(['Generated', 'External'] as const)('%s Sent auto-case has no holder', async (source) => {
+    const { repo, service } = makeService();
+    repo.cases = [];
+    const create = repo.createCase.bind(repo);
+    repo.createCase = async (row) => {
+      // The SQL CHECK applies at INSERT, even if a later update would repair it.
+      if (row.stage === 'Quoted') expect(row.assignee).toBe('');
+      await create(row);
+    };
+    const result = source === 'Generated'
+      ? await service.createQuotation(sales, { customerId: 'CUST-0001', title: 'Auto', templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }] })
+      : await service.uploadQuotation(sales, { customerId: 'CUST-0001', title: 'Auto', fileName: 'sent.pdf', dataB64: 'YWJj', status: 'Sent' });
+    if (source === 'Generated') await service.setQuoteStatus(sales, result.quoteNo, result.rev, 'Sent');
+    expect(repo.cases[0]).toMatchObject({ id: result.caseId, stage: 'Quoted', assignee: '', owner: sales.email });
+  });
+});
+
 describe('quote service generated quotations', () => {
   it('rejects a Draft revision while its case remains Quoted', async () => {
     const { repo, service } = makeService();

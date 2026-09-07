@@ -397,6 +397,52 @@ function quoteInput(baseQuoteNo = '') {
 }
 
 describe('CRM concurrency behavior', () => {
+  // Spreading the row read for visibility into an unrelated write would undo
+  // the intervening workflow commit. Explicit barriers guarantee that ordering.
+  it.each([
+    { edit: 'title', initial: 'Opportunity', holder: 'sales@automationsystems.org', next: 'Quoted', nextHolder: '' },
+    { edit: 'priority', initial: 'Opportunity', holder: 'sales@automationsystems.org', next: 'Quoted', nextHolder: '' },
+    { edit: 'title', initial: 'Quoted', holder: '', next: 'Revision', nextHolder: 'worker@automationsystems.org' },
+    { edit: 'priority', initial: 'Quoted', holder: '', next: 'Revision', nextHolder: 'worker@automationsystems.org' }
+  ])('stale $edit edit cannot restore $initial/holder after $next commits', async ({ edit, initial, holder, next, nextHolder }) => {
+    const repo = new ConcurrentRepository();
+    const service = createCaseService(repo);
+    const created = await service.createCase(sales, 'CUST-9999', { title: 'Original', stage: 'Opportunity' });
+    Object.assign(repo.cases[0], { stage: initial, assignee: holder, extraOwners: ['worker@automationsystems.org'] });
+    let readReached!: () => void;
+    let releaseRead!: () => void;
+    const reached = new Promise<void>((resolve) => { readReached = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const getCase = repo.getCase.bind(repo);
+    let pauseNextRead = true;
+    repo.getCase = async (id) => {
+      const row = await getCase(id);
+      if (!pauseNextRead) return row;
+      pauseNextRead = false;
+      const stale = structuredClone(row);
+      readReached();
+      await release;
+      return stale;
+    };
+
+    const editPromise = edit === 'title'
+      ? service.updateCase(sales, created.id, { title: 'Renamed' })
+      : service.setCasePriority(sales, created.id, 'High');
+    await reached;
+    try {
+      if (next === 'Quoted') await service.setCaseStage(sales, created.id, 'Quoted');
+      else await service.assignTicket(sales, created.id, 'worker', '', [], true);
+      expect(repo.cases[0]).toMatchObject({ stage: next, assignee: nextHolder, title: 'Original', priority: '' });
+    } finally {
+      releaseRead();
+      await editPromise;
+    }
+    expect(repo.cases[0]).toMatchObject({
+      stage: next, assignee: nextHolder, owner: sales.email, extraOwners: ['worker@automationsystems.org'],
+      ...(edit === 'title' ? { title: 'Renamed' } : { priority: 'High' })
+    });
+  });
+
   it('allocates unique customer IDs under concurrent customer creation', async () => {
     const repo = new ConcurrentRepository();
     const service = createCustomerService(repo);
