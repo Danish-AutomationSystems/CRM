@@ -72,6 +72,10 @@ class FakeQuoteRepository implements QuoteRepository {
     return this.cases.find((row) => row.id === id) ?? null;
   }
 
+  async lockCase(id: string): Promise<CaseRow | null> {
+    return this.getCase(id);
+  }
+
   async createCase(row: CaseRow): Promise<void> {
     this.cases.push(row);
   }
@@ -121,6 +125,22 @@ class FakeQuoteRepository implements QuoteRepository {
     this.logs.push(entry);
   }
 }
+
+describe('quotation status lifecycle locking', () => {
+  it('does not let a stale superseded revision clear a newer Revision holder', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = { ...repo.cases[0], stage: 'Revision', assignee: 'worker@automationsystems.org' };
+    repo.quotes = [makeQuote({ rev: 0, status: 'Draft' }), makeQuote({ rev: 1, status: 'Draft' })];
+    const original = repo.lockQuoteFamily.bind(repo);
+    repo.lockQuoteFamily = async (quoteNo) => {
+      await original(quoteNo);
+      repo.quotes[0].status = 'Superseded';
+    };
+
+    await expect(service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent')).rejects.toThrow('superseded');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org' });
+  });
+});
 
 function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
   return {

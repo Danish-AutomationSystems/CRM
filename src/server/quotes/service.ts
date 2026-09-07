@@ -715,9 +715,17 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       if (!(DEFAULT_SETTINGS.QUOTE_STATUSES as readonly string[]).includes(status)) {
         throw new Error(`"${status}" is not a valid quotation status.`);
       }
-      const { quote } = await loadQuote(repo, user, quoteNo, rev);
+      await loadQuote(repo, user, quoteNo, rev);
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        // Quote-family lock always precedes the case lock in bumpCaseToQuoted.
+        await trx.lockQuoteFamily(quoteNo);
+        const quote = await trx.getQuote(quoteNo, rev);
+        if (!quote) throw new Error(`Quotation ${quoteNo} R${rev} was not found.`);
+        if (quote.status === 'Superseded') throw new Error('This quotation revision was superseded and cannot change status.');
+        const customer = await trx.getCustomer(quote.customerId);
+        if (!customer) throw new Error(`Customer ${quote.customerId} was not found.`);
+        ensureFull(user, customerForAccess(customer), ownershipFor(await trx.listHandlers()));
         await trx.updateQuote(quoteNo, rev, { status: status as QuoteRow['status'], updatedAt: nowIso() });
         await trx.logActivity({
           action: 'QUOTE_STATUS',
