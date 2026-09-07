@@ -723,28 +723,32 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async setCaseStage(user: CrmContext, id: string, stageInput: unknown, note?: unknown) {
       const stage = asText(stageInput);
-      const { row } = await loadVisibleCase(repo, user, id);
       if (!(CASE_STAGES as readonly string[]).includes(stage)) throw new Error(`"${stage}" is not a valid stage.`);
-      if (row.outcome === 'Won' || row.outcome === 'Lost') {
-        throw new Error(`This case is closed as ${row.outcome}. Reopen it before changing the stage.`);
-      }
       if (stage === 'Revision') {
         throw new Error('Request a revision and select a ticket holder instead of changing the stage directly.');
       }
-      if (row.stage === stage && !row.outcome && !(stage === 'Quoted' && row.assignee)) return { ok: true };
-
-      const fields: Partial<CaseRow> = { stage, updatedAt: nowIso() };
-      if (row.outcome === 'Hold') fields.outcome = '';
-      if (stage === 'Quoted') fields.assignee = '';
-      await repo.updateCase(id, fields);
-      await repo.logActivity({
-        action: 'CASE_STAGE',
-        entity: id,
-        customerId: row.customerId,
-        details: `${row.stage || '-'} -> ${stage}${asText(note) ? ` - ${asText(note)}` : ''}`,
-        who: normalizeEmail(user.email)
+      return repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        const row = (await trx.lockCase?.(id)) ?? (await trx.getCase(id));
+        if (!row) throw new Error(`Case ${id} was not found.`);
+        const [customer, handlers] = await Promise.all([trx.getCustomer(row.customerId), trx.listHandlers()]);
+        if (!customer) throw new Error(`Customer ${row.customerId} was not found.`);
+        ensureVisible(user, customer, row, ownershipFor(handlers));
+        if (row.outcome === 'Won' || row.outcome === 'Lost') {
+          throw new Error(`This case is closed as ${row.outcome}. Reopen it before changing the stage.`);
+        }
+        if (row.stage === stage && !row.outcome && !(stage === 'Quoted' && row.assignee)) return { ok: true };
+        const fields: Partial<CaseRow> = { stage, updatedAt: nowIso() };
+        if (row.outcome === 'Hold') fields.outcome = '';
+        if (stage === 'Quoted') fields.assignee = '';
+        await trx.updateCase(id, fields);
+        await trx.logActivity({
+          action: 'CASE_STAGE', entity: id, customerId: row.customerId,
+          details: `${row.stage || '-'} -> ${stage}${asText(note) ? ` - ${asText(note)}` : ''}`,
+          who: normalizeEmail(user.email)
+        });
+        return { ok: true };
       });
-      return { ok: true };
     },
 
     async setCasePriority(user: CrmContext, id: string, priorityInput: unknown) {
@@ -775,26 +779,22 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async setCaseOutcome(user: CrmContext, id: string, outcomeInput: unknown, data: CaseOutcomeInput = {}) {
       const outcome = asText(outcomeInput);
-      const { row } = await loadVisibleCase(repo, user, id);
-
-      if (outcome === 'Open') {
-        await repo.updateCase(id, { outcome: '', closedOn: '', updatedAt: nowIso() });
-        await repo.logActivity({
-          action: 'CASE_OUTCOME',
-          entity: id,
-          customerId: row.customerId,
-          details: 'Reopened',
-          who: normalizeEmail(user.email)
-        });
-        return { ok: true };
-      }
-
-      if (!(DEFAULT_SETTINGS.OUTCOMES as readonly string[]).includes(outcome)) {
+      if (outcome !== 'Open' && !(DEFAULT_SETTINGS.OUTCOMES as readonly string[]).includes(outcome)) {
         throw new Error(`"${outcome}" is not a valid outcome.`);
       }
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        const row = (await trx.lockCase?.(id)) ?? (await trx.getCase(id));
+        if (!row) throw new Error(`Case ${id} was not found.`);
+        const [customer, handlers] = await Promise.all([trx.getCustomer(row.customerId), trx.listHandlers()]);
+        if (!customer) throw new Error(`Customer ${row.customerId} was not found.`);
+        ensureVisible(user, customer, row, ownershipFor(handlers));
+        if (outcome === 'Open') {
+          await trx.updateCase(id, { outcome: '', closedOn: '', updatedAt: nowIso() });
+          await trx.logActivity({ action: 'CASE_OUTCOME', entity: id, customerId: row.customerId, details: 'Reopened', who: normalizeEmail(user.email) });
+          return { ok: true };
+        }
         const fields: Partial<CaseRow> = {
           outcome: outcome as CaseRow['outcome'],
           outcomeNote: String(data.note ?? ''),
@@ -939,13 +939,14 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (reported.length === 0) {
         // Unchanged path: no transaction, no Drive call, identical details and
         // return value to before attachments existed.
-        await repo.withTransaction(async (tx) => {
+        const currentStage = await repo.withTransaction(async (tx) => {
           const trx = tx ?? repo;
           const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
           if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
           if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
           if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
           await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
+          return requestRevision ? 'Revision' : locked.stage;
         });
         await repo.logActivity({
           action: 'CASE_ASSIGN',
@@ -955,7 +956,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           who: normalizeEmail(user.email),
           note
         });
-        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: requestRevision ? 'Revision' : row.stage };
+        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: currentStage };
       }
 
       // Checked before the cleanup-guarded block on purpose: these files back

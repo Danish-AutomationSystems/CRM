@@ -177,10 +177,6 @@ describe('cases repository public.cases statements', () => {
     expect(casesInsertColumns()).toContain('case_id');
   });
 
-  it('parses a plausible updateCase set list, so a failed regex cannot pass vacuously', () => {
-    expect(casesUpdateSetColumns().length).toBeGreaterThan(10);
-    expect(casesUpdateSetColumns()).toContain('title');
-  });
 
   it('derives the full public.cases column set, so no guard below can pass vacuously', () => {
     const all = allCasesColumns();
@@ -205,10 +201,6 @@ describe('cases repository public.cases statements', () => {
     expect(casesInsertValueCount()).toBe(casesInsertColumns().length);
   });
 
-  it('updateCase writes every public.cases column', () => {
-    const missing = missingFrom('updateCase', casesUpdateSetColumns());
-    expect(missing, `updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
 
   it('getCase selects every public.cases column', () => {
     const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
@@ -223,8 +215,7 @@ describe('cases repository public.cases statements', () => {
   it('writes no column outside the table (typo guard)', () => {
     const all = allCasesColumns();
     for (const [name, carried] of [
-      ['createCase', casesInsertColumns()],
-      ['updateCase', casesUpdateSetColumns()]
+      ['createCase', casesInsertColumns()]
     ] as const) {
       const unknown = carried.filter((c) => !all.includes(c));
       expect(unknown, `${name} names column(s) that do not exist: ${unknown.join(', ')}`).toEqual([]);

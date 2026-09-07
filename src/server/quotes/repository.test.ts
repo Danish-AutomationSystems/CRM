@@ -141,7 +141,6 @@ describe('PostgresQuoteRepository SQL column coverage', () => {
 describe('quotes repository public.cases statements', () => {
   it('parses a plausible column list from each statement, so a failed regex cannot pass vacuously', () => {
     expect(quotesInsertColumns().length).toBeGreaterThan(10);
-    expect(quotesUpdateSetColumns().length).toBeGreaterThan(10);
     expect(selectColumns('getCase', 'cases').length).toBeGreaterThan(10);
   });
 
@@ -160,10 +159,6 @@ describe('quotes repository public.cases statements', () => {
     expect(quotesCasesInsertValueCount()).toBe(quotesInsertColumns().length);
   });
 
-  it('updateCase writes every public.cases column', () => {
-    const missing = missingFrom('updateCase', quotesUpdateSetColumns());
-    expect(missing, `quotes updateCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
 
   it('getCase selects every public.cases column', () => {
     const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));

@@ -3,7 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS } from '../db/schema';
-import { caseWritePatch } from '../db/case-write';
+import { buildCaseWriteSql, caseWritePatch } from '../db/case-write';
 import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
 import type {
   QuoteActivityLogEntry,
@@ -381,29 +381,16 @@ export class PostgresQuoteRepository implements QuoteRepository {
 
   async updateCase(id: string, fields: Partial<QuoteCaseRow>): Promise<void> {
     fields = caseWritePatch(fields);
-    const existing = await this.getCase(id);
-    if (!existing) throw new Error(`Case ${id} was not found.`);
-    const row = { ...existing, ...fields };
-    await this.db`
-      update public.cases
-      set
-        title = ${row.title},
-        details = ${row.details},
-        source = ${row.source},
-        priority = ${row.priority},
-        stage = ${row.stage},
-        outcome = ${dbOutcome(row.outcome)},
-        order_value = ${dbNumber(row.orderValue)},
-        won_categories = ${joinPipe(row.wonCategories)},
-        outcome_note = ${row.outcomeNote},
-        owner = ${dbEmail(row.owner)},
-        extra_owners = ${joinPipe(row.extraOwners)},
-        assignee = ${dbEmail(row.assignee)},
-        closed_on = ${dbDate(row.closedOn)},
-        updated_at = ${row.updatedAt},
-        version = version + 1
-      where case_id = ${id}
-    `;
+    const dbFields: Partial<QuoteCaseRow> = { ...fields };
+    if ('outcome' in dbFields) dbFields.outcome = dbOutcome(dbFields.outcome ?? '') as QuoteCaseRow['outcome'];
+    if ('orderValue' in dbFields) dbFields.orderValue = dbNumber(dbFields.orderValue ?? '') as QuoteCaseRow['orderValue'];
+    if ('wonCategories' in dbFields) dbFields.wonCategories = joinPipe(dbFields.wonCategories ?? []) as never;
+    if ('owner' in dbFields) dbFields.owner = dbEmail(dbFields.owner ?? '') as never;
+    if ('extraOwners' in dbFields) dbFields.extraOwners = joinPipe(dbFields.extraOwners ?? []) as never;
+    if ('assignee' in dbFields) dbFields.assignee = dbEmail(dbFields.assignee ?? '') as never;
+    if ('closedOn' in dbFields) dbFields.closedOn = dbDate(dbFields.closedOn ?? '') as never;
+    const statement = buildCaseWriteSql(id, dbFields);
+    await this.db.unsafe(statement.query, statement.values as never);
   }
 
   async getQuote(quoteNo: string, rev: number): Promise<QuoteRow | null> {
