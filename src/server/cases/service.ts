@@ -686,7 +686,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           // P11: ownership is materialised at creation - the customer's real handlers, or
           // the creator when the only handler is the virtual Direct account.
           extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownership),
-          assignee: order ? '' : assignee,
+          assignee: order || (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : assignee,
           closedOn: order ? now : '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,
@@ -1283,7 +1283,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           outcomeNote: '',
           owner: normalizeEmail(user.email),
           extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownershipFor(await trx.listHandlers())),
-          assignee: normalizeEmail(user.email),
+          assignee: (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : normalizeEmail(user.email),
           closedOn: '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,

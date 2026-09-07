@@ -319,6 +319,16 @@ describe('quote service template listing', () => {
 });
 
 describe('quote service generated quotations', () => {
+  it('rejects a Draft revision while its case remains Quoted', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.createQuotation(sales, {
+      customerId: 'CUST-0001', caseId: 'CASE-2026-0001', baseQuoteNo: 'QTN-2026-0001',
+      title: 'Revision', templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }]
+    })).rejects.toThrow('Request a revision');
+  });
   it('allocates QTN number, starts at R0, stores BOQ JSON blocks, and keeps Draft case at Opportunity', async () => {
     const { repo, service } = makeService();
 

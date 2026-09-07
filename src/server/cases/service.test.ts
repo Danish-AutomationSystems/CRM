@@ -349,6 +349,17 @@ function makeAttachmentService() {
 }
 
 describe('quoted and revision lifecycle', () => {
+  it('never creates a Quoted case with its default ticket holder', async () => {
+    const { repo, service } = makeService();
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Quoted on creation', stage: 'Quoted' });
+    expect(repo.cases.find((row) => row.id === created.id)).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  it('never quick-logs a Quoted case with its default ticket holder', async () => {
+    const { repo, service } = makeService();
+    const created = await service.quickLog(sales, { customerId: 'CUST-0001', title: 'Quoted quick log', stage: 'Quoted' });
+    expect(repo.cases.find((row) => row.id === created.caseId)).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
   it('clears a stale holder when entering Quoted, including a same-stage repair', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ stage: 'Opportunity', assignee: 'worker@automationsystems.org' })];
@@ -378,6 +389,16 @@ describe('quoted and revision lifecycle', () => {
 
     await expect(service.beginAttachmentUpload(sales, 'CASE-2026-0001', [{ fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }])).rejects.toThrow('Request a revision');
     expect(drive.sessions).toHaveLength(0);
+  });
+
+  it('reports revision capability only for a visible open Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Quoted', assignee: '' })];
+    const detail = await service.getCase(sales, 'CASE-2026-0001');
+    expect(detail).toMatchObject({ canRequestRevision: true, canAssignTicket: false });
+    repo.cases[0].outcome = 'Hold';
+    const held = await service.getCase(sales, 'CASE-2026-0001');
+    expect(held.canRequestRevision).toBe(false);
   });
 });
 
