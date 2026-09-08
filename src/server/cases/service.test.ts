@@ -952,6 +952,79 @@ describe('assignTicket commits verified attachments', () => {
   });
 });
 
+describe('assignTicket commit-time authorization', () => {
+  for (const upload of [false, true]) {
+    it.each(['holder', 'owner', 'handler', 'customer tags', 'customer mapping'] as const)(
+      `rejects revoked %s access after async work (upload=${upload})`,
+      async (access) => {
+        const { repo, drive, service } = makeAttachmentService();
+        const caller: CrmContext = { ...sales, role: access === 'customer tags' ? 'L3' : 'L1' };
+        repo.handlers = access === 'handler' || access === 'customer mapping' ? repo.handlers : [];
+        repo.cases[0] = caseRow({
+          owner: 'other@automationsystems.org',
+          extraOwners: access === 'owner' ? [caller.email] : [],
+          assignee: access === 'holder' ? caller.email : 'worker@automationsystems.org'
+        });
+        repo.customers.push(customer({ id: 'CUST-0002', tags: ['NCR'] }));
+
+        // The outer repository retains the initial snapshot. Only transaction
+        // reads can see the concurrent committed access change.
+        const tx = new FakeCaseRepository();
+        tx.cases = structuredClone(repo.cases);
+        tx.customers = structuredClone(repo.customers);
+        tx.handlers = structuredClone(repo.handlers);
+        repo.withTransaction = async (fn) => fn(tx);
+        const revoke = () => {
+          if (access === 'holder') tx.cases[0].assignee = 'worker@automationsystems.org';
+          if (access === 'owner') tx.cases[0].extraOwners = ['other@automationsystems.org'];
+          if (access === 'handler') tx.handlers = [];
+          if (access === 'customer tags') tx.customers[0].tags = ['NCR'];
+          if (access === 'customer mapping') tx.cases[0].customerId = 'CUST-0002';
+        };
+        if (upload) {
+          drive.put({ id: 'FILE-1', name: driveNameFor('handover.pdf'), size: 1 });
+          const rename = drive.renameFile.bind(drive);
+          drive.renameFile = async (id, name) => { await rename(id, name); revoke(); };
+        } else {
+          const listUsers = repo.listUsers.bind(repo);
+          repo.listUsers = async () => { const users = await listUsers(); revoke(); return users; };
+        }
+        const uploads = upload
+          ? [{ fileId: 'FILE-1', fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }]
+          : [];
+
+        await expect(service.assignTicket(caller, repo.cases[0].id, 'other', 'Stale handover', uploads))
+          .rejects.toThrow('do not have access');
+        expect(tx.updateCaseCalls).toBe(0);
+        expect(tx.logs).toEqual([]);
+        expect(repo.logs).toEqual([]);
+        expect(tx.attachments).toEqual([]);
+        expect(tx.cases[0]).toMatchObject({ stage: 'Lead', assignee: 'worker@automationsystems.org' });
+        if (upload) expect(drive.deleted).toEqual(['FILE-1']);
+      }
+    );
+
+    it(`records an authorized handover against the current customer in the transaction (upload=${upload})`, async () => {
+      const { repo, drive, service } = makeAttachmentService();
+      const tx = new FakeCaseRepository();
+      tx.cases = [caseRow({ customerId: 'CUST-0002', assignee: 'worker@automationsystems.org' })];
+      tx.customers = [customer({ id: 'CUST-0002' })];
+      repo.withTransaction = async (fn) => fn(tx);
+      if (upload) drive.put({ id: 'FILE-1', name: driveNameFor('handover.pdf'), size: 1 });
+      const uploads = upload
+        ? [{ fileId: 'FILE-1', fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }]
+        : [];
+
+      await service.assignTicket(sales, repo.cases[0].id, 'other', 'Current handover', uploads);
+
+      expect(tx.cases[0]).toMatchObject({ customerId: 'CUST-0002', assignee: 'other@automationsystems.org' });
+      expect(tx.logs).toEqual([expect.objectContaining({ action: 'CASE_ASSIGN', customerId: 'CUST-0002', note: 'Current handover' })]);
+      expect(repo.logs).toEqual([]);
+      expect(tx.attachments).toHaveLength(upload ? 1 : 0);
+    });
+  }
+});
+
 describe('assignTicket without attachments is unchanged', () => {
   it('produces the same details, the same return value, and touches Drive not at all', async () => {
     const { repo, drive, service } = makeAttachmentService();

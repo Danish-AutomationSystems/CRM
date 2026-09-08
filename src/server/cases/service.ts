@@ -943,24 +943,27 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const reported = parseReportedUploads(uploadsInput);
 
       if (reported.length === 0) {
-        // Unchanged path: no transaction, no Drive call, identical details and
-        // return value to before attachments existed.
+        // User lookup can outlive the caller's access. Recheck against the
+        // locked case and current access data before writing the handover.
         const currentStage = await repo.withTransaction(async (tx) => {
           const trx = tx ?? repo;
           const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
           if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          const [customer, handlers] = await Promise.all([trx.getCustomer(locked.customerId), trx.listHandlers()]);
+          if (!customer) throw new Error(`Customer ${locked.customerId} was not found.`);
+          ensureVisible(user, customer, locked, ownershipFor(handlers));
           if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
           if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
           await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
+          await trx.logActivity({
+            action: 'CASE_ASSIGN',
+            entity: caseId,
+            customerId: locked.customerId,
+            details: `Working on -> ${nameOf(users, email)}`,
+            who: normalizeEmail(user.email),
+            note
+          });
           return requestRevision ? 'Revision' : locked.stage;
-        });
-        await repo.logActivity({
-          action: 'CASE_ASSIGN',
-          entity: caseId,
-          customerId: row.customerId,
-          details: `Working on -> ${nameOf(users, email)}`,
-          who: normalizeEmail(user.email),
-          note
         });
         return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: currentStage };
       }
@@ -1030,13 +1033,16 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           const trx = tx ?? repo;
           const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
           if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          const [customer, handlers] = await Promise.all([trx.getCustomer(locked.customerId), trx.listHandlers()]);
+          if (!customer) throw new Error(`Customer ${locked.customerId} was not found.`);
+          ensureVisible(user, customer, locked, ownershipFor(handlers));
           if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
           if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
           await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
           const activityId = await trx.logActivity({
             action: 'CASE_ASSIGN',
             entity: caseId,
-            customerId: row.customerId,
+            customerId: locked.customerId,
             details: `Working on -> ${nameOf(users, email)}`,
             who: normalizeEmail(user.email),
             note
