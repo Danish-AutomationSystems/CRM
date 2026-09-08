@@ -535,40 +535,40 @@ describe('CRM concurrency behavior', () => {
 
     expect(repo.customers[0]).toMatchObject({ priority: 'High', area: 'Mohali' });
   });
-});
 
-it.each(['same', 'different'])('serializes concurrent first-quote %s customer mapping without changing ownership', async (targetMode) => {
-  const repo = new ConcurrentRepository();
-  const cases = createCaseService(repo);
-  const quotes = createQuoteService(repo);
-  const { id } = await cases.createCase(sales, '', { title: 'Unknown customer', stage: 'Lead' });
-  repo.customers.push(repo.customer({ id: 'CUST-SECOND', name: 'Second account' }));
-  repo.handlers.push({ customerId: 'CUST-SECOND', email: sales.email, assignedBy: sales.email, assignedAt: 'now' });
-  const original = structuredClone(repo.cases[0]);
-  const handlers = structuredClone(repo.handlers);
-  // Both calls finish their preflight with an unmapped case before either enters
-  // the serialized transaction. No timers or scheduler-order assumptions.
-  let arrivals = 0;
-  let release!: () => void;
-  const bothReady = new Promise<void>((resolve) => { release = resolve; });
-  const transact = repo.withTransaction.bind(repo);
-  repo.withTransaction = async (fn) => {
-    if (++arrivals === 2) release();
-    await bothReady;
-    return transact(fn);
-  };
-  const results = await Promise.allSettled([
-    quotes.createQuotation(sales, { ...quoteInput(), caseId: id }),
-    quotes.createQuotation(sales, { ...quoteInput(), caseId: id, customerId: targetMode === 'same' ? 'CUST-9999' : 'CUST-SECOND' })
-  ]);
-  expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(targetMode === 'same' ? 2 : 1);
-  if (targetMode === 'different') {
-    const failure = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
-    expect(failure.reason.message).toContain('different customer');
-  }
-  expect(new Set(repo.quotes.map((quote) => quote.customerId))).toEqual(new Set([repo.cases[0].customerId]));
-  expect(repo.logs.filter((row) => row.action === 'CASE_CUSTOMER_MAP')).toHaveLength(1);
-  expect(repo.cases[0]).toMatchObject({ owner: original.owner, extraOwners: original.extraOwners, assignee: original.assignee, stage: 'Lead' });
-  expect(repo.handlers).toEqual(handlers);
-  expect((await cases.getCase(sales, id)).customer?.id).toBe(repo.cases[0].customerId);
+  it.each(['same', 'different'])('serializes concurrent first-quote %s customer mapping without changing ownership', async (targetMode) => {
+    const repo = new ConcurrentRepository();
+    const cases = createCaseService(repo);
+    const quotes = createQuoteService(repo);
+    const { id } = await cases.createCase(sales, '', { title: 'Unknown customer', stage: 'Lead' });
+    repo.customers.push(repo.customer({ id: 'CUST-SECOND', name: 'Second account' }));
+    repo.handlers.push({ customerId: 'CUST-SECOND', email: sales.email, assignedBy: sales.email, assignedAt: 'now' });
+    const original = structuredClone(repo.cases[0]);
+    const handlers = structuredClone(repo.handlers);
+    // Both calls finish their preflight with an unmapped case before either enters
+    // the serialized transaction. No timers or scheduler-order assumptions.
+    let arrivals = 0;
+    let release!: () => void;
+    const bothReady = new Promise<void>((resolve) => { release = resolve; });
+    const transact = repo.withTransaction.bind(repo);
+    repo.withTransaction = async (fn) => {
+      if (++arrivals === 2) release();
+      await bothReady;
+      return transact(fn);
+    };
+    const results = await Promise.allSettled([
+      quotes.createQuotation(sales, { ...quoteInput(), caseId: id }),
+      quotes.createQuotation(sales, { ...quoteInput(), caseId: id, customerId: targetMode === 'same' ? 'CUST-9999' : 'CUST-SECOND' })
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(targetMode === 'same' ? 2 : 1);
+    if (targetMode === 'different') {
+      const failure = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+      expect(failure.reason.message).toContain('different customer');
+    }
+    expect(new Set(repo.quotes.map((quote) => quote.customerId))).toEqual(new Set([repo.cases[0].customerId]));
+    expect(repo.logs.filter((row) => row.action === 'CASE_CUSTOMER_MAP')).toHaveLength(1);
+    expect(repo.cases[0]).toMatchObject({ owner: original.owner, extraOwners: original.extraOwners, assignee: original.assignee, stage: 'Lead' });
+    expect(repo.handlers).toEqual(handlers);
+    expect((await cases.getCase(sales, id)).customer?.id).toBe(repo.cases[0].customerId);
+  });
 });

@@ -4,9 +4,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   allCasesColumns as sharedAllCasesColumns,
-  casesInsertColumns as sharedCasesInsertColumns,
-  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
-  insertValueCount as sharedInsertValueCount,
   methodBody as sharedMethodBody,
   migrationAddedCasesColumns as sharedMigrationAddedCasesColumns,
   missingFrom as sharedMissingFrom,
@@ -146,37 +143,15 @@ function migrationAddedCasesColumns(): string[] {
   return sharedMigrationAddedCasesColumns(migrationsDir);
 }
 
-function casesInsertColumns(): string[] {
-  return sharedCasesInsertColumns(source, 'createCase');
-}
-
-function casesInsertValueCount(): number {
-  return sharedInsertValueCount(source, 'createCase', 'cases');
-}
-
-/**
- * The left-hand side of every assignment in updateCase's `set` clause.
- *
- * updateCase is not an INSERT and not a SELECT: it merges `fields` over the
- * existing row and rewrites the full column list. A column missing here is
- * never written, and nothing errors - which is why it gets its own parser
- * rather than being folded into one of the others.
- */
-function casesUpdateSetColumns(): string[] {
-  return sharedCasesUpdateSetColumns(source, 'updateCase');
-}
-
+// getCase/createCase/updateCase used to be their own createCase/getCase/updateCase
+// trio here, duplicated byte-for-byte in quotes/repository.ts. Both now delegate to
+// the single implementation in src/server/db/case-write.ts - see case-write.test.ts
+// for its column-parity guards (insertCaseRow / selectCaseRow / updateCaseRow).
 describe('cases repository public.cases statements', () => {
   it('finds the migration-added columns, so the derivation cannot pass vacuously', () => {
     // If this ever legitimately drops to zero, every guard below stops guarding.
     expect(migrationAddedCasesColumns()).toContain('priority');
   });
-
-  it('parses a plausible createCase insert list, so a failed regex cannot pass vacuously', () => {
-    expect(casesInsertColumns().length).toBeGreaterThan(10);
-    expect(casesInsertColumns()).toContain('case_id');
-  });
-
 
   it('derives the full public.cases column set, so no guard below can pass vacuously', () => {
     const all = allCasesColumns();
@@ -186,40 +161,9 @@ describe('cases repository public.cases statements', () => {
     expect(all).toContain('priority');
   });
 
-  it('createCase writes every public.cases column', () => {
-    const missing = missingFrom('createCase', casesInsertColumns());
-    expect(missing, `createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
-
-  // This only proves the column list and the VALUES tuple are the same length,
-  // not that they are in the same order. Two entries transposed in one list but
-  // not the other (e.g. `source` and `priority` swapped in the column list)
-  // keeps the counts equal, keeps every guard above green, and writes every
-  // value into the wrong column - both are `text`, so Postgres raises nothing.
-  // That transposition risk is not covered by this test.
-  it('createCase supplies exactly one value per inserted column', () => {
-    expect(casesInsertValueCount()).toBe(casesInsertColumns().length);
-  });
-
-
-  it('getCase selects every public.cases column', () => {
-    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
-    expect(missing, `getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
-
   it('listCases selects every public.cases column', () => {
     const missing = missingFrom('listCases', selectColumns('listCases', 'cases'));
     expect(missing, `listCases does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
-
-  it('writes no column outside the table (typo guard)', () => {
-    const all = allCasesColumns();
-    for (const [name, carried] of [
-      ['createCase', casesInsertColumns()]
-    ] as const) {
-      const unknown = carried.filter((c) => !all.includes(c));
-      expect(unknown, `${name} names column(s) that do not exist: ${unknown.join(', ')}`).toEqual([]);
-    }
   });
 });
 

@@ -665,3 +665,52 @@ describe('customerless dashboard', () => {
     expect((await dashboard.dashboard(manager, sales.email)).dash.cases).toHaveLength(1);
   });
 });
+
+// Finding 4: computeDash used to have no viewer filter at all - a subject's own
+// dashboard aggregated every case it owned/was assigned, regardless of whether
+// the *viewer* (an L3 tag-matched into the subject's dashboard) could see that
+// case's customer. Intended behavior, matching every other per-case visibility
+// check in this file: a mapped case the viewer cannot see (no FULL customer
+// access, and the viewer is neither the case's owner nor its assignee) is
+// dropped from that viewer's copy of the subject's stats and lists, even though
+// it is the subject's own work. An L4+ (seesAll) or the case owner/assignee
+// themselves still sees it - see auth/access.ts's caseVisible.
+describe('mapped dashboard visibility filtering', () => {
+  it("drops a mapped case the viewer cannot see from the subject's dashboard, but keeps it for L4+", async () => {
+    const { repo, dashboard } = makeService();
+    repo.customers.push(customer({ id: 'CUST-0003', name: 'Gamma NCR', tags: ['NCR'] }));
+    repo.cases = [
+      caseRow({
+        id: 'CASE-2026-0005',
+        customerId: 'CUST-0003',
+        title: 'NCR-tagged won case',
+        owner: sales.email,
+        extraOwners: [sales.email],
+        assignee: sales.email,
+        outcome: 'Won',
+        orderValue: 4000,
+        closedOn: closedThisMonth()
+      })
+    ];
+
+    // The subject (sales) always sees their own owned/assigned work.
+    const own = await dashboard.dashboard(sales);
+    expect(own.dash.stats.wonMonthValue).toBe(4000);
+    expect(own.dash.stats.wonMonthCount).toBe(1);
+
+    // supervisor (L3, allowedTags ['Punjab']) has no tag match on the NCR
+    // customer and is neither owner nor assignee of the case - it must be
+    // invisible in supervisor's view of sales's dashboard.
+    const supervisor = repo.users.find((row) => row.role === 'L3')!;
+    const asSupervisor = await dashboard.dashboard(supervisor, sales.email);
+    expect(asSupervisor.dash.stats.wonMonthValue).toBe(0);
+    expect(asSupervisor.dash.stats.wonMonthCount).toBe(0);
+    expect(asSupervisor.dash.cases).toEqual([]);
+
+    // manager (L4, sees all) still sees it.
+    const manager = repo.users.find((row) => row.role === 'L4')!;
+    const asManager = await dashboard.dashboard(manager, sales.email);
+    expect(asManager.dash.stats.wonMonthValue).toBe(4000);
+    expect(asManager.dash.stats.wonMonthCount).toBe(1);
+  });
+});
