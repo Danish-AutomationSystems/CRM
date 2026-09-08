@@ -1154,9 +1154,14 @@ test('the cases list shows a priority badge only for cases that have one', async
       expires: Math.floor(Date.now() / 1000) + 60 * 60
     }
   ]);
+  // updatedOn must stay fresh (< 2 days old): agingChip() compares it against
+  // the real wall clock, and caseSummary's fixed 2026-07-29 date now decays
+  // into a "stale" badge that inflates the "Sensor retrofit" row to 2
+  // badges, which is exactly what this test asserts against.
+  const freshUpdatedOn = new Date().toISOString().slice(0, 10);
   const casesWithMixedPriority = [
-    { ...caseSummary, id: 'CASE-2026-0001', title: 'Panel upgrade', priority: 'High' },
-    { ...caseSummary, id: 'CASE-2026-0002', title: 'Sensor retrofit', priority: '' }
+    { ...caseSummary, id: 'CASE-2026-0001', title: 'Panel upgrade', priority: 'High', updatedOn: freshUpdatedOn },
+    { ...caseSummary, id: 'CASE-2026-0002', title: 'Sensor retrofit', priority: '', updatedOn: freshUpdatedOn }
   ];
   await page.route('**/api/rpc', async (route) => {
     const body = route.request().postDataJSON() as { fn: string };
@@ -1178,4 +1183,270 @@ test('the cases list shows a priority badge only for cases that have one', async
   const noPriorityRow = page.locator('tr', { has: page.getByText('Sensor retrofit') });
   await expect(noPriorityRow.locator('.badge')).toHaveCount(1); // only the status badge, no priority badge
   await expect(noPriorityRow.getByText('—')).toBeVisible();
+});
+
+/* --------------------------------------------------------------------------
+ * Case lifecycle: Quoted has no ticket holder, Revision reassignment, and
+ * registering a case without a customer until the first quotation.
+ *
+ * jsdom already covers this logic against the real legacy client (15 UI
+ * tests), so these three are deliberately narrow: each proves something only
+ * a real browser can - real click/change event dispatch driving the modal's
+ * disabled-button state machine, real navigation/refetch after a write, and
+ * a real <input type=file> handed through FileReader into a fetch body.
+ * -------------------------------------------------------------------------- */
+
+function quotedCaseFixture() {
+  return {
+    id: 'CASE-2026-0020',
+    title: 'Quoted case',
+    customerName: 'Acme Controls',
+    stage: 'Quoted',
+    outcome: '',
+    quotedValue: 120000,
+    owners: ['Playwright Admin'],
+    assignee: '',
+    priority: '',
+    updatedOn: '2026-08-01'
+  };
+}
+
+function quotedCaseGetCasePayload(overrides?: Record<string, unknown>) {
+  return {
+    customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+    case: {
+      ...quotedCaseFixture(),
+      customerId: 'CUST-2026-0001',
+      details: 'Awaiting the customer PO.',
+      orderValue: '',
+      wonCategories: [],
+      ownerList: [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+      ]
+    },
+    canEdit: true,
+    canQuote: true,
+    canMapCustomer: false,
+    canAssignTicket: false,
+    canRequestRevision: true,
+    quotes: [],
+    history: [],
+    ...overrides
+  };
+}
+
+test('a Quoted case has no ticket holder and offers Request revision, which moves it to Revision with the chosen holder', async ({
+  context,
+  page
+}) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  let getCaseCalls = 0;
+  let assignArgs: unknown[] | undefined;
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_assignTicket') {
+      assignArgs = body.args;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { ok: true } }) });
+      return;
+    }
+    if (body.fn === 'api_getCase') {
+      getCaseCalls += 1;
+      const data =
+        getCaseCalls > 1
+          ? quotedCaseGetCasePayload({
+              case: {
+                ...quotedCaseGetCasePayload().case,
+                stage: 'Revision',
+                assignee: 'Sales User'
+              },
+              canAssignTicket: true,
+              canRequestRevision: false
+            })
+          : quotedCaseGetCasePayload();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/case/CASE-2026-0020');
+  await expect(page.getByRole('heading', { name: 'Quoted case' })).toBeVisible();
+
+  // No ticket holder while Quoted, and no way to reassign one directly.
+  await expect(page.getByText('Assigned to:')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'reassign' })).toHaveCount(0);
+
+  const requestRevision = page.getByRole('button', { name: 'Request revision' });
+  await expect(requestRevision).toBeVisible();
+  await requestRevision.click();
+
+  await expect(page.locator('#mtitle')).toHaveText('Request revision');
+  await page.locator('#wk_q').fill('Sales');
+  await page.locator('#wk_res').getByText('Sales User').click();
+  await page.locator('#wk_go').click();
+
+  await expect(page.getByText('Assigned to:')).toBeVisible();
+  await expect(page.getByTestId('crm-route').getByText('Sales User')).toBeVisible();
+  await expect(page.locator('.badge', { hasText: 'Revision' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Request revision' })).toHaveCount(0);
+
+  expect(assignArgs).toEqual(['CASE-2026-0020', 'sales@automationsystems.org', '', [], true]);
+});
+
+function unmappedCaseGetCasePayload(overrides?: Record<string, unknown>) {
+  return {
+    customer: null,
+    case: {
+      id: 'CASE-2026-0030',
+      title: 'Lead without a customer',
+      stage: 'Lead',
+      outcome: '',
+      owners: ['Playwright Admin'],
+      assignee: '',
+      priority: '',
+      updatedOn: '2026-08-01',
+      customerId: '',
+      details: '',
+      orderValue: '',
+      wonCategories: [],
+      ownerList: [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+      ]
+    },
+    canEdit: true,
+    canQuote: true,
+    canMapCustomer: true,
+    canAssignTicket: true,
+    canRequestRevision: false,
+    quotes: [],
+    history: [],
+    ...overrides
+  };
+}
+
+test('a case registered without a customer shows Customer not mapped instead of a blank customer area', async ({
+  context,
+  page
+}) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string };
+    const data = body.fn === 'api_getCase' ? unmappedCaseGetCasePayload() : rpcData(body.fn);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+  });
+
+  await page.goto('/crm/case/CASE-2026-0030');
+  await expect(page.getByRole('heading', { name: 'Lead without a customer' })).toBeVisible();
+  await expect(page.locator('.crumb')).toContainText('Customer not mapped');
+  await expect(page.locator('.crumb a')).toHaveCount(0);
+});
+
+test('saving the first quotation on a customerless case sends the chosen customer with the original case id, and the page then shows that customer', async ({
+  context,
+  page
+}) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+
+  let getCaseCalls = 0;
+  let uploadArgs: Record<string, unknown> | undefined;
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { fn: string; args?: unknown[] };
+    if (body.fn === 'api_getCase') {
+      getCaseCalls += 1;
+      const data =
+        getCaseCalls > 1
+          ? unmappedCaseGetCasePayload({
+              customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+              case: { ...unmappedCaseGetCasePayload().case, customerId: 'CUST-2026-0001' },
+              quotes: [{ quoteNo: 'QTN-2026-0099', rev: 0, title: 'Handoff quote', status: 'Sent', date: '2026-08-01', by: 'Playwright Admin', currency: 'INR', total: 50000, pdf: '' }]
+            })
+          : unmappedCaseGetCasePayload();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data }) });
+      return;
+    }
+    if (body.fn === 'api_searchCustomers') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: [{ id: 'CUST-2026-0001', name: 'Acme Controls', tags: ['Punjab'], access: 'FULL' }]
+        })
+      });
+      return;
+    }
+    if (body.fn === 'api_uploadQuotation') {
+      uploadArgs = (body.args?.[0] ?? {}) as Record<string, unknown>;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: { quoteNo: 'QTN-2026-0099', rev: 0 } })
+      });
+      return;
+    }
+    if (body.fn === 'api_getQuotation') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            customer: { id: 'CUST-2026-0001', name: 'Acme Controls' },
+            quote: {
+              quoteNo: 'QTN-2026-0099',
+              rev: 0,
+              caseId: 'CASE-2026-0030',
+              source: 'External',
+              fileName: 'handoff-quote.pdf',
+              title: 'Handoff quote',
+              status: 'Sent',
+              date: '2026-08-01',
+              by: 'Playwright Admin',
+              currency: 'INR',
+              total: 50000,
+              validUntil: '',
+              notes: ''
+            },
+            blocks: [],
+            revisions: [{ rev: 0, status: 'Sent', date: '2026-08-01', total: 50000 }]
+          }
+        })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: rpcData(body.fn) }) });
+  });
+
+  await page.goto('/crm/case/CASE-2026-0030');
+  await expect(page.getByRole('heading', { name: 'Lead without a customer' })).toBeVisible();
+  await expect(page.locator('.crumb')).toContainText('Customer not mapped');
+
+  await page.getByRole('button', { name: 'Upload quotation' }).click();
+  await expect(page.locator('#mtitle')).toHaveText('Choose customer for quotation');
+  await page.locator('#qc_q').fill('Acme');
+  await page.locator('#qc_res').getByRole('button', { name: 'Acme Controls' }).click();
+
+  await expect(page.locator('#mtitle')).toContainText('Upload quotation');
+  await page.locator('#uq_title').fill('Handoff quote');
+  await page.locator('#uq_total').fill('50000');
+  await page.locator('#uq_file').setInputFiles({
+    name: 'handoff-quote.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('fake pdf bytes for e2e quotation upload')
+  });
+  await page.locator('#mfoot').getByRole('button', { name: 'Upload quotation' }).click();
+
+  await expect(page.locator('#mtitle')).toContainText('QTN-2026-0099');
+  await page.getByRole('button', { name: 'Close' }).click();
+
+  await expect(page.locator('.crumb')).toContainText('Acme Controls');
+  await expect(page.locator('.crumb')).not.toContainText('Customer not mapped');
+
+  expect(uploadArgs?.customerId).toBe('CUST-2026-0001');
+  expect(uploadArgs?.caseId).toBe('CASE-2026-0030');
 });
