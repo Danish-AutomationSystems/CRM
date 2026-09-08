@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-08-24 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator)
+Last updated: 2026-09-08 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator, case lifecycle: Quoted holder-clearing, Revision reassignment, customerless cases)
 
 ## Project Purpose
 
@@ -233,6 +233,89 @@ Completed:
     this class of defect, invisible to any single task's diff.
   - Design: `docs/superpowers/specs/2026-08-24-case-aging-indicator-design.md`. Plan:
     `docs/superpowers/plans/2026-08-24-case-aging-indicator.md`.
+
+- Case lifecycle: Quoted holder-clearing, Revision reassignment, customerless cases (2026-09-08,
+  branch `task4-integration`, merge commit `16ff1ac`; **NOT deployed - migrations not run against
+  Supabase in any environment, this section documents local implementation only**):
+  - **Three product rules, each enforceable in code and DB, not just convention:**
+    1. **A Quoted case has no ticket holder.** A quoted case is waiting on the customer's decision,
+       so it cannot have an active assignee. Case owners are unaffected - this only clears the
+       ticket holder (`cases.assignee`).
+    2. **Revision is a stage with a mandatory reassignment flow.** Requesting revision moves an open
+       Quoted case to `Revision` and requires the caller to explicitly pick an active ticket holder
+       in the same action - there is no way to enter Revision without naming who is doing the work.
+       Marking the revised quotation Sent returns the case to Quoted and clears the holder again,
+       exactly mirroring rule 1. Repeat revisions reuse the same flow.
+    3. **A case can be registered before its customer is known; the customer is chosen atomically
+       when the first quotation is saved, never as a separate mapping step.** L2+ can create a Lead
+       or Opportunity with no customer (`customerId: ''` or `quickLog`'s `customerLater: true`).
+       Selecting the customer happens inside the same database transaction as saving that first
+       generated or uploaded quotation - a failed quote save can never leave a case half-mapped, and
+       a successful save can never leave a mapped case without its quotation.
+  - **This feature has NOT been deployed. Neither `0012` nor `0013` has been run against Supabase in
+    any environment (local, staging, or production).** Do not assume the `Revision` stage or nullable
+    `cases.customer_id` exist in the live database until both migrations are confirmed applied - see
+    the rollout checklist below before running them.
+  - **Migration order matters: `0012_case_revision_workflow.sql` must run before
+    `0013_customerless_cases.sql`.**
+    - `0012` adds `Revision` to the stage CHECK constraint, then - before adding the new invariant -
+      repairs existing data: every currently-Quoted case that still has an `assignee` gets one
+      `CASE_QUOTED_HOLDER_CLEARED` row written to `activity_log` (for audit), then its `assignee` is
+      set to `null`. Only after that cleanup does it add
+      `cases_quoted_unassigned_check check (stage <> 'Quoted' or assignee is null)`. Running this
+      constraint before the cleanup would simply fail on any existing Quoted+assigned row.
+    - `0013` makes `cases.customer_id` nullable (`alter column customer_id drop not null`, keeping
+      the FK) and adds `cases_quoted_customer_check` requiring `customer_id is not null` whenever
+      `stage = 'Quoted'` or `outcome = 'Won'`. If `0013` ran before `0012`, a customerless case could
+      still be pushed into `Quoted` by older code that has no Quoted-holder invariant yet, so the
+      ordering keeps both invariants meaningful from the moment each lands.
+  - **Design decisions worth knowing before touching this code:**
+    - Customer mapping on first quotation save (`src/server/quotes/service.ts`,
+      `mapCustomer`/`validateCase`) locks and re-reads the case row (`repo.lockCase`) inside the same
+      transaction that creates the quotation and writes the `CASE_CUSTOMER_MAP` activity log row - the
+      case is never updated outside that transaction, so a Drive upload failure or a later constraint
+      violation rolls the mapping back with it.
+    - Mapping never grants customer-handler membership and never changes case owners/assignee (except
+      that Sent still clears the holder per rule 1/2) - `mapCustomer` only ever writes `customerId` on
+      the case row.
+    - An already-mapped case can never be remapped: `validateCase` throws `'That case belongs to a
+      different customer.'` if `row.customerId` is set and differs from the quote's target customer.
+    - A customerless case cannot reach Quoted or Won - enforced both server-side (`0013`'s CHECK) and
+      is the reason `getCase` exposes `canMapCustomer: !customer && roleLevel(user) >= 2` so the UI
+      only offers mapping where the DB would actually allow the resulting stage.
+  - **Concurrency approach.** Every workflow transition that touches stage or assignee - `setCaseStage`,
+    `assignTicket`, `beginAttachmentUpload`'s handover completion, quote Sent advancement - locks the
+    case row (`lockCase`, `select ... for update`) inside a transaction and re-reads/re-validates
+    eligibility (correct stage, not closed, caller still has access) against that locked row before
+    writing, rather than trusting the row fetched at the start of the request. Quotation family lock
+    order is kept consistent across revision allocation and status changes to avoid deadlocks.
+  - **A real access-revocation hole was found and closed during this work (commit `6e256d8`):**
+    `assignTicket`'s no-attachment path used to look up the target user's display name (an async call)
+    and then log/write the assignment using the *original* pre-lookup case snapshot for authorization -
+    if the caller's access to the case was revoked by a concurrent write during that lookup (holder
+    reassigned, owner removed, handler dropped, customer tags changed, or the case remapped to a
+    different customer), the write still went through. Fixed by moving customer/handler lookup and
+    `ensureVisible` re-authorization *inside* the locked transaction, checked against the locked row,
+    so ticket assignment now re-checks the caller's access **at commit time**, not just at the start of
+    the request. The attachment-upload path already had a related check; this closed the gap in the
+    plain (no-upload) path. Covered by
+    `describe('assignTicket commit-time authorization', ...)` in `src/server/cases/service.test.ts`,
+    parameterized over holder/owner/handler/customer-tags/customer-mapping revocation and both the
+    upload and non-upload paths.
+  - **Entry point:** `assignTicket(user, caseId, who, note?, uploads?, requestRevision?)` in
+    `src/server/cases/service.ts`. The 6th argument (5th over the RPC wire, since `api_assignTicket`
+    is invoked with `caseId` first and the RPC layer injects the authenticated user) is
+    `requestRevision: boolean` - `true` moves an open Quoted/Revision case to `Revision` with the
+    given holder in one transaction; omitted/`false` keeps existing reassignment behavior and rejects
+    outright on a Quoted case (`'Request a revision and select a ticket holder before assigning this
+    case.'`). `beginAttachmentUpload(user, caseId, files, requestRevision?)` mirrors the same flag for
+    preparing handover attachments ahead of a revision request.
+  - New DB migrations: `supabase/migrations/0012_case_revision_workflow.sql`,
+    `supabase/migrations/0013_customerless_cases.sql`. Neither is in the "applied in every environment"
+    list in the Supabase Migrations section below - do not add them there until they are actually run.
+  - Design: `docs/superpowers/specs/2026-09-07-case-lifecycle-design.md`. Plan:
+    `docs/superpowers/plans/2026-09-07-case-lifecycle.md`. Rollout checklist:
+    `docs/qa/case-lifecycle-checklist.md`.
 
 ### Resolved: the legacy generator is fixed and back in normal use (2026-08-11)
 
