@@ -266,9 +266,12 @@ Completed:
       constraint before the cleanup would simply fail on any existing Quoted+assigned row.
     - `0013` makes `cases.customer_id` nullable (`alter column customer_id drop not null`, keeping
       the FK) and adds `cases_quoted_customer_check` requiring `customer_id is not null` whenever
-      `stage = 'Quoted'` or `outcome = 'Won'`. If `0013` ran before `0012`, a customerless case could
-      still be pushed into `Quoted` by older code that has no Quoted-holder invariant yet, so the
-      ordering keeps both invariants meaningful from the moment each lands.
+      `stage = 'Quoted'` or `outcome = 'Won'`. `0012` and `0013` touch disjoint columns (`stage`/
+      `assignee` vs. `customer_id`) and their constraints do not interact - a customerless-Quoted case
+      cannot exist before `0013` runs at all, since `customer_id` stays `NOT NULL` until then, so
+      running `0013` first would not let older code push a customerless case into `Quoted`. The real
+      reason `0012` runs first is simply that it is the lower-numbered file and
+      `scripts/apply-migrations.mjs` applies pending migrations in filename order.
   - **Design decisions worth knowing before touching this code:**
     - Customer mapping on first quotation save (`src/server/quotes/service.ts`,
       `mapCustomer`/`validateCase`) locks and re-reads the case row (`repo.lockCase`) inside the same
