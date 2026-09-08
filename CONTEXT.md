@@ -290,15 +290,18 @@ Completed:
     writing, rather than trusting the row fetched at the start of the request. Quotation family lock
     order is kept consistent across revision allocation and status changes to avoid deadlocks.
   - **A real access-revocation hole was found and closed during this work (commit `6e256d8`):**
-    `assignTicket`'s no-attachment path used to look up the target user's display name (an async call)
-    and then log/write the assignment using the *original* pre-lookup case snapshot for authorization -
-    if the caller's access to the case was revoked by a concurrent write during that lookup (holder
-    reassigned, owner removed, handler dropped, customer tags changed, or the case remapped to a
-    different customer), the write still went through. Fixed by moving customer/handler lookup and
-    `ensureVisible` re-authorization *inside* the locked transaction, checked against the locked row,
-    so ticket assignment now re-checks the caller's access **at commit time**, not just at the start of
-    the request. The attachment-upload path already had a related check; this closed the gap in the
-    plain (no-upload) path. Covered by
+    both of `assignTicket`'s commit paths authorized the caller from the *original* pre-lookup case
+    snapshot, then did async work before writing - a display-name lookup on the plain path, and Drive
+    preparation/renames on the upload path. If the caller's access to the case was revoked by a
+    concurrent write during that window (holder reassigned, owner removed, handler dropped, customer
+    tags changed, or the case remapped to a different customer), the write still went through. Both
+    paths already re-checked *workflow state* (`outcome`, stage) against the locked row, but neither
+    re-checked *access* - that is the distinction that made this a hole. Fixed by adding the identical
+    customer/handler lookup plus `ensureVisible` re-authorization *inside* the locked transaction on
+    **both** paths, checked against the locked row, so ticket assignment now re-checks the caller's
+    access **at commit time**, not just at the start of the request. The plain path's activity write
+    also moved inside that transaction, and both paths now log against the locked row's customer id
+    rather than the stale one. Covered by
     `describe('assignTicket commit-time authorization', ...)` in `src/server/cases/service.test.ts`,
     parameterized over holder/owner/handler/customer-tags/customer-mapping revocation and both the
     upload and non-upload paths.
