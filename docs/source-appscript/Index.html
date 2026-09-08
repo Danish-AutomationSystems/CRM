@@ -515,12 +515,7 @@ function warm(){
   return gs('api_workspace', S.caseF).then(function(w){
     if(w.boot){ S.boot=w.boot; S.bootAt=Date.now(); }
     if(w.customers){ CACHE.customers=w.customers; CACHE.customersAt=Date.now(); noteSeiNames(w.customers); }
-    // Only seed the cache with a non-empty snapshot: an empty array here just means
-    // "the server had nothing to warm us with yet" (e.g. this boot cycle raced ahead
-    // of a write), not "there are truly zero matching cases" - caching it as fresh
-    // would suppress loadCases()'s real fetch for the full FRESH_MS window and leave
-    // the Cases tab showing a stale empty state.
-    if(w.cases && w.cases.length){ CACHE.cases=w.cases; CACHE.casesAt=Date.now(); CACHE.casesKey=JSON.stringify(S.caseF); }
+    if(w.cases){ CACHE.cases=w.cases; CACHE.casesAt=Date.now(); CACHE.casesKey=JSON.stringify(S.caseF); }
     return w.boot;
   });
 }

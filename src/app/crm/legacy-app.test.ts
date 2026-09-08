@@ -60,7 +60,7 @@ function workspace(role = 'L6') {
   return {
     boot: bootstrap(role),
     customers: { scope: 'mine', customers: [] },
-    cases: []
+    cases: [] as Array<Record<string, unknown>>
   };
 }
 
@@ -2294,6 +2294,9 @@ describe('case lifecycle UI', () => {
     if (fn === 'api_workspace') {
       const w = workspace(role);
       w.boot.settings.stages.push('Revision');
+      // The server's workspace() prefetches cases via the same listCases() call
+      // api_listCases makes for this filter, so the mock must agree with it here too.
+      w.cases = [{ ...detail().case, customerName: mapped ? 'Acme Controls' : '' }];
       return w;
     }
     if (fn === 'api_bootstrap') return bootstrap(role);
