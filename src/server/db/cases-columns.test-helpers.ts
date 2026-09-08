@@ -120,7 +120,11 @@ export const CASES_EXEMPT: Record<string, Record<string, string>> = {
   // guard because the column parser correctly includes `version` as a real column.
   'cases.getCase': { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
   'quotes.getCase': { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
-  'cases.listCases': { version: 'internal optimistic-lock counter, not exposed on CaseRow' }
+  'cases.listCases': { version: 'internal optimistic-lock counter, not exposed on CaseRow' },
+  // The single shared implementation cases/repository.ts and quotes/repository.ts
+  // both delegate to (see src/server/db/case-write.ts and case-write.test.ts).
+  'case-write.insertCaseRow': { version: 'defaults to 1 on insert' },
+  'case-write.selectCaseRow': { version: 'internal optimistic-lock counter, not exposed on CaseWriteRow' }
 };
 
 export function missingFrom(migrationsDir: string, statement: string, carried: string[]): string[] {
@@ -198,17 +202,3 @@ export function insertValueCount(source: string, methodName: string, table: stri
   return splitTopLevel(match[1]).length;
 }
 
-/**
- * The left-hand side of every assignment in an updateCase-shaped `set` clause.
- *
- * updateCase is not an INSERT and not a SELECT: it merges `fields` over the
- * existing row and rewrites the full column list. A column missing here is
- * never written, and nothing errors - which is why it gets its own parser
- * rather than being folded into one of the others.
- */
-export function casesUpdateSetColumns(source: string, methodName: string): string[] {
-  const body = methodBody(source, methodName);
-  const match = body.match(/update public\.cases\s*\n\s*set\b([\s\S]*?)\bwhere\b/);
-  if (!match) throw new Error(`${methodName} set clause not found`);
-  return [...match[1].matchAll(/(?:^|,)\s*([a-z_][a-z0-9_]*)\s*=/gi)].map((m) => m[1].toLowerCase());
-}

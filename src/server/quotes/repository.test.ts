@@ -4,14 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  casesInsertColumns as sharedCasesInsertColumns,
-  casesUpdateSetColumns as sharedCasesUpdateSetColumns,
-  insertValueCount as sharedInsertValueCount,
-  missingFrom as sharedMissingFrom,
-  selectColumns as sharedSelectColumns,
-  splitTopLevel
-} from '../db/cases-columns.test-helpers';
+import { insertValueCount as sharedInsertValueCount, splitTopLevel } from '../db/cases-columns.test-helpers';
 
 /**
  * Static guard against the "createQuote silently drops a column" defect class.
@@ -57,11 +50,7 @@ function insertValueCount(): number {
   return sharedInsertValueCount(source, 'createQuote', 'quotations');
 }
 
-function selectColumns(methodName: string): string[];
-function selectColumns(methodName: string, table: string): string[];
-function selectColumns(methodName: string, table?: string): string[] {
-  if (table) return sharedSelectColumns(source, methodName, table);
-
+function selectColumns(methodName: string): string[] {
   const body = methodBody(methodName);
   const match = /select\s+([\s\S]*?)\s+from public\.quotations/i.exec(body);
   expect(match, `could not parse the ${methodName} select list`).not.toBeNull();
@@ -72,31 +61,10 @@ function selectColumns(methodName: string, table?: string): string[] {
   });
 }
 
-/**
- * public.cases column-parity helpers, reused (not copied) from
- * src/server/cases/repository.test.ts via src/server/db/cases-columns.test-helpers.ts.
- *
- * This repository carries its own independent getCase/createCase/updateCase
- * trio against public.cases, structurally identical to the ones guarded there
- * and otherwise invisible to that guard.
- */
-const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'supabase', 'migrations');
-
-function quotesInsertColumns(): string[] {
-  return sharedCasesInsertColumns(source, 'createCase');
-}
-
-function quotesUpdateSetColumns(): string[] {
-  return sharedCasesUpdateSetColumns(source, 'updateCase');
-}
-
-function quotesCasesInsertValueCount(): number {
-  return sharedInsertValueCount(source, 'createCase', 'cases');
-}
-
-function missingFrom(statement: string, carried: string[]): string[] {
-  return sharedMissingFrom(migrationsDir, `quotes.${statement}`, carried);
-}
+// The getCase/createCase/updateCase trio this repository used to carry against
+// public.cases now lives once, shared with cases/repository.ts, in
+// src/server/db/case-write.ts - see case-write.test.ts for its column-parity
+// guards against that single implementation.
 
 describe('PostgresQuoteRepository SQL column coverage', () => {
   it('createQuote inserts every column that getQuote reads back', () => {
@@ -135,33 +103,5 @@ describe('PostgresQuoteRepository SQL column coverage', () => {
 
   it('still reads upload_data so pre-Drive uploads remain downloadable', () => {
     expect(methodBody('getQuote')).toMatch(/encode\(upload_data, 'base64'\)/);
-  });
-});
-
-describe('quotes repository public.cases statements', () => {
-  it('parses a plausible column list from each statement, so a failed regex cannot pass vacuously', () => {
-    expect(quotesInsertColumns().length).toBeGreaterThan(10);
-    expect(selectColumns('getCase', 'cases').length).toBeGreaterThan(10);
-  });
-
-  it('createCase writes every public.cases column', () => {
-    const missing = missingFrom('createCase', quotesInsertColumns());
-    expect(missing, `quotes createCase does not write public.cases column(s): ${missing.join(', ')}`).toEqual([]);
-  });
-
-  // This only proves the column list and the VALUES tuple are the same length,
-  // not that they are in the same order. Two entries transposed in one list but
-  // not the other (e.g. `source` and `priority` swapped in the column list)
-  // keeps the counts equal, keeps every guard above green, and writes every
-  // value into the wrong column - both are `text`, so Postgres raises nothing.
-  // That transposition risk is not covered by this test.
-  it('createCase supplies exactly one value per inserted column', () => {
-    expect(quotesCasesInsertValueCount()).toBe(quotesInsertColumns().length);
-  });
-
-
-  it('getCase selects every public.cases column', () => {
-    const missing = missingFrom('getCase', selectColumns('getCase', 'cases'));
-    expect(missing, `quotes getCase does not select public.cases column(s): ${missing.join(', ')}`).toEqual([]);
   });
 });

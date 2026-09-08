@@ -433,7 +433,7 @@ async function createAutoCase(
 
 async function bumpCaseToQuoted(repo: QuoteRepository, caseId: string): Promise<void> {
   const row = (await repo.lockCase?.(caseId)) ?? (await repo.getCase(caseId));
-  if (!row || row.outcome) return;
+  if (!row || row.outcome || (row.stage === 'Quoted' && !row.assignee)) return;
   await repo.updateCase(caseId, { stage: 'Quoted', assignee: '', updatedAt: nowIso() });
 }
 
@@ -505,10 +505,13 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         });
         caseId = allocation.caseId;
         validateRevisionFamily(allocation.previous, caseId, customer.id);
-        await ensureFullCustomer(trx, user, customer.id);
+        // validateCase re-authorizes under the lock itself whenever there is a
+        // case; it only skips that when caseId is empty, so this explicit check
+        // is the sole in-transaction authorization for the no-case (auto-case) path.
+        if (!caseId) await ensureFullCustomer(trx, user, customer.id);
         const caseRow = await validateCase(trx, user, caseId, customer.id, true);
-        if (allocation.previous.length && caseId) {
-          if (caseRow?.stage === 'Quoted') throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+        if (caseId && caseRow?.stage === 'Quoted') {
+          throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
         }
         await supersedePrevious(trx, allocation.previous);
         if (!caseId) {
@@ -616,10 +619,13 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
           });
           caseId = allocation.caseId;
           validateRevisionFamily(allocation.previous, caseId, customer.id);
-          await ensureFullCustomer(trx, user, customer.id);
+          // See the equivalent comment in createQuotation: with no caseId,
+          // validateCase never re-authorizes, so this call must stay unconditional
+          // in that case - it is the only in-transaction authorization check.
+          if (!caseId) await ensureFullCustomer(trx, user, customer.id);
           const caseRow = await validateCase(trx, user, caseId, customer.id, true);
-          if (status === 'Draft' && allocation.previous.length && caseId) {
-            if (caseRow?.stage === 'Quoted') throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+          if (status === 'Draft' && caseId && caseRow?.stage === 'Quoted') {
+            throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
           }
           await supersedePrevious(trx, allocation.previous);
           if (!caseId) {

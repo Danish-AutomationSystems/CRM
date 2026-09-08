@@ -1565,10 +1565,10 @@ describe('case reads, lists, and quick log', () => {
 
   // Documents the requirement at the service level. It passes before the SQL is
   // correct, because the in-memory fake merges objects and cannot reproduce a
-  // missing `set` clause - the real defence is the casesUpdateSetColumns guard in
-  // repository.test.ts. Kept deliberately, by the project owner's ruling: without
-  // it nothing in the service layer states that editing a title must not wipe the
-  // priority. Do not delete this test or this comment.
+  // missing `set` clause - the real defence is the per-field SQL boundary guard
+  // in db/case-repository-writes.test.ts. Kept deliberately, by the project
+  // owner's ruling: without it nothing in the service layer states that editing
+  // a title must not wipe the priority. Do not delete this test or this comment.
   it('leaves an existing priority intact when an unrelated field is edited', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
