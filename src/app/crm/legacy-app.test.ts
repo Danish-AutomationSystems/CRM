@@ -2277,11 +2277,12 @@ describe('case lifecycle UI', () => {
   let canQuote: boolean;
   let source: string;
   let loseAccess: boolean;
+  let outcome: string;
   function detail() {
     const d = caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]);
     return { ...d, customer: mapped ? d.customer : null, canQuote, canMapCustomer: !mapped && canQuote,
-      canAssignTicket: stage !== 'Quoted', canRequestRevision: stage === 'Quoted',
-      case: { ...d.case, customerId: mapped ? 'CUST-1' : '', stage, assignee: stage === 'Quoted' ? '' : 'Other User' } };
+      canAssignTicket: stage !== 'Quoted', canRequestRevision: stage === 'Quoted' && !outcome,
+      case: { ...d.case, customerId: mapped ? 'CUST-1' : '', stage, outcome, assignee: stage === 'Quoted' ? '' : 'Other User' } };
   }
   function quote() {
     return { customer: { id: 'CUST-1', name: 'Acme Controls' }, quote: {
@@ -2345,7 +2346,7 @@ describe('case lifecycle UI', () => {
     vi.useRealTimers();
     window.history.pushState(null, '', '/crm');
     calls.length = 0;
-    stage = 'Quoted'; mapped = true; role = 'L6'; canQuote = true; source = 'Generated'; loseAccess = false;
+    stage = 'Quoted'; mapped = true; role = 'L6'; canQuote = true; source = 'Generated'; loseAccess = false; outcome = '';
   });
   afterEach(() => { cleanup(); document.body.innerHTML = ''; delete window.BOOT; vi.unstubAllGlobals(); });
 
@@ -2476,5 +2477,37 @@ describe('case lifecycle UI', () => {
   test('unmapped list rows have an explicit customer label', async () => {
     mapped = false; stage = 'Lead'; await startCase(); window.eval('nav("cases")');
     await waitFor(() => expect(document.getElementById('caseRes')?.textContent).toContain('Customer not mapped'));
+  });
+
+  test('a closed Quoted case (e.g. Won) hides the quote buttons instead of leaving dead controls', async () => {
+    outcome = 'Won';
+    await startCase();
+    expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Request revision' })).not.toBeInTheDocument();
+  });
+
+  test('the stage picker never offers Revision on a case that cannot use it', async () => {
+    stage = 'Lead';
+    await startCase();
+    const options = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map((o) => o.value);
+    expect(options).not.toContain('Revision');
+  });
+
+  test('submitting the stage picker unchanged on a Revision case is a no-op, not an error', async () => {
+    stage = 'Revision';
+    await startCase();
+    expect((document.getElementById('stSel') as HTMLSelectElement).value).toBe('Revision');
+    press('Update stage');
+    expect(calls.filter((c) => c.fn === 'api_setCaseStage')).toHaveLength(0);
+    expect(document.getElementById('toast')?.className ?? '').not.toContain('err');
+  });
+
+  test('customerless "New case" does not offer Order (Won), which the server always rejects for it', async () => {
+    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
+    await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
+    expect(screen.queryByRole('button', { name: 'Order (Won)' })).not.toBeInTheDocument();
   });
 });

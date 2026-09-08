@@ -79,6 +79,11 @@ function bootPayload() {
   };
 }
 
+// updatedOn must stay fresh (< 2 days old): agingChip() compares it against
+// the real wall clock, so any hardcoded past date decays into a "stale"
+// badge as real time passes. Fixtures that don't want that drift use this.
+const freshUpdatedOn = new Date().toISOString().slice(0, 10);
+
 const caseSummary = {
   id: 'CASE-2026-0001',
   title: 'Panel upgrade',
@@ -1154,11 +1159,9 @@ test('the cases list shows a priority badge only for cases that have one', async
       expires: Math.floor(Date.now() / 1000) + 60 * 60
     }
   ]);
-  // updatedOn must stay fresh (< 2 days old): agingChip() compares it against
-  // the real wall clock, and caseSummary's fixed 2026-07-29 date now decays
-  // into a "stale" badge that inflates the "Sensor retrofit" row to 2
-  // badges, which is exactly what this test asserts against.
-  const freshUpdatedOn = new Date().toISOString().slice(0, 10);
+  // caseSummary's fixed 2026-07-29 date decays into a "stale" badge that
+  // inflates the "Sensor retrofit" row to 2 badges, which is exactly what
+  // this test asserts against, so override it with the fresh date helper.
   const casesWithMixedPriority = [
     { ...caseSummary, id: 'CASE-2026-0001', title: 'Panel upgrade', priority: 'High', updatedOn: freshUpdatedOn },
     { ...caseSummary, id: 'CASE-2026-0002', title: 'Sensor retrofit', priority: '', updatedOn: freshUpdatedOn }
@@ -1207,7 +1210,7 @@ function quotedCaseFixture() {
     owners: ['Playwright Admin'],
     assignee: '',
     priority: '',
-    updatedOn: '2026-08-01'
+    updatedOn: freshUpdatedOn
   };
 }
 
@@ -1306,7 +1309,7 @@ function unmappedCaseGetCasePayload(overrides?: Record<string, unknown>) {
       owners: ['Playwright Admin'],
       assignee: '',
       priority: '',
-      updatedOn: '2026-08-01',
+      updatedOn: freshUpdatedOn,
       customerId: '',
       details: '',
       orderValue: '',
