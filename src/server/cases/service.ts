@@ -130,6 +130,8 @@ export type CaseRepository = {
   listHandlers(): Promise<CaseHandlerRow[]>;
   listUsers(): Promise<CaseUserRow[]>;
   getCase(id: string): Promise<CaseRow | null>;
+  /** Lock and re-read a case within an existing transaction. */
+  lockCase?(id: string): Promise<CaseRow | null>;
   listCases(): Promise<CaseRow[]>;
   createCase(row: CaseRow): Promise<void>;
   updateCase(id: string, fields: Partial<CaseRow>): Promise<void>;
@@ -180,6 +182,7 @@ export type CaseListFilter = Partial<{
 
 export type QuickLogInput = Partial<{
   customerId: unknown;
+  customerLater: boolean;
   newCustomer: Partial<{
     name: unknown;
     tag: unknown;
@@ -314,8 +317,8 @@ function caseForAccess(row: CaseRow) {
   };
 }
 
-function visibleCase(user: CrmContext, customer: CaseCustomerRow, row: CaseRow, ownership: Ownership): boolean {
-  const level = accessLevel(user, customerForAccess(customer), ownership);
+function visibleCase(user: CrmContext, customer: CaseCustomerRow | null | undefined, row: CaseRow, ownership: Ownership): boolean {
+  const level = customer ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE';
   try {
     ensureCanSeeCase(user, level, caseForAccess(row));
     return true;
@@ -324,16 +327,16 @@ function visibleCase(user: CrmContext, customer: CaseCustomerRow, row: CaseRow, 
   }
 }
 
-function ensureVisible(user: CrmContext, customer: CaseCustomerRow, row: CaseRow, ownership: Ownership): void {
-  const level = accessLevel(user, customerForAccess(customer), ownership);
+function ensureVisible(user: CrmContext, customer: CaseCustomerRow | null | undefined, row: CaseRow, ownership: Ownership): void {
+  const level = customer ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE';
   ensureCanSeeCase(user, level, caseForAccess(row));
 }
 
 async function loadVisibleCase(repo: CaseRepository, user: CrmContext, id: string) {
   const [row, handlers] = await Promise.all([repo.getCase(id), repo.listHandlers()]);
   if (!row) throw new Error(`Case ${id} was not found.`);
-  const customer = await repo.getCustomer(row.customerId);
-  if (!customer) throw new Error(`Customer ${row.customerId} was not found.`);
+  const customer = row.customerId ? await repo.getCustomer(row.customerId) : null;
+  if (row.customerId && !customer) throw new Error(`Customer ${row.customerId} was not found.`);
   const ownership = ownershipFor(handlers);
   ensureVisible(user, customer, row, ownership);
   return { row, customer, ownership };
@@ -636,11 +639,12 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async createCase(user: CrmContext, customerId: string, input: CaseInput) {
       requireLevel(user, 2);
-      const customer = await repo.getCustomer(customerId);
-      if (!customer) throw new Error(`Customer ${customerId} was not found.`);
+      customerId = asText(customerId);
+      const customer = customerId ? await repo.getCustomer(customerId) : null;
+      if (customerId && !customer) throw new Error(`Customer ${customerId} was not found.`);
       const handlers = await repo.listHandlers();
       const ownership = ownershipFor(handlers);
-      ensureFull(user, customerForAccess(customer), ownership);
+      if (customer) ensureFull(user, customerForAccess(customer), ownership);
 
       // Creation path: no `stored` argument anywhere below, so a new case can only
       // use currently-configured values.
@@ -650,6 +654,12 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       if (!title) throw new Error('Give the case a short title.');
 
       const order = asBool(input.order);
+      if (!customerId && (order || asText(input.stage) === 'Quoted')) {
+        throw new Error('Map a customer by saving the first quotation before marking this case Quoted or Won.');
+      }
+      if (!order && asText(input.stage) === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of creating a case in Revision.');
+      }
       const users = userIndex(await repo.listUsers());
       let assignee = '';
       if (order) {
@@ -684,7 +694,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           // P11: ownership is materialised at creation - the customer's real handlers, or
           // the creator when the only handler is the virtual Direct account.
           extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownership),
-          assignee: order ? '' : assignee,
+          assignee: order || (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : assignee,
           closedOn: order ? now : '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,
@@ -695,7 +705,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           action: 'CASE_NEW',
           entity: id,
           customerId,
-          details: `${title} (${customer.name}${order ? ', order' : `, ${row.stage}`})`,
+          details: `${title} (${customer?.name ?? 'Customer not mapped'}${order ? ', order' : `, ${row.stage}`})`,
           who: normalizeEmail(user.email)
         });
         return { id };
@@ -721,24 +731,33 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async setCaseStage(user: CrmContext, id: string, stageInput: unknown, note?: unknown) {
       const stage = asText(stageInput);
-      const { row } = await loadVisibleCase(repo, user, id);
       if (!(CASE_STAGES as readonly string[]).includes(stage)) throw new Error(`"${stage}" is not a valid stage.`);
-      if (row.outcome === 'Won' || row.outcome === 'Lost') {
-        throw new Error(`This case is closed as ${row.outcome}. Reopen it before changing the stage.`);
+      if (stage === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of changing the stage directly.');
       }
-      if (row.stage === stage && !row.outcome) return { ok: true };
-
-      const fields: Partial<CaseRow> = { stage, updatedAt: nowIso() };
-      if (row.outcome === 'Hold') fields.outcome = '';
-      await repo.updateCase(id, fields);
-      await repo.logActivity({
-        action: 'CASE_STAGE',
-        entity: id,
-        customerId: row.customerId,
-        details: `${row.stage || '-'} -> ${stage}${asText(note) ? ` - ${asText(note)}` : ''}`,
-        who: normalizeEmail(user.email)
+      return repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        const row = (await trx.lockCase?.(id)) ?? (await trx.getCase(id));
+        if (!row) throw new Error(`Case ${id} was not found.`);
+        const [customer, handlers] = await Promise.all([row.customerId ? trx.getCustomer(row.customerId) : null, trx.listHandlers()]);
+        if (row.customerId && !customer) throw new Error(`Customer ${row.customerId} was not found.`);
+        ensureVisible(user, customer, row, ownershipFor(handlers));
+        if (row.outcome === 'Won' || row.outcome === 'Lost') {
+          throw new Error(`This case is closed as ${row.outcome}. Reopen it before changing the stage.`);
+        }
+        if (!row.customerId && stage === 'Quoted') throw new Error('Map a customer by saving the first quotation before marking this case Quoted.');
+        if (row.stage === stage && !row.outcome && !(stage === 'Quoted' && row.assignee)) return { ok: true };
+        const fields: Partial<CaseRow> = { stage, updatedAt: nowIso() };
+        if (row.outcome === 'Hold') fields.outcome = '';
+        if (stage === 'Quoted') fields.assignee = '';
+        await trx.updateCase(id, fields);
+        await trx.logActivity({
+          action: 'CASE_STAGE', entity: id, customerId: row.customerId,
+          details: `${row.stage || '-'} -> ${stage}${asText(note) ? ` - ${asText(note)}` : ''}`,
+          who: normalizeEmail(user.email)
+        });
+        return { ok: true };
       });
-      return { ok: true };
     },
 
     async setCasePriority(user: CrmContext, id: string, priorityInput: unknown) {
@@ -769,26 +788,22 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async setCaseOutcome(user: CrmContext, id: string, outcomeInput: unknown, data: CaseOutcomeInput = {}) {
       const outcome = asText(outcomeInput);
-      const { row } = await loadVisibleCase(repo, user, id);
-
-      if (outcome === 'Open') {
-        await repo.updateCase(id, { outcome: '', closedOn: '', updatedAt: nowIso() });
-        await repo.logActivity({
-          action: 'CASE_OUTCOME',
-          entity: id,
-          customerId: row.customerId,
-          details: 'Reopened',
-          who: normalizeEmail(user.email)
-        });
-        return { ok: true };
-      }
-
-      if (!(DEFAULT_SETTINGS.OUTCOMES as readonly string[]).includes(outcome)) {
+      if (outcome !== 'Open' && !(DEFAULT_SETTINGS.OUTCOMES as readonly string[]).includes(outcome)) {
         throw new Error(`"${outcome}" is not a valid outcome.`);
       }
 
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        const row = (await trx.lockCase?.(id)) ?? (await trx.getCase(id));
+        if (!row) throw new Error(`Case ${id} was not found.`);
+        const [customer, handlers] = await Promise.all([row.customerId ? trx.getCustomer(row.customerId) : null, trx.listHandlers()]);
+        if (row.customerId && !customer) throw new Error(`Customer ${row.customerId} was not found.`);
+        ensureVisible(user, customer, row, ownershipFor(handlers));
+        if (outcome === 'Open') {
+          await trx.updateCase(id, { outcome: '', closedOn: '', updatedAt: nowIso() });
+          await trx.logActivity({ action: 'CASE_OUTCOME', entity: id, customerId: row.customerId, details: 'Reopened', who: normalizeEmail(user.email) });
+          return { ok: true };
+        }
         const fields: Partial<CaseRow> = {
           outcome: outcome as CaseRow['outcome'],
           outcomeNote: String(data.note ?? ''),
@@ -796,6 +811,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         };
 
         if (outcome === 'Won') {
+          if (!row.customerId) throw new Error('Map a customer by saving the first quotation before marking this case Won.');
           const value = Number(data.orderValue);
           if (!(value > 0)) throw new Error('Enter the order value (the amount at which the order was won).');
           // Update path: the case's existing categories stay acceptable even if an
@@ -887,9 +903,15 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
      * see the case learns nothing and consumes nothing. Only `{ fileName,
      * sessionUrl }` crosses back: never the access token, never the folder id.
      */
-    async beginAttachmentUpload(user: CrmContext, caseId: string, files: unknown) {
+    async beginAttachmentUpload(user: CrmContext, caseId: string, files: unknown, requestRevision = false) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      if (row.stage === 'Quoted' && !requestRevision) {
+        throw new Error('Request a revision and select a ticket holder before preparing attachments.');
+      }
+      if (requestRevision && row.stage !== 'Quoted' && row.stage !== 'Revision') {
+        throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+      }
       const requested = validateRequestedUploads(files);
 
       const { drive, folderId: resolveFolderId } = requireDrive();
@@ -912,9 +934,15 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return sessions;
     },
 
-    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown, uploadsInput?: unknown) {
+    async assignTicket(user: CrmContext, caseId: string, who: unknown, noteInput?: unknown, uploadsInput?: unknown, requestRevision = false) {
       const { row } = await loadVisibleCase(repo, user, caseId);
       if (row.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+      if (row.stage === 'Quoted' && !requestRevision) {
+        throw new Error('Request a revision and select a ticket holder before assigning this case.');
+      }
+      if (requestRevision && row.stage !== 'Quoted' && row.stage !== 'Revision') {
+        throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+      }
       const note = asText(noteInput);
       if (note.length > 2000) throw new Error('That handover note is too long - please keep it under 2000 characters.');
       const users = userIndex(await repo.listUsers());
@@ -922,18 +950,29 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const reported = parseReportedUploads(uploadsInput);
 
       if (reported.length === 0) {
-        // Unchanged path: no transaction, no Drive call, identical details and
-        // return value to before attachments existed.
-        await repo.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
-        await repo.logActivity({
-          action: 'CASE_ASSIGN',
-          entity: caseId,
-          customerId: row.customerId,
-          details: `Working on -> ${nameOf(users, email)}`,
-          who: normalizeEmail(user.email),
-          note
+        // User lookup can outlive the caller's access. Recheck against the
+        // locked case and current access data before writing the handover.
+        const currentStage = await repo.withTransaction(async (tx) => {
+          const trx = tx ?? repo;
+          const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+          if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          const [customer, handlers] = await Promise.all([locked.customerId ? trx.getCustomer(locked.customerId) : null, trx.listHandlers()]);
+          if (locked.customerId && !customer) throw new Error(`Customer ${locked.customerId} was not found.`);
+          ensureVisible(user, customer, locked, ownershipFor(handlers));
+          if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
+          if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+          await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
+          await trx.logActivity({
+            action: 'CASE_ASSIGN',
+            entity: caseId,
+            customerId: locked.customerId,
+            details: `Working on -> ${nameOf(users, email)}`,
+            who: normalizeEmail(user.email),
+            note
+          });
+          return requestRevision ? 'Revision' : locked.stage;
         });
-        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+        return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: currentStage };
       }
 
       // Checked before the cleanup-guarded block on purpose: these files back
@@ -999,11 +1038,18 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
         // something this app can afford.
         return await repo.withTransaction(async (tx) => {
           const trx = tx ?? repo;
-          await trx.updateCase(caseId, { assignee: email, updatedAt: nowIso() });
+          const locked = (await trx.lockCase?.(caseId)) ?? (await trx.getCase(caseId));
+          if (!locked || locked.outcome) throw new Error('This opportunity is closed - the ticket can no longer be reassigned.');
+          const [customer, handlers] = await Promise.all([locked.customerId ? trx.getCustomer(locked.customerId) : null, trx.listHandlers()]);
+          if (locked.customerId && !customer) throw new Error(`Customer ${locked.customerId} was not found.`);
+          ensureVisible(user, customer, locked, ownershipFor(handlers));
+          if (locked.stage === 'Quoted' && !requestRevision) throw new Error('Request a revision and select a ticket holder before assigning this case.');
+          if (requestRevision && locked.stage !== 'Quoted' && locked.stage !== 'Revision') throw new Error('A revision can only be requested from an open Quoted or Revision case.');
+          await trx.updateCase(caseId, { assignee: email, stage: requestRevision ? 'Revision' : locked.stage, updatedAt: nowIso() });
           const activityId = await trx.logActivity({
             action: 'CASE_ASSIGN',
             entity: caseId,
-            customerId: row.customerId,
+            customerId: locked.customerId,
             details: `Working on -> ${nameOf(users, email)}`,
             who: normalizeEmail(user.email),
             note
@@ -1023,7 +1069,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
               uploadedBy: normalizeEmail(user.email)
             }))
           );
-          return { ok: true, assignee: nameOf(users, email), assigneeEmail: email };
+          return { ok: true, assignee: nameOf(users, email), assigneeEmail: email, stage: requestRevision ? 'Revision' : locked.stage };
         });
       } catch (error) {
         // The rename failed, or the database rolled back: these files are ours
@@ -1073,9 +1119,12 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return {
         canEdit: true,
         canAssign: roleLevel(user) >= 2,
-        canAssignTicket: !row.outcome,
+        canAssignTicket: !row.outcome && row.stage !== 'Quoted',
+        canRequestRevision: !row.outcome && row.stage === 'Quoted',
         case: formatCase(row, ownership, idx),
-        customer: { id: customer.id, name: customer.name, tags: customer.tags },
+        canMapCustomer: !customer && roleLevel(user) >= 2,
+        canQuote: roleLevel(user) >= 2 && (!customer || accessLevel(user, customerForAccess(customer), ownership) === 'FULL'),
+        customer: customer ? { id: customer.id, name: customer.name, tags: customer.tags } : null,
         quotes: quotes
           .slice()
           .sort((a, b) => (a.quoteNo === b.quoteNo ? b.rev - a.rev : b.quoteNo.localeCompare(a.quoteNo)))
@@ -1143,7 +1192,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       return cases
         .filter((row) => {
           const customer = customersById[row.customerId];
-          if (!customer || !visibleCase(user, customer, row, ownership)) return false;
+          if ((row.customerId && !customer) || !visibleCase(user, customer, row, ownership)) return false;
           if (wantOwned || wantAssigned) {
             const isOwned = wantOwned && ownerEmails(row).includes(me);
             const isAssigned = wantAssigned && normalizeEmail(row.assignee) === me;
@@ -1154,7 +1203,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           if (stage && row.stage !== stage) return false;
           if (priority && row.priority !== priority) return false;
           if (query) {
-            const haystack = lower(`${row.title} ${row.id} ${customer.name}`);
+            const haystack = lower(`${row.title} ${row.id} ${customer?.name ?? 'Customer not mapped'}`);
             if (!haystack.includes(query)) return false;
           }
           return true;
@@ -1168,7 +1217,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             id: row.id,
             title: row.title,
             customerId: row.customerId,
-            customerName: customer?.name ?? row.customerId,
+            customerName: customer?.name ?? 'Customer not mapped',
             priority: row.priority,
             stage: row.stage,
             outcome: outcomeText,
@@ -1183,12 +1232,15 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
 
     async quickLog(user: CrmContext, input: QuickLogInput) {
       requireLevel(user, 2);
+      if (asText(input.stage) === 'Revision') {
+        throw new Error('Request a revision and select a ticket holder instead of creating a case in Revision.');
+      }
       // Creation path for both the case and any new customer: no `stored` below.
       const live = await loadSettings(repo);
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
         let customerId = asText(input.customerId);
-        if (!customerId) {
+        if (!customerId && !asBool(input.customerLater)) {
           const newCustomer = input.newCustomer ?? {};
           const name = asText(newCustomer.name);
           if (!name) throw new Error('Pick an existing customer or enter a new customer name.');
@@ -1233,12 +1285,13 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
               who: normalizeEmail(user.email)
             });
           }
-        } else {
+        } else if (customerId) {
           const customer = await trx.getCustomer(customerId);
           if (!customer) throw new Error(`Customer ${customerId} was not found.`);
           ensureFull(user, customerForAccess(customer), ownershipFor(await trx.listHandlers()));
         }
 
+        if (!customerId && asText(input.stage) === 'Quoted') throw new Error('Map a customer by saving the first quotation before marking this case Quoted.');
         const id = await trx.nextCaseId();
         const now = nowIso();
         const row: CaseRow = {
@@ -1255,7 +1308,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           outcomeNote: '',
           owner: normalizeEmail(user.email),
           extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownershipFor(await trx.listHandlers())),
-          assignee: normalizeEmail(user.email),
+          assignee: (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : normalizeEmail(user.email),
           closedOn: '',
           createdBy: normalizeEmail(user.email),
           createdAt: now,

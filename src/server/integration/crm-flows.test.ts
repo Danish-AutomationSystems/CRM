@@ -539,4 +539,168 @@ describe('CRM integrated service flows', () => {
     expect(salesDash.dash.stats.wonMonthValue).toBe(2500);
     expect(handlerDash.dash.stats.wonMonthValue).toBe(2500);
   });
+
+  it('walks a customerless lead through mapping, quoting, revision and back to Quoted', async () => {
+    const { repo, adminService, customerService, caseService, quoteService } = makeServices();
+
+    // L3+ with a matching tag gets FULL access to a matching-tag customer purely by tag
+    // match - never having been added as a handler. Also the case's owner/creator, so it
+    // has case visibility while the case is still customerless (owner-visible, not
+    // customer-visible). Used to prove mapping neither needs nor grants handler membership.
+    const salesRep: CrmContext = {
+      email: 'lead-sales@automationsystems.org',
+      name: 'Lead Sales',
+      role: 'L3',
+      allowedTags: ['Punjab'],
+      active: true
+    };
+    const revisionHolder: CrmContext = {
+      email: 'lead-holder@automationsystems.org',
+      name: 'Lead Holder',
+      role: 'L2',
+      allowedTags: ['Punjab'],
+      active: true
+    };
+    // No shared tag, not an owner, not an assignee, below L4 - genuinely unrelated to the case.
+    const outsider: CrmContext = {
+      email: 'lead-outsider@automationsystems.org',
+      name: 'Lead Outsider',
+      role: 'L2',
+      allowedTags: ['Gujarat'],
+      active: true
+    };
+
+    await adminService.saveUser(admin, { email: salesRep.email, name: salesRep.name, role: 'L3', allowedTags: ['Punjab'] });
+    await adminService.saveUser(admin, { email: revisionHolder.email, name: revisionHolder.name, role: 'L2', allowedTags: ['Punjab'] });
+    await adminService.saveUser(admin, { email: outsider.email, name: outsider.name, role: 'L2', allowedTags: ['Gujarat'] });
+
+    // 1. Register a case with no customer (a Lead).
+    const created = await caseService.createCase(salesRep, '', {
+      title: 'Cold lead - panel enquiry',
+      stage: 'Lead'
+    });
+    const leadCaseId = created.id;
+
+    const leadRow = repo.cases.find((row) => row.id === leadCaseId);
+    expect(leadRow?.customerId).toBe('');
+    expect(leadRow?.owner).toBe(normalizeTestEmail(salesRep.email));
+    expect(leadRow?.extraOwners).toEqual([normalizeTestEmail(salesRep.email)]);
+
+    const ownersOriginal = [...(leadRow?.extraOwners ?? [])];
+    const ownerOriginal = leadRow?.owner;
+
+    // 2. Someone with no relationship to the case cannot see it.
+    await expect(caseService.getCase(outsider, leadCaseId)).rejects.toThrow(/access/i);
+
+    // The creator (an owner) and an L4+ can see it, even customerless.
+    const ownedView = await caseService.getCase(salesRep, leadCaseId);
+    expect(ownedView.customer).toBeNull();
+    expect(ownedView.case.id).toBe(leadCaseId);
+
+    // 3. First quotation saved against a real, fully-accessible customer - mapping happens
+    // atomically inside that same call, by the case owner (salesRep) who has FULL customer access purely by
+    // tag match and was never added as a handler.
+    const customer = await customerService.createCustomer(admin, {
+      name: 'Beta Switchgear',
+      tags: ['Punjab'],
+      type: 'OEM',
+      priority: 'High',
+      area: 'Mohali'
+    });
+
+    const logsBeforeMap = repo.logs.length;
+    const firstQuote = await quoteService.createQuotation(salesRep, {
+      customerId: customer.id,
+      caseId: leadCaseId,
+      title: 'Switchgear quotation',
+      templateId: 'tpl-standard',
+      subtotal: 5000,
+      blocks: [{ title: 'Main', headers: ['Item', 'Amount'], rows: [['Panel', 5000]] }]
+    });
+
+    const mappedRow = repo.cases.find((row) => row.id === leadCaseId);
+    expect(mappedRow?.customerId).toBe(customer.id);
+    const mapActivities = repo.logs.slice(logsBeforeMap);
+    expect(mapActivities).toContainEqual(
+      expect.objectContaining({ action: 'CASE_CUSTOMER_MAP', entity: leadCaseId, customerId: customer.id })
+    );
+    // Mapping never grants handler membership.
+    expect(repo.handlers.some((row) => row.customerId === customer.id && row.email === normalizeTestEmail(salesRep.email))).toBe(false);
+    // Owners are untouched by mapping.
+    expect(mappedRow?.owner).toBe(ownerOriginal);
+    expect(mappedRow?.extraOwners).toEqual(ownersOriginal);
+
+    // 4. Marking the first quotation Sent moves the case to Quoted with no ticket holder.
+    await quoteService.setQuoteStatus(salesRep, firstQuote.quoteNo, firstQuote.rev, 'Sent');
+    const quotedRow = repo.cases.find((row) => row.id === leadCaseId);
+    expect(quotedRow?.stage).toBe('Quoted');
+    expect(quotedRow?.assignee).toBe('');
+    expect(quotedRow?.owner).toBe(ownerOriginal);
+    expect(quotedRow?.extraOwners).toEqual(ownersOriginal);
+
+    // 5. Requesting a revision moves Quoted -> Revision and sets the selected holder.
+    await caseService.assignTicket(salesRep, leadCaseId, revisionHolder.email, 'please rework the pricing', undefined, true);
+    const revisionRow = repo.cases.find((row) => row.id === leadCaseId);
+    expect(revisionRow?.stage).toBe('Revision');
+    expect(revisionRow?.assignee).toBe(normalizeTestEmail(revisionHolder.email));
+    expect(revisionRow?.owner).toBe(ownerOriginal);
+    expect(revisionRow?.extraOwners).toEqual(ownersOriginal);
+
+    // 6. A revision quotation is saved and marked Sent -> case returns to Quoted, holder cleared again.
+    const revisionQuote = await quoteService.createQuotation(salesRep, {
+      customerId: customer.id,
+      caseId: leadCaseId,
+      baseQuoteNo: firstQuote.quoteNo,
+      title: 'Switchgear quotation - revised pricing',
+      templateId: 'tpl-standard',
+      subtotal: 4500,
+      blocks: [{ title: 'Main', headers: ['Item', 'Amount'], rows: [['Panel', 4500]] }]
+    });
+    expect(revisionQuote.rev).toBe(firstQuote.rev + 1);
+
+    await quoteService.setQuoteStatus(salesRep, revisionQuote.quoteNo, revisionQuote.rev, 'Sent');
+    const backToQuotedRow = repo.cases.find((row) => row.id === leadCaseId);
+    expect(backToQuotedRow?.stage).toBe('Quoted');
+    expect(backToQuotedRow?.assignee).toBe('');
+    expect(backToQuotedRow?.owner).toBe(ownerOriginal);
+    expect(backToQuotedRow?.extraOwners).toEqual(ownersOriginal);
+
+    // Guardrail: an already-mapped case cannot be remapped to a different customer by a
+    // later quotation.
+    const otherCustomer = await customerService.createCustomer(admin, {
+      name: 'Gamma Automation',
+      tags: ['Punjab'],
+      type: 'EPC',
+      priority: 'Medium',
+      area: 'Mohali'
+    });
+    await expect(
+      quoteService.createQuotation(salesRep, {
+        customerId: otherCustomer.id,
+        caseId: leadCaseId,
+        title: 'Should not remap',
+        templateId: 'tpl-standard',
+        subtotal: 100,
+        blocks: [{ title: 'Main', headers: ['Item', 'Amount'], rows: [['X', 100]] }]
+      })
+    ).rejects.toThrow(/different customer/i);
+
+    // Guardrail: a customerless case cannot become Quoted or Won before it has a customer.
+    const otherLead = await caseService.createCase(salesRep, '', {
+      title: 'Another cold lead',
+      stage: 'Lead'
+    });
+    await expect(caseService.setCaseStage(salesRep, otherLead.id, 'Quoted')).rejects.toThrow(/map a customer/i);
+    await expect(
+      caseService.setCaseOutcome(salesRep, otherLead.id, 'Won', {
+        orderValue: 1000,
+        categories: ['Panels'],
+        note: 'no customer yet'
+      })
+    ).rejects.toThrow(/map a customer/i);
+  });
 });
+
+function normalizeTestEmail(email: string): string {
+  return email.trim().toLowerCase();
+}

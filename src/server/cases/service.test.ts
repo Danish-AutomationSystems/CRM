@@ -348,6 +348,156 @@ function makeAttachmentService() {
   return { repo, drive, service };
 }
 
+describe('quoted and revision lifecycle', () => {
+  it.each([
+    { outcome: 'Hold', upload: false }, { outcome: 'Won', upload: false }, { outcome: 'Lost', upload: false },
+    { outcome: 'Hold', upload: true }, { outcome: 'Won', upload: true }, { outcome: 'Lost', upload: true }
+  ] as const)('revalidates $outcome before committing Revision (upload=$upload)', async ({ outcome, upload }) => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
+    if (upload) drive.put({ id: 'FILE-1', name: driveNameFor('revision.pdf'), size: 1, mimeType: 'application/pdf' });
+    const transact = repo.withTransaction.bind(repo);
+    repo.withTransaction = async (fn) => {
+      repo.cases[0] = { ...repo.cases[0], outcome };
+      return transact(fn);
+    };
+    const uploads = upload ? [{ fileId: 'FILE-1', fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }] : [];
+    await expect(service.assignTicket(sales, repo.cases[0].id, 'worker', '', uploads, true)).rejects.toThrow('closed');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', outcome, assignee: '' });
+    expect(repo.attachments).toHaveLength(0);
+    expect(repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN')).toHaveLength(0);
+    if (upload) expect(drive.deleted).toEqual(['FILE-1']);
+  });
+
+  it('commits a verified Revision handover with its holder, stage and attachment', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '', extraOwners: ['other@automationsystems.org'] });
+    drive.put({ id: 'FILE-1', name: driveNameFor('revision.pdf'), size: 1, mimeType: 'application/pdf' });
+    const result = await service.assignTicket(sales, repo.cases[0].id, 'worker', 'Revise panel', [
+      { fileId: 'FILE-1', fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }
+    ], true);
+    expect(result).toMatchObject({ stage: 'Revision', assigneeEmail: 'worker@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org', owner: sales.email, extraOwners: ['other@automationsystems.org'] });
+    expect(repo.attachments).toHaveLength(1);
+    expect(repo.attachments[0]).toMatchObject({ driveFileId: 'FILE-1', activityId: repo.logIds[0] });
+  });
+
+  it.each(['createCase', 'quickLog'] as const)('%s cannot bypass the holder action by creating Revision directly', async (method) => {
+    const { repo, service } = makeService();
+    const count = repo.cases.length;
+    const result = method === 'createCase'
+      ? service.createCase(sales, 'CUST-0001', { title: 'Bypass', stage: 'Revision' })
+      : service.quickLog(sales, { customerId: 'CUST-0001', title: 'Bypass', stage: 'Revision' });
+    await expect(result).rejects.toThrow('select a ticket holder');
+    expect(repo.cases).toHaveLength(count);
+  });
+
+  // Removing either closed guard permits a forbidden handover or upload session.
+  it.each(['Hold', 'Won', 'Lost'] as const)('rejects Revision requests and preparation for %s cases', async (outcome) => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', outcome, assignee: '' });
+    const before = structuredClone(repo.cases[0]);
+    await expect(service.assignTicket(sales, before.id, 'worker', '', [], true)).rejects.toThrow('closed');
+    await expect(service.beginAttachmentUpload(sales, before.id, [{ fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }], true)).rejects.toThrow('closed');
+    expect(repo.cases[0]).toEqual(before);
+    expect(drive.sessions).toHaveLength(0);
+  });
+
+  it.each(['', 'missing', 'inactive', 'direct'])('rejects invalid Revision holder "%s" without entering Revision', async (holder) => {
+    const { repo, service } = makeAttachmentService();
+    repo.users.push(user({ email: 'inactive@automationsystems.org', active: false }));
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
+    await expect(service.assignTicket(sales, repo.cases[0].id, holder, '', [], true)).rejects.toThrow();
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  it('reassigns a repeat Revision request while preserving owners', async () => {
+    const { repo, service } = makeAttachmentService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '', extraOwners: ['other@automationsystems.org'] });
+    await service.assignTicket(sales, repo.cases[0].id, 'worker', '', [], true);
+    const result = await service.assignTicket(sales, repo.cases[0].id, 'other', '', [], true);
+    expect(result).toMatchObject({ stage: 'Revision', assigneeEmail: 'other@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'other@automationsystems.org', owner: sales.email, extraOwners: ['other@automationsystems.org'] });
+  });
+
+  it('requires a holder action instead of a direct Revision stage change', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Quoted', assignee: '' })];
+    await expect(service.setCaseStage(sales, repo.cases[0].id, 'Revision')).rejects.toThrow('select a ticket holder');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  it.each(['Lead', 'Opportunity'])('rejects Revision assignment and preparation from %s', async (stage) => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0].stage = stage;
+    await expect(service.assignTicket(sales, repo.cases[0].id, 'worker', '', [], true)).rejects.toThrow('Quoted or Revision');
+    await expect(service.beginAttachmentUpload(sales, repo.cases[0].id, [{ fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }], true)).rejects.toThrow('Quoted or Revision');
+    expect(drive.sessions).toHaveLength(0);
+  });
+
+  it.each(['Quoted', 'Revision'])('prepares Revision attachments from %s without changing workflow', async (stage) => {
+    const { repo, service } = makeAttachmentService();
+    repo.cases[0] = caseRow({ stage, assignee: stage === 'Quoted' ? '' : sales.email });
+    const before = structuredClone(repo.cases[0]);
+    const sessions = await service.beginAttachmentUpload(sales, before.id, [{ fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }], true);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].sessionUrl).toBeTruthy();
+    expect(repo.cases[0]).toEqual(before);
+  });
+
+  it('never creates a Quoted case with its default ticket holder', async () => {
+    const { repo, service } = makeService();
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'Quoted on creation', stage: 'Quoted' });
+    expect(repo.cases.find((row) => row.id === created.id)).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  it('never quick-logs a Quoted case with its default ticket holder', async () => {
+    const { repo, service } = makeService();
+    const created = await service.quickLog(sales, { customerId: 'CUST-0001', title: 'Quoted quick log', stage: 'Quoted' });
+    expect(repo.cases.find((row) => row.id === created.caseId)).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+  it('clears a stale holder when entering Quoted, including a same-stage repair', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Opportunity', assignee: 'worker@automationsystems.org' })];
+
+    await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted');
+    expect(repo.cases[0].assignee).toBe('');
+
+    repo.cases[0].assignee = 'worker@automationsystems.org';
+    await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted');
+    expect(repo.cases[0].assignee).toBe('');
+  });
+
+  it('requires the explicit revision action to assign a Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Quoted', assignee: '' })];
+
+    await expect(service.assignTicket(sales, 'CASE-2026-0001', 'worker')).rejects.toThrow('Request a revision');
+    const result = await service.assignTicket(sales, 'CASE-2026-0001', 'worker', '', [], true);
+    expect(result).toMatchObject({ ok: true, stage: 'Revision', assigneeEmail: 'worker@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org' });
+  });
+
+  it('does not issue attachment sessions for a Quoted case unless preparing a revision', async () => {
+    const { repo, drive, service } = makeAttachmentService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+
+    await expect(service.beginAttachmentUpload(sales, 'CASE-2026-0001', [{ fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }])).rejects.toThrow('Request a revision');
+    expect(drive.sessions).toHaveLength(0);
+  });
+
+  it('reports revision capability only for a visible open Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ stage: 'Quoted', assignee: '' })];
+    const detail = await service.getCase(sales, 'CASE-2026-0001');
+    expect(detail).toMatchObject({ canRequestRevision: true, canAssignTicket: false });
+    repo.cases[0].outcome = 'Hold';
+    const held = await service.getCase(sales, 'CASE-2026-0001');
+    expect(held.canRequestRevision).toBe(false);
+  });
+});
+
 /** The UTC date buildDriveName stamps into the name, computed the same way. */
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -678,7 +828,7 @@ describe('assignTicket commits verified attachments', () => {
       { fileId: 'FILE-2', fileName: 'photo.jpg', mimeType: 'image/jpeg', sizeBytes: 4096 }
     ]);
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
 
     const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
@@ -802,6 +952,79 @@ describe('assignTicket commits verified attachments', () => {
   });
 });
 
+describe('assignTicket commit-time authorization', () => {
+  for (const upload of [false, true]) {
+    it.each(['holder', 'owner', 'handler', 'customer tags', 'customer mapping'] as const)(
+      `rejects revoked %s access after async work (upload=${upload})`,
+      async (access) => {
+        const { repo, drive, service } = makeAttachmentService();
+        const caller: CrmContext = { ...sales, role: access === 'customer tags' ? 'L3' : 'L1' };
+        repo.handlers = access === 'handler' || access === 'customer mapping' ? repo.handlers : [];
+        repo.cases[0] = caseRow({
+          owner: 'other@automationsystems.org',
+          extraOwners: access === 'owner' ? [caller.email] : [],
+          assignee: access === 'holder' ? caller.email : 'worker@automationsystems.org'
+        });
+        repo.customers.push(customer({ id: 'CUST-0002', tags: ['NCR'] }));
+
+        // The outer repository retains the initial snapshot. Only transaction
+        // reads can see the concurrent committed access change.
+        const tx = new FakeCaseRepository();
+        tx.cases = structuredClone(repo.cases);
+        tx.customers = structuredClone(repo.customers);
+        tx.handlers = structuredClone(repo.handlers);
+        repo.withTransaction = async (fn) => fn(tx);
+        const revoke = () => {
+          if (access === 'holder') tx.cases[0].assignee = 'worker@automationsystems.org';
+          if (access === 'owner') tx.cases[0].extraOwners = ['other@automationsystems.org'];
+          if (access === 'handler') tx.handlers = [];
+          if (access === 'customer tags') tx.customers[0].tags = ['NCR'];
+          if (access === 'customer mapping') tx.cases[0].customerId = 'CUST-0002';
+        };
+        if (upload) {
+          drive.put({ id: 'FILE-1', name: driveNameFor('handover.pdf'), size: 1 });
+          const rename = drive.renameFile.bind(drive);
+          drive.renameFile = async (id, name) => { await rename(id, name); revoke(); };
+        } else {
+          const listUsers = repo.listUsers.bind(repo);
+          repo.listUsers = async () => { const users = await listUsers(); revoke(); return users; };
+        }
+        const uploads = upload
+          ? [{ fileId: 'FILE-1', fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }]
+          : [];
+
+        await expect(service.assignTicket(caller, repo.cases[0].id, 'other', 'Stale handover', uploads))
+          .rejects.toThrow('do not have access');
+        expect(tx.updateCaseCalls).toBe(0);
+        expect(tx.logs).toEqual([]);
+        expect(repo.logs).toEqual([]);
+        expect(tx.attachments).toEqual([]);
+        expect(tx.cases[0]).toMatchObject({ stage: 'Lead', assignee: 'worker@automationsystems.org' });
+        if (upload) expect(drive.deleted).toEqual(['FILE-1']);
+      }
+    );
+
+    it(`records an authorized handover against the current customer in the transaction (upload=${upload})`, async () => {
+      const { repo, drive, service } = makeAttachmentService();
+      const tx = new FakeCaseRepository();
+      tx.cases = [caseRow({ customerId: 'CUST-0002', assignee: 'worker@automationsystems.org' })];
+      tx.customers = [customer({ id: 'CUST-0002' })];
+      repo.withTransaction = async (fn) => fn(tx);
+      if (upload) drive.put({ id: 'FILE-1', name: driveNameFor('handover.pdf'), size: 1 });
+      const uploads = upload
+        ? [{ fileId: 'FILE-1', fileName: 'handover.pdf', mimeType: 'application/pdf', sizeBytes: 1 }]
+        : [];
+
+      await service.assignTicket(sales, repo.cases[0].id, 'other', 'Current handover', uploads);
+
+      expect(tx.cases[0]).toMatchObject({ customerId: 'CUST-0002', assignee: 'other@automationsystems.org' });
+      expect(tx.logs).toEqual([expect.objectContaining({ action: 'CASE_ASSIGN', customerId: 'CUST-0002', note: 'Current handover' })]);
+      expect(repo.logs).toEqual([]);
+      expect(tx.attachments).toHaveLength(upload ? 1 : 0);
+    });
+  }
+});
+
 describe('assignTicket without attachments is unchanged', () => {
   it('produces the same details, the same return value, and touches Drive not at all', async () => {
     const { repo, drive, service } = makeAttachmentService();
@@ -809,11 +1032,11 @@ describe('assignTicket without attachments is unchanged', () => {
     const withUndefined = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
     const withEmptyList = await service.assignTicket(sales, 'CASE-2026-0001', 'worker', 'A note.', []);
 
-    expect(withUndefined).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(withUndefined).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(withEmptyList).toEqual({
       ok: true,
       assignee: 'Ticket Worker',
-      assigneeEmail: 'worker@automationsystems.org'
+      assigneeEmail: 'worker@automationsystems.org', stage: 'Lead'
     });
 
     const assignLogs = repo.logs.filter((entry) => entry.action === 'CASE_ASSIGN');
@@ -837,7 +1060,7 @@ describe('assignTicket without attachments is unchanged', () => {
 
     const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other', 'A note.');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
   });
 });
 
@@ -935,7 +1158,7 @@ describe('case service ownership and assignment', () => {
 
     const result = await service.assignTicket({ ...sales, email: 'worker@automationsystems.org', role: 'L1' }, 'CASE-2026-0001', 'other');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     expect(repo.cases[0].assignee).toBe('other@automationsystems.org');
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'inactive')).rejects.toThrow('not an active CRM user');
   });
@@ -957,7 +1180,7 @@ describe('case service ownership and assignment', () => {
 
     const result = await service.assignTicket(sales, 'CASE-2026-0001', 'other');
 
-    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org' });
+    expect(result).toEqual({ ok: true, assignee: 'Other Sales', assigneeEmail: 'other@automationsystems.org', stage: 'Lead' });
     const logged = repo.logs.find((entry) => entry.action === 'CASE_ASSIGN')!;
     expect(logged.note ?? '').toBe('');
     expect(logged.details).toBe('Working on -> Other Sales');
@@ -1133,7 +1356,7 @@ describe('case service outcomes and stage rules', () => {
     await expect(service.assignTicket(sales, 'CASE-2026-0001', 'other')).rejects.toThrow('ticket can no longer be reassigned');
 
     await service.setCaseStage(sales, 'CASE-2026-0001', 'Quoted', 'resumed');
-    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', outcome: '', assignee: 'worker@automationsystems.org' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', outcome: '', assignee: '' });
 
     await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', {
       orderValue: 5000,
@@ -1342,10 +1565,10 @@ describe('case reads, lists, and quick log', () => {
 
   // Documents the requirement at the service level. It passes before the SQL is
   // correct, because the in-memory fake merges objects and cannot reproduce a
-  // missing `set` clause - the real defence is the casesUpdateSetColumns guard in
-  // repository.test.ts. Kept deliberately, by the project owner's ruling: without
-  // it nothing in the service layer states that editing a title must not wipe the
-  // priority. Do not delete this test or this comment.
+  // missing `set` clause - the real defence is the per-field SQL boundary guard
+  // in db/case-repository-writes.test.ts. Kept deliberately, by the project
+  // owner's ruling: without it nothing in the service layer states that editing
+  // a title must not wipe the priority. Do not delete this test or this comment.
   it('leaves an existing priority intact when an unrelated field is edited', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ id: 'CASE-2026-0001', priority: 'High' })];
@@ -1632,5 +1855,71 @@ describe('case service validates priorities and won categories against the live 
     await service.setCaseOutcome(sales, 'CASE-2026-0001', 'Won', { orderValue: 5000, categories: ['VFDs'] });
 
     expect(repo.cases[0]).toMatchObject({ outcome: 'Won', wonCategories: ['VFDs'] });
+  });
+});
+
+describe('customerless cases', () => {
+  it.each(['Lead', 'Opportunity'])('creates %s with creator ownership and existing assignment defaults', async (stage) => {
+    const { repo, service } = makeService();
+    const before = structuredClone(repo.handlers);
+    const { id } = await service.createCase(sales, '', { title: 'New enquiry', stage });
+    expect(repo.cases[0]).toMatchObject({ customerId: '', stage, owner: sales.email, extraOwners: [sales.email], assignee: sales.email });
+    expect(await service.getCase(sales, id)).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
+    expect((await service.listCases(sales))[0]).toMatchObject({ customerName: 'Customer not mapped' });
+    expect(repo.handlers).toEqual(before);
+  });
+
+  it('requires L2, rejects dangling IDs and requires mapping before Quoted or Won', async () => {
+    const { repo, service } = makeService();
+    await expect(service.createCase({ ...sales, role: 'L1' }, '', { title: 'No' })).rejects.toThrow('L2');
+    await expect(service.createCase(sales, 'typo', { title: 'No' })).rejects.toThrow('Customer typo');
+    await expect(service.createCase(sales, '', { title: 'No', stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
+    await expect(service.createCase(sales, '', { title: 'No', order: true, orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
+    repo.cases = [caseRow({ customerId: '' })];
+    await expect(service.setCaseStage(sales, repo.cases[0].id, 'Quoted')).rejects.toThrow(/map.*customer/i);
+    await expect(service.setCaseOutcome(sales, repo.cases[0].id, 'Won', { orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
+    await service.setCaseStage(sales, repo.cases[0].id, 'Lead');
+    await service.updateCase(sales, repo.cases[0].id, { title: 'Updated' });
+    expect(repo.cases[0]).toMatchObject({ title: 'Updated', stage: 'Lead', customerId: '' });
+  });
+
+  it('allows owners, assigned L1 and L4+, denying unrelated users even with matching tags', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org', extraOwners: [sales.email] })];
+    for (const viewer of [sales, repo.users[2], repo.users[3]]) {
+      expect((await service.getCase(viewer, repo.cases[0].id)).customer).toBeNull();
+      expect(await service.listCases(viewer)).toHaveLength(1);
+    }
+    expect(await service.getCase(repo.users[2], repo.cases[0].id)).toMatchObject({ canMapCustomer: false, canQuote: false });
+    const outsider = { ...sales, email: 'outsider@automationsystems.org', role: 'L3' as const };
+    await expect(service.getCase(outsider, repo.cases[0].id)).rejects.toThrow('access');
+    expect(await service.listCases(outsider)).toEqual([]);
+    repo.cases[0].customerId = 'dangling';
+    await expect(service.getCase(sales, repo.cases[0].id)).rejects.toThrow('Customer dangling');
+    expect(await service.listCases(sales)).toEqual([]);
+  });
+
+  it('supports explicit customerLater quick log without swallowing misspelled customer IDs', async () => {
+    const { repo, service } = makeService();
+    const input = { customerLater: true, title: 'Identify later', stage: 'Lead' };
+    const result = await service.quickLog(sales, input);
+    expect(result.customerId).toBe('');
+    expect(repo.cases[0]).toMatchObject({ owner: sales.email, assignee: sales.email, customerId: '' });
+    expect(repo.customers).toHaveLength(1);
+    await expect(service.quickLog(sales, { ...input, customerId: 'typo' })).rejects.toThrow('Customer typo');
+    await expect(service.quickLog(sales, { ...input, stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
+    await expect(service.quickLog(sales, { title: 'No choice' })).rejects.toThrow('Pick an existing');
+  });
+
+  it('retains backend explicit-assignee rule and supports unmapped handovers and Revision edits', async () => {
+    const { repo, service } = makeService();
+    const backend = { ...sales, role: 'L5' as const };
+    await expect(service.createCase(backend, '', { title: 'New' })).rejects.toThrow('Choose who');
+    const { id } = await service.createCase(backend, '', { title: 'New', assignee: 'worker@automationsystems.org' });
+    await service.assignTicket(sales, id, 'other@automationsystems.org', 'Please work');
+    repo.cases[0].stage = 'Revision';
+    await service.updateCase(sales, id, { details: 'Revision notes' });
+    await service.assignTicket(sales, id, 'worker@automationsystems.org');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', details: 'Revision notes', customerId: '', assignee: 'worker@automationsystems.org' });
   });
 });

@@ -3,7 +3,15 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS } from '../db/schema';
-import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
+import {
+  insertCaseRow,
+  selectCaseRow,
+  selectCaseRowForUpdate,
+  toCaseWriteRow,
+  updateCaseRow,
+  type CaseWriteDbRow
+} from '../db/case-write';
+import { normalizeEmail } from '../domain/lists';
 import type {
   CaseActivityLogEntry,
   CaseActivityRow,
@@ -53,27 +61,6 @@ type UserDbRow = {
   active: boolean;
 };
 
-type CaseDbRow = {
-  case_id: string;
-  customer_id: string;
-  title: string;
-  details: string | null;
-  source: string | null;
-  priority: string | null;
-  stage: string;
-  outcome: 'Won' | 'Lost' | 'Hold' | null;
-  order_value: string | number | null;
-  won_categories: string | null;
-  outcome_note: string | null;
-  owner: string | null;
-  extra_owners: string | null;
-  assignee: string | null;
-  closed_on: string | Date | null;
-  created_by: string | null;
-  created_at: string | Date;
-  updated_at: string | Date;
-};
-
 type QuoteDbRow = {
   quote_no: string;
   rev: number;
@@ -104,12 +91,6 @@ type AttachmentDbRow = {
 function dateString(value: string | Date | null | undefined): string {
   if (!value) return '';
   return value instanceof Date ? value.toISOString() : String(value);
-}
-
-function numberOrBlank(value: string | number | null | undefined): number | '' {
-  if (value === null || value === undefined || value === '') return '';
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : '';
 }
 
 function toCustomer(row: CustomerDbRow): CaseCustomerRow {
@@ -152,29 +133,6 @@ function toUser(row: UserDbRow): CaseUserRow {
   };
 }
 
-function toCase(row: CaseDbRow): CaseRow {
-  return {
-    id: row.case_id,
-    customerId: row.customer_id,
-    title: row.title,
-    details: row.details ?? '',
-    source: row.source ?? '',
-    priority: row.priority ?? '',
-    stage: row.stage,
-    outcome: row.outcome ?? '',
-    orderValue: numberOrBlank(row.order_value),
-    wonCategories: parsePipe(row.won_categories),
-    outcomeNote: row.outcome_note ?? '',
-    owner: normalizeEmail(row.owner),
-    extraOwners: parsePipe(row.extra_owners).map(normalizeEmail),
-    assignee: normalizeEmail(row.assignee),
-    closedOn: dateString(row.closed_on),
-    createdBy: normalizeEmail(row.created_by),
-    createdAt: dateString(row.created_at),
-    updatedAt: dateString(row.updated_at)
-  };
-}
-
 function toQuote(row: QuoteDbRow): CaseQuoteRow {
   return {
     caseId: row.case_id,
@@ -204,18 +162,6 @@ function toAttachment(row: AttachmentDbRow): CaseAttachmentRow {
     uploadedBy: normalizeEmail(row.uploaded_by ?? ''),
     createdAt: dateString(row.created_at)
   };
-}
-
-function dbOutcome(value: CaseRow['outcome']): 'Won' | 'Lost' | 'Hold' | null {
-  return value || null;
-}
-
-function dbNumber(value: number | ''): number | null {
-  return value === '' ? null : value;
-}
-
-function dbDate(value: string): string | null {
-  return value || null;
 }
 
 function dbEmail(value: string): string | null {
@@ -333,16 +279,13 @@ export class PostgresCaseRepository implements CaseRepository {
   }
 
   async getCase(id: string): Promise<CaseRow | null> {
-    const rows = (await this.db`
-      select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-             won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
-             created_by, created_at, updated_at
-      from public.cases
-      where case_id = ${id}
-      limit 1
-    `) as CaseDbRow[];
+    const row = await selectCaseRow(this.db, id);
+    return row ? toCaseWriteRow<CaseRow>(row) : null;
+  }
 
-    return rows[0] ? toCase(rows[0]) : null;
+  async lockCase(id: string): Promise<CaseRow | null> {
+    const row = await selectCaseRowForUpdate(this.db, id);
+    return row ? toCaseWriteRow<CaseRow>(row) : null;
   }
 
   async listCases(): Promise<CaseRow[]> {
@@ -351,51 +294,17 @@ export class PostgresCaseRepository implements CaseRepository {
              won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
              created_by, created_at, updated_at
       from public.cases
-    `) as CaseDbRow[];
+    `) as CaseWriteDbRow[];
 
-    return rows.map(toCase);
+    return rows.map((row) => toCaseWriteRow<CaseRow>(row));
   }
 
   async createCase(row: CaseRow): Promise<void> {
-    await this.db`
-      insert into public.cases (
-        case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-        won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
-        created_by, created_at, updated_at
-      )
-      values (
-        ${row.id}, ${row.customerId}, ${row.title}, ${row.details}, ${row.source}, ${row.priority}, ${row.stage},
-        ${dbOutcome(row.outcome)}, ${dbNumber(row.orderValue)}, ${joinPipe(row.wonCategories)},
-        ${row.outcomeNote}, ${dbEmail(row.owner)}, ${joinPipe(row.extraOwners)}, ${dbEmail(row.assignee)},
-        ${dbDate(row.closedOn)}, ${dbEmail(row.createdBy)}, ${row.createdAt}, ${row.updatedAt}
-      )
-    `;
+    await insertCaseRow(this.db, row);
   }
 
   async updateCase(id: string, fields: Partial<CaseRow>): Promise<void> {
-    const existing = await this.getCase(id);
-    if (!existing) throw new Error(`Case ${id} was not found.`);
-    const row = { ...existing, ...fields };
-    await this.db`
-      update public.cases
-      set
-        title = ${row.title},
-        details = ${row.details},
-        source = ${row.source},
-        priority = ${row.priority},
-        stage = ${row.stage},
-        outcome = ${dbOutcome(row.outcome)},
-        order_value = ${dbNumber(row.orderValue)},
-        won_categories = ${joinPipe(row.wonCategories)},
-        outcome_note = ${row.outcomeNote},
-        owner = ${dbEmail(row.owner)},
-        extra_owners = ${joinPipe(row.extraOwners)},
-        assignee = ${dbEmail(row.assignee)},
-        closed_on = ${dbDate(row.closedOn)},
-        updated_at = ${row.updatedAt},
-        version = version + 1
-      where case_id = ${id}
-    `;
+    await updateCaseRow(this.db, id, fields);
   }
 
   async listQuotesByCase(caseId: string): Promise<CaseQuoteRow[]> {

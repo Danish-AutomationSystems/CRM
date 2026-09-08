@@ -20,7 +20,7 @@ export type CrmTable = (typeof CRM_TABLES)[number];
 export const CRM_ROLES = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6'] as const;
 export type CrmRole = (typeof CRM_ROLES)[number];
 
-export const CASE_STAGES = ['Lead', 'Opportunity', 'Quoted'] as const;
+export const CASE_STAGES = ['Lead', 'Opportunity', 'Quoted', 'Revision'] as const;
 export const CASE_OUTCOMES = ['Won', 'Lost', 'Hold'] as const;
 export const QUOTE_STATUSES = ['Draft', 'Sent', 'Superseded'] as const;
 export const QUOTE_SOURCES = ['Generated', 'External'] as const;

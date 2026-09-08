@@ -1,5 +1,5 @@
 import type { CrmContext } from '../auth/context';
-import { ensureFull } from '../auth/access';
+import { accessLevel, ensureCanSeeCase, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
 import { loadSettings } from '../settings/live';
@@ -129,6 +129,8 @@ export type QuoteRepository = {
   listUsers(): Promise<QuoteUserRow[]>;
   listHandlers(): Promise<QuoteHandlerRow[]>;
   getCase(id: string): Promise<QuoteCaseRow | null>;
+  /** Lock and re-read a case within an existing transaction. */
+  lockCase?(id: string): Promise<QuoteCaseRow | null>;
   createCase(row: QuoteCaseRow): Promise<void>;
   updateCase(id: string, fields: Partial<QuoteCaseRow>): Promise<void>;
   getQuote(quoteNo: string, rev: number): Promise<QuoteRow | null>;
@@ -267,12 +269,48 @@ async function ensureFullCustomer(
   return { customer, ownership };
 }
 
-async function validateCase(repo: QuoteRepository, caseId: string, customerId: string): Promise<QuoteCaseRow | null> {
+async function validateCase(
+  repo: QuoteRepository, user: CrmContext, caseId: string, customerId: string, mapCustomer = false
+): Promise<QuoteCaseRow | null> {
   if (!caseId) return null;
-  const row = await repo.getCase(caseId);
+  const row = mapCustomer && repo.lockCase ? await repo.lockCase(caseId) : await repo.getCase(caseId);
   if (!row) throw new Error(`Case ${caseId} was not found.`);
-  if (row.customerId !== customerId) throw new Error('That case belongs to a different customer.');
+  if (row.customerId && row.customerId !== customerId) throw new Error('That case belongs to a different customer.');
+  const { customer, ownership } = await ensureFullCustomer(repo, user, customerId);
+  ensureCanSeeCase(user, row.customerId ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE', row);
+  if (!row.customerId && mapCustomer) {
+    await repo.updateCase(caseId, { customerId, updatedAt: nowIso() });
+    await repo.logActivity({
+      action: 'CASE_CUSTOMER_MAP', entity: caseId, customerId,
+      details: `Customer mapped to ${customer.name} (${customerId}) with first quotation`,
+      who: normalizeEmail(user.email)
+    });
+  }
   return row;
+}
+
+function validateRevisionFamily(previous: readonly QuoteRow[], caseId: string, customerId: string): void {
+  if (previous.some((quote) => quote.customerId !== customerId)) {
+    throw new Error('A quotation revision must stay with the same customer.');
+  }
+  if (previous.some((quote) => quote.caseId !== caseId)) {
+    throw new Error('A quotation revision must stay with the same case.');
+  }
+}
+
+/** Resolve inherited case IDs and authorize before templates, upload bytes or a transaction. */
+async function authorizeQuoteSource(
+  repo: QuoteRepository, user: CrmContext, input: CreateQuotationInput | UploadQuotationInput, customerId: string
+): Promise<void> {
+  let caseId = asText(input.caseId);
+  const baseQuoteNo = asText(input.baseQuoteNo);
+  if (baseQuoteNo) {
+    const previous = await repo.listQuotesByQuoteNo(baseQuoteNo);
+    if (!previous.length) throw new Error(`Quotation ${baseQuoteNo} was not found.`);
+    caseId ||= previous[0].caseId;
+    validateRevisionFamily(previous, caseId, customerId);
+  }
+  await validateCase(repo, user, caseId, customerId);
 }
 
 function cleanBoqBlocks(input: unknown): Array<Omit<QuoteBoqBlock, 'quoteNo' | 'rev' | 'block'>> {
@@ -377,7 +415,7 @@ async function createAutoCase(
     outcomeNote: '',
     owner: normalizeEmail(user.email),
     extraOwners: [],
-    assignee: normalizeEmail(user.email),
+    assignee: stage === 'Quoted' ? '' : normalizeEmail(user.email),
     closedOn: '',
     createdBy: normalizeEmail(user.email),
     createdAt: now,
@@ -394,9 +432,9 @@ async function createAutoCase(
 }
 
 async function bumpCaseToQuoted(repo: QuoteRepository, caseId: string): Promise<void> {
-  const row = await repo.getCase(caseId);
-  if (!row || row.outcome || row.stage === 'Quoted') return;
-  await repo.updateCase(caseId, { stage: 'Quoted', updatedAt: nowIso() });
+  const row = (await repo.lockCase?.(caseId)) ?? (await repo.getCase(caseId));
+  if (!row || row.outcome || (row.stage === 'Quoted' && !row.assignee)) return;
+  await repo.updateCase(caseId, { stage: 'Quoted', assignee: '', updatedAt: nowIso() });
 }
 
 async function loadQuote(repo: QuoteRepository, user: CrmContext, quoteNo: string, rev: number): Promise<LoadedQuote> {
@@ -443,6 +481,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       requireLevel(user, 2);
       const customerId = asText(input.customerId);
       const { customer } = await ensureFullCustomer(repo, user, customerId);
+      await authorizeQuoteSource(repo, user, input, customer.id);
       // Fallback only - the client always sends live tax/currency values from
       // bootstrap(), so these matter only when the client omits them.
       const live = await loadSettings(repo);
@@ -460,13 +499,20 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
         let caseId = asText(input.caseId);
-        await validateCase(trx, caseId, customer.id);
         const allocation = await allocateQuoteRevision(trx, {
           baseQuoteNo: asText(input.baseQuoteNo),
           caseId
         });
         caseId = allocation.caseId;
-        if (caseId) await validateCase(trx, caseId, customer.id);
+        validateRevisionFamily(allocation.previous, caseId, customer.id);
+        // validateCase re-authorizes under the lock itself whenever there is a
+        // case; it only skips that when caseId is empty, so this explicit check
+        // is the sole in-transaction authorization for the no-case (auto-case) path.
+        if (!caseId) await ensureFullCustomer(trx, user, customer.id);
+        const caseRow = await validateCase(trx, user, caseId, customer.id, true);
+        if (caseId && caseRow?.stage === 'Quoted') {
+          throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+        }
         await supersedePrevious(trx, allocation.previous);
         if (!caseId) {
           caseId = await createAutoCase(trx, user, customer, title, allocation.quoteNo, 'Opportunity', 'Auto-created with quotation');
@@ -528,6 +574,7 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       requireLevel(user, 2);
       const customerId = asText(input.customerId);
       const { customer } = await ensureFullCustomer(repo, user, customerId);
+      await authorizeQuoteSource(repo, user, input, customer.id);
       const dataB64 = String(input.dataB64 ?? '');
       if (!dataB64) throw new Error('Choose a file to upload.');
       if (dataB64.length > 11_000_000) throw new Error('That file is too large - please keep uploads under about 8 MB.');
@@ -566,13 +613,20 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
         committed = await repo.withTransaction(async (tx) => {
           const trx = tx ?? repo;
           let caseId = asText(input.caseId);
-          await validateCase(trx, caseId, customer.id);
           const allocation = await allocateQuoteRevision(trx, {
             baseQuoteNo: asText(input.baseQuoteNo),
             caseId
           });
           caseId = allocation.caseId;
-          if (caseId) await validateCase(trx, caseId, customer.id);
+          validateRevisionFamily(allocation.previous, caseId, customer.id);
+          // See the equivalent comment in createQuotation: with no caseId,
+          // validateCase never re-authorizes, so this call must stay unconditional
+          // in that case - it is the only in-transaction authorization check.
+          if (!caseId) await ensureFullCustomer(trx, user, customer.id);
+          const caseRow = await validateCase(trx, user, caseId, customer.id, true);
+          if (status === 'Draft' && caseId && caseRow?.stage === 'Quoted') {
+            throw new Error('Request a revision and select a ticket holder before creating a draft revision.');
+          }
           await supersedePrevious(trx, allocation.previous);
           if (!caseId) {
             caseId = await createAutoCase(
@@ -709,9 +763,17 @@ export function createQuoteService(repo: QuoteRepository, deps: QuoteServiceDeps
       if (!(DEFAULT_SETTINGS.QUOTE_STATUSES as readonly string[]).includes(status)) {
         throw new Error(`"${status}" is not a valid quotation status.`);
       }
-      const { quote } = await loadQuote(repo, user, quoteNo, rev);
+      await loadQuote(repo, user, quoteNo, rev);
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+        // Quote-family lock always precedes the case lock in bumpCaseToQuoted.
+        await trx.lockQuoteFamily(quoteNo);
+        const quote = await trx.getQuote(quoteNo, rev);
+        if (!quote) throw new Error(`Quotation ${quoteNo} R${rev} was not found.`);
+        if (quote.status === 'Superseded') throw new Error('This quotation revision was superseded and cannot change status.');
+        const customer = await trx.getCustomer(quote.customerId);
+        if (!customer) throw new Error(`Customer ${quote.customerId} was not found.`);
+        ensureFull(user, customerForAccess(customer), ownershipFor(await trx.listHandlers()));
         await trx.updateQuote(quoteNo, rev, { status: status as QuoteRow['status'], updatedAt: nowIso() });
         await trx.logActivity({
           action: 'QUOTE_STATUS',

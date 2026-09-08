@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, SELECTABLE_TAGS, TAG_TO_BE_FILLED, defaultSettingRows
 
 describe('DEFAULT_SETTINGS', () => {
   it('matches the Apps Script seeded CRM settings', () => {
-    expect(DEFAULT_SETTINGS.STAGES).toEqual(['Lead', 'Opportunity', 'Quoted']);
+    expect(DEFAULT_SETTINGS.STAGES).toEqual(['Lead', 'Opportunity', 'Quoted', 'Revision']);
     expect(DEFAULT_SETTINGS.OUTCOMES).toEqual(['Won', 'Lost', 'Hold']);
     // P7: TO BE FILLED is a RECOGNISED location so backfilled rows survive a later save.
     expect(DEFAULT_SETTINGS.TAGS).toEqual(['Punjab', 'Chandigarh', 'NCR', 'Geo', 'Other', 'TO BE FILLED']);

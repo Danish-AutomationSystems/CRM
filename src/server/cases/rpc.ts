@@ -47,12 +47,12 @@ registerRpc(
 );
 registerRpc(
   'api_assignTicket',
-  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2], args[3]),
+  ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2], args[3], args[4] === true),
   { read: false }
 );
 registerRpc(
   'api_beginAttachmentUpload',
-  ({ args, context }) => service.beginAttachmentUpload(context, String(args[0] ?? ''), args[1]),
+  ({ args, context }) => service.beginAttachmentUpload(context, String(args[0] ?? ''), args[1], args[2] === true),
   { read: false }
 );
 registerRpc('api_getCase', ({ args, context }) => service.getCase(context, String(args[0] ?? '')));

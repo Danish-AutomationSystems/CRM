@@ -33,7 +33,12 @@ class FakeQuoteRepository implements QuoteRepository {
   caseSeq = 2;
 
   async withTransaction<T>(fn: (repo?: QuoteRepository) => Promise<T>): Promise<T> {
-    return fn(this);
+    const snapshot = structuredClone({ cases: this.cases, quotes: this.quotes, blocks: this.blocks, logs: this.logs });
+    try { return await fn(this); }
+    catch (error) {
+      Object.assign(this, snapshot);
+      throw error;
+    }
   }
 
   async listSettings(): Promise<Array<{ key: string; value: string }>> {
@@ -70,6 +75,10 @@ class FakeQuoteRepository implements QuoteRepository {
 
   async getCase(id: string): Promise<CaseRow | null> {
     return this.cases.find((row) => row.id === id) ?? null;
+  }
+
+  async lockCase(id: string): Promise<CaseRow | null> {
+    return this.getCase(id);
   }
 
   async createCase(row: CaseRow): Promise<void> {
@@ -121,6 +130,22 @@ class FakeQuoteRepository implements QuoteRepository {
     this.logs.push(entry);
   }
 }
+
+describe('quotation status lifecycle locking', () => {
+  it('does not let a stale superseded revision clear a newer Revision holder', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = { ...repo.cases[0], stage: 'Revision', assignee: 'worker@automationsystems.org' };
+    repo.quotes = [makeQuote({ rev: 0, status: 'Draft' }), makeQuote({ rev: 1, status: 'Draft' })];
+    const original = repo.lockQuoteFamily.bind(repo);
+    repo.lockQuoteFamily = async (quoteNo) => {
+      await original(quoteNo);
+      repo.quotes[0].status = 'Superseded';
+    };
+
+    await expect(service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent')).rejects.toThrow('superseded');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org' });
+  });
+});
 
 function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
   return {
@@ -298,7 +323,123 @@ describe('quote service template listing', () => {
   });
 });
 
+describe('Sent holder invariant', () => {
+  it('rejects an uploaded Draft revision before a Quoted case requests Revision', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.uploadQuotation(sales, {
+      customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Draft revision',
+      fileName: 'revision.pdf', dataB64: 'YWJj', status: 'Draft'
+    })).rejects.toThrow('Request a revision');
+    expect(repo.quotes).toHaveLength(1);
+    expect(repo.quotes[0].status).toBe('Sent');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  // Removing assignee from bumpCaseToQuoted leaves each existing holder behind.
+  it.each(['Generated', 'External'] as const)('%s Sent clears holders in Opportunity, Revision and stale Quoted cases', async (source) => {
+    for (const stage of ['Opportunity', 'Revision', 'Quoted']) {
+      const { repo, service } = makeService();
+      repo.cases[0] = caseRow({ stage, extraOwners: ['manager@automationsystems.org'] });
+      if (source === 'Generated') {
+        repo.quotes = [makeQuote()];
+        await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
+      } else {
+        await service.uploadQuotation(sales, {
+          customerId: 'CUST-0001', caseId: 'CASE-2026-0001', title: 'Sent upload',
+          fileName: 'sent.pdf', dataB64: 'YWJj', total: 300, status: 'Sent'
+        });
+      }
+      expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '', owner: sales.email, extraOwners: ['manager@automationsystems.org'] });
+      expect(repo.quotes[0].status).toBe('Sent');
+    }
+  });
+
+  it.each(['Generated', 'External'] as const)('keeps a %s Draft revision assigned in Revision until it is Sent', async (source) => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Revision', extraOwners: ['manager@automationsystems.org'] });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    const revision = source === 'Generated' ? await service.createQuotation(sales, {
+      customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Revised offer',
+      templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }]
+    }) : await service.uploadQuotation(sales, { customerId: 'CUST-0001', baseQuoteNo: 'QTN-2026-0001', title: 'Draft', fileName: 'draft.pdf', dataB64: 'YWJj', status: 'Draft' });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: sales.email });
+    expect(repo.quotes[1]).toMatchObject({ rev: 1, status: 'Draft' });
+    await service.setQuoteStatus(sales, revision.quoteNo, revision.rev, 'Sent');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '', owner: sales.email, extraOwners: ['manager@automationsystems.org'] });
+  });
+
+  it('does not touch an already-Quoted, already-clean case (idempotence)', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    const updateCase = vi.spyOn(repo, 'updateCase');
+    await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
+    expect(updateCase).not.toHaveBeenCalled();
+  });
+
+  it('still repairs an already-Quoted case that wrongly still has a holder', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: sales.email });
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await service.setQuoteStatus(sales, 'QTN-2026-0001', 0, 'Sent');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+
+  it.each(['Generated', 'External'] as const)('%s Sent auto-case has no holder', async (source) => {
+    const { repo, service } = makeService();
+    repo.cases = [];
+    const create = repo.createCase.bind(repo);
+    repo.createCase = async (row) => {
+      // The SQL CHECK applies at INSERT, even if a later update would repair it.
+      if (row.stage === 'Quoted') expect(row.assignee).toBe('');
+      await create(row);
+    };
+    const result = source === 'Generated'
+      ? await service.createQuotation(sales, { customerId: 'CUST-0001', title: 'Auto', templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }] })
+      : await service.uploadQuotation(sales, { customerId: 'CUST-0001', title: 'Auto', fileName: 'sent.pdf', dataB64: 'YWJj', status: 'Sent' });
+    if (source === 'Generated') await service.setQuoteStatus(sales, result.quoteNo, result.rev, 'Sent');
+    expect(repo.cases[0]).toMatchObject({ id: result.caseId, stage: 'Quoted', assignee: '', owner: sales.email });
+  });
+});
+
 describe('quote service generated quotations', () => {
+  it('rejects a Draft revision while its case remains Quoted', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.createQuotation(sales, {
+      customerId: 'CUST-0001', caseId: 'CASE-2026-0001', baseQuoteNo: 'QTN-2026-0001',
+      title: 'Revision', templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }]
+    })).rejects.toThrow('Request a revision');
+  });
+  it('rejects a brand-new quote number (no baseQuoteNo) against a Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.createQuotation(sales, {
+      customerId: 'CUST-0001', caseId: 'CASE-2026-0001',
+      title: 'Unrelated new quote', templateId: 'tpl-standard', blocks: [{ headers: ['Item'], rows: [['Panel']] }]
+    })).rejects.toThrow('Request a revision');
+    // The case must remain untouched - no orphan Draft quote created underneath it.
+    expect(repo.quotes).toHaveLength(1);
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
+  it('rejects a brand-new Draft upload (no baseQuoteNo) against a Quoted case', async () => {
+    const { repo, service } = makeService();
+    repo.cases[0].stage = 'Quoted';
+    repo.cases[0].assignee = '';
+    repo.quotes = [makeQuote({ status: 'Sent' })];
+    await expect(service.uploadQuotation(sales, {
+      customerId: 'CUST-0001', caseId: 'CASE-2026-0001',
+      title: 'Unrelated new draft', fileName: 'x.pdf', dataB64: 'YWJj', status: 'Draft'
+    })).rejects.toThrow('Request a revision');
+    expect(repo.quotes).toHaveLength(1);
+    expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
+  });
   it('allocates QTN number, starts at R0, stores BOQ JSON blocks, and keeps Draft case at Opportunity', async () => {
     const { repo, service } = makeService();
 
@@ -1039,5 +1180,109 @@ describe('generateQuoteDoc', () => {
     seedGenerated(repo);
 
     await expect(service.generateQuoteDoc(sales, 'QTN-2026-0001', 0)).rejects.toThrow('not configured');
+  });
+});
+
+describe('first quotation customer mapping', () => {
+  const input = { customerId: 'CUST-0001', caseId: 'CASE-2026-0001', title: 'First quote', blocks: [{ headers: ['Item'], rows: [['PLC']] }], fileName: 'quote.pdf', mimeType: 'application/pdf', dataB64: 'cGRm' };
+  const modes = ['generated', 'uploaded'] as const;
+  function save(service: ReturnType<typeof makeService>['service'], mode: typeof modes[number], overrides = {}) {
+    return mode === 'generated' ? service.createQuotation(sales, { ...input, ...overrides }) : service.uploadQuotation(sales, { ...input, ...overrides });
+  }
+
+  it.each(modes)('maps an unmapped case with %s quote while preserving owners and handlers', async (mode) => {
+    const { deps } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+    repo.cases[0] = caseRow({ customerId: '', extraOwners: [sales.email, 'other@automationsystems.org'], assignee: 'worker@automationsystems.org' });
+    const original = structuredClone(repo.cases[0]);
+    const handlers = structuredClone(repo.handlers);
+    await save(service, mode);
+    expect(repo.cases[0]).toMatchObject({ customerId: input.customerId, owner: original.owner, extraOwners: original.extraOwners, assignee: mode === 'uploaded' ? '' : original.assignee });
+    expect(repo.quotes[0]).toMatchObject({ customerId: input.customerId, caseId: input.caseId });
+    expect(repo.logs.filter((row) => row.action === 'CASE_CUSTOMER_MAP')).toEqual([expect.objectContaining({ entity: input.caseId, customerId: input.customerId, who: sales.email })]);
+    expect(repo.handlers).toEqual(handlers);
+  });
+
+  it.each(modes)('denies %s source outsiders and NAME/NONE targets before uploads or transactions', async (mode) => {
+    for (const denial of ['source', 'NAME', 'NONE']) {
+      const { deps, calls } = fakeDriveDeps();
+      const { repo, service } = makeService(deps);
+      repo.cases[0] = caseRow({ customerId: '', owner: denial === 'source' ? 'other@automationsystems.org' : sales.email, extraOwners: [], assignee: '' });
+      if (denial !== 'source') repo.handlers = [];
+      if (denial === 'NONE') repo.customers[0].tags = ['NCR'];
+      const transaction = vi.spyOn(repo, 'withTransaction');
+      await expect(save(service, mode)).rejects.toThrow(denial === 'source' ? /access.*case/ : /account handler/);
+      expect(calls.uploaded).toEqual([]);
+      expect(transaction).not.toHaveBeenCalled();
+      expect(repo.cases[0].customerId).toBe('');
+    }
+  });
+
+  it.each(modes)('rolls back %s mapping and audit when quotation persistence fails', async (mode) => {
+    const { deps, calls } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+    repo.cases[0].customerId = '';
+    repo.createQuote = async () => { throw new Error('quote insert failed'); };
+    await expect(save(service, mode)).rejects.toThrow('quote insert failed');
+    expect(repo.cases[0].customerId).toBe('');
+    expect(repo.logs).toEqual([]);
+    expect(repo.quotes).toEqual([]);
+    if (mode === 'uploaded') expect(calls.deleted).toEqual(['drive-file-1']);
+  });
+
+  it.each(modes)('rereads %s mapping under the lock and rejects a conflicting committed customer', async (mode) => {
+    const { deps, calls } = fakeDriveDeps();
+    const { repo, service } = makeService(deps);
+    repo.cases[0].customerId = '';
+    let locks = 0;
+    repo.lockCase = async () => { locks++; repo.cases[0].customerId = 'CUST-0002'; return repo.cases[0]; };
+    await expect(save(service, mode)).rejects.toThrow('different customer');
+    expect(locks).toBe(1);
+    expect(repo.quotes).toEqual([]);
+    expect(repo.logs).toEqual([]);
+    if (mode === 'uploaded') expect(calls.deleted).toEqual(['drive-file-1']);
+  });
+
+  it.each(modes)('rechecks %s case and target permissions inside the transaction', async (mode) => {
+    for (const revocation of ['case', 'target']) {
+      const { repo, service } = makeService();
+      repo.cases[0].customerId = '';
+      const transact = repo.withTransaction.bind(repo);
+      repo.withTransaction = async (fn) => {
+        if (revocation === 'case') Object.assign(repo.cases[0], { owner: 'other@example.com', extraOwners: [], assignee: '' });
+        else repo.handlers = [];
+        return transact(fn);
+      };
+      await expect(save(service, mode)).rejects.toThrow(revocation === 'case' ? /access.*case/ : /account handler/);
+      expect(repo.cases[0].customerId).toBe('');
+      expect(repo.quotes).toEqual([]);
+    }
+  });
+
+  // Guards the fix for the "ensureFullCustomer runs three times" cleanup: with no
+  // caseId, validateCase never runs (it returns early with an empty caseId), so
+  // the explicit in-transaction ensureFullCustomer call is the ONLY authorization
+  // check that happens under the lock. It must stay unconditional in that case.
+  it.each(modes)('rechecks %s customer permissions inside the transaction when there is no case', async (mode) => {
+    const { repo, service } = makeService();
+    const transact = repo.withTransaction.bind(repo);
+    repo.withTransaction = async (fn) => {
+      repo.handlers = [];
+      return transact(fn);
+    };
+    await expect(save(service, mode, { caseId: '' })).rejects.toThrow(/account handler/);
+    expect(repo.cases).toHaveLength(1);
+    expect(repo.quotes).toEqual([]);
+  });
+
+  it.each(modes)('keeps %s revisions on the original customer and case', async (mode) => {
+    const { repo, service } = makeService();
+    repo.quotes = [makeQuote()];
+    repo.cases.push(caseRow({ id: 'CASE-OTHER', customerId: '' }));
+    await expect(save(service, mode, { baseQuoteNo: 'QTN-2026-0001', caseId: 'CASE-OTHER' })).rejects.toThrow(/same case/);
+    repo.quotes[0].customerId = 'CUST-OTHER';
+    await expect(save(service, mode, { baseQuoteNo: 'QTN-2026-0001' })).rejects.toThrow(/same customer/);
+    expect(repo.quotes).toHaveLength(1);
+    expect(repo.cases[1].customerId).toBe('');
   });
 });

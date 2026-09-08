@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement } from 'react';
@@ -60,7 +60,7 @@ function workspace(role = 'L6') {
   return {
     boot: bootstrap(role),
     customers: { scope: 'mine', customers: [] },
-    cases: []
+    cases: [] as Array<Record<string, unknown>>
   };
 }
 
@@ -2266,5 +2266,248 @@ describe('admin bulk-add repeatable rows', () => {
       expect(main.innerHTML).toContain('b-amber');
       expect(main.innerHTML).toContain('2d stale');
     });
+  });
+});
+
+describe('case lifecycle UI', () => {
+  const calls: Array<{ fn: string; args: unknown[] }> = [];
+  let stage: string;
+  let mapped: boolean;
+  let role: string;
+  let canQuote: boolean;
+  let source: string;
+  let loseAccess: boolean;
+  let outcome: string;
+  function detail() {
+    const d = caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]);
+    return { ...d, customer: mapped ? d.customer : null, canQuote, canMapCustomer: !mapped && canQuote,
+      canAssignTicket: stage !== 'Quoted', canRequestRevision: stage === 'Quoted' && !outcome,
+      case: { ...d.case, customerId: mapped ? 'CUST-1' : '', stage, outcome, assignee: stage === 'Quoted' ? '' : 'Other User' } };
+  }
+  function quote() {
+    return { customer: { id: 'CUST-1', name: 'Acme Controls' }, quote: {
+      quoteNo: 'Q-1', rev: 0, caseId: 'CASE-1', title: 'Panel quotation', source, status: 'Draft',
+      subtotal: 100, taxPct: 18, taxAmount: 18, total: 118, currency: 'INR', templateId: 'TPL-1'
+    }, blocks: [{ title: '', headers: ['Item'], rows: [['Panel']] }], revisions: [] };
+  }
+  function rpc(fn: string, args: unknown[]) {
+    calls.push({ fn, args });
+    if (fn === 'api_workspace') {
+      const w = workspace(role);
+      w.boot.settings.stages.push('Revision');
+      // The server's workspace() prefetches cases via the same listCases() call
+      // api_listCases makes for this filter, so the mock must agree with it here too.
+      w.cases = [{ ...detail().case, customerName: mapped ? 'Acme Controls' : '' }];
+      return w;
+    }
+    if (fn === 'api_bootstrap') return bootstrap(role);
+    if (fn === 'api_getCase') {
+      if (loseAccess && stage === 'Quoted') throw new Error('No ticket access');
+      return detail();
+    }
+    if (fn === 'api_listCases') return [{ ...detail().case, customerName: mapped ? 'Acme Controls' : '' }];
+    if (fn === 'api_listAssignableUsers') return [{ email: 'other@automationsystems.org', name: 'Other User', active: true }];
+    if (fn === 'api_assignTicket') { if (args[4]) stage = 'Revision'; return { ok: true, stage, assignee: 'Other User' }; }
+    if (fn === 'api_setCaseStage') { stage = String(args[1]); return { ok: true, stage }; }
+    if (fn === 'api_createCase') return { id: 'CASE-1' };
+    if (fn === 'api_quickLog') return { caseId: 'CASE-1', customerId: '' };
+    if (fn === 'api_searchCustomers') return [
+      { id: 'LIMITED-1', name: 'Search Visible', tags: [], access: 'LIMITED' },
+      { id: 'CUST-1', name: 'Acme Controls', tags: [], access: 'FULL' }
+    ];
+    if (fn === 'api_getCustomer') return customerDetail();
+    if (fn === 'api_listTemplates') return [{ id: 'TPL-1', name: 'Standard' }];
+    if (fn === 'api_getQuotation') return quote();
+    if (fn === 'api_createQuotation' || fn === 'api_uploadQuotation') { mapped = true; return { quoteNo: 'Q-1', rev: 0 }; }
+    throw new Error(`Unexpected RPC ${fn}`);
+  }
+  function press(name: string | RegExp, scope: HTMLElement = document.body) {
+    const button = within(scope).getByRole('button', { name });
+    window.eval(button.getAttribute('onclick') ?? '');
+  }
+  function set(id: string, value: string) { (document.getElementById(id) as HTMLInputElement).value = value; }
+  async function startCase() {
+    mockRpc(rpc);
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: role === 'L1' ? 'My work' : 'Overview' });
+    window.eval('nav("case", "CASE-1")');
+    await screen.findByRole('heading', { name: 'Panel upgrade' });
+  }
+  async function chooseCustomer() {
+    const search = await screen.findByRole('textbox', { name: 'Customer search' });
+    expect(search).not.toHaveAttribute('placeholder');
+    set(search.id, 'Acme');
+    window.eval(search.getAttribute('oninput') ?? '');
+    await screen.findByRole('button', { name: 'Acme Controls' });
+    expect(screen.queryByRole('button', { name: 'Search Visible' })).not.toBeInTheDocument();
+    press('Acme Controls');
+  }
+  beforeEach(() => {
+    vi.useRealTimers();
+    window.history.pushState(null, '', '/crm');
+    calls.length = 0;
+    stage = 'Quoted'; mapped = true; role = 'L6'; canQuote = true; source = 'Generated'; loseAccess = false; outcome = '';
+  });
+  afterEach(() => { cleanup(); document.body.innerHTML = ''; delete window.BOOT; vi.unstubAllGlobals(); });
+
+  test('Quoted hides holder and reassignment; canceling its revision request does not write', async () => {
+    await startCase();
+    expect(document.getElementById('main')?.textContent).not.toContain('Assigned to:');
+    expect(screen.queryByRole('button', { name: 'reassign' })).not.toBeInTheDocument();
+    press('Request revision');
+    await screen.findByRole('textbox', { name: 'Search for a user' });
+    expect(within(document.getElementById('mfoot')!).getByRole('button', { name: 'Request revision' })).toBeDisabled();
+    press('Cancel');
+    expect(calls.filter(c => c.fn === 'api_assignTicket')).toHaveLength(0);
+  });
+
+  test('revision confirmation sends the active holder, note, attachments slot and revision flag, then refreshes', async () => {
+    await startCase();
+    press('Request revision');
+    await screen.findByRole('textbox', { name: 'Search for a user' });
+    window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
+    set('wk_note', 'Revise panel dimensions');
+    press('Request revision', document.getElementById('mfoot')!);
+    await waitFor(() => expect(calls.find(c => c.fn === 'api_assignTicket')?.args).toEqual([
+      'CASE-1', 'other@automationsystems.org', 'Revise panel dimensions', [], true
+    ]));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'reassign' })).toBeInTheDocument());
+    expect(document.getElementById('main')?.textContent).toContain('Original Owner');
+  });
+
+  test('choosing Revision through the stage picker requests a holder instead of writing the stage', async () => {
+    await startCase();
+    set('stSel', 'Revision'); set('stNote', 'Update controls'); press('Update stage');
+    await screen.findByRole('textbox', { name: 'Search for a user' });
+    expect(document.getElementById('wk_note')).toHaveValue('Update controls');
+    expect(calls.filter(c => c.fn === 'api_setCaseStage')).toHaveLength(0);
+  });
+
+  test.each(['Generated', 'External'])('New revision of a %s quote confirms a holder before opening its form', async (kind) => {
+    source = kind;
+    await startCase();
+    window.eval('mQuoteViewer("Q-1",0)');
+    press(await screen.findByRole('button', { name: 'New revision' }).then(b => b.textContent!));
+    await screen.findByRole('textbox', { name: 'Search for a user' });
+    expect(document.getElementById('qb_save')).toBeNull();
+    expect(document.getElementById('uq_save')).toBeNull();
+    window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
+    press('Request revision', document.getElementById('mfoot')!);
+    await waitFor(() => expect(document.getElementById(kind === 'Generated' ? 'qb_save' : 'uq_save')).not.toBeNull());
+    expect(calls.find(c => c.fn === 'api_assignTicket')?.args[4]).toBe(true);
+    press('Cancel');
+    expect(stage).toBe('Revision');
+    expect(calls.filter(c => c.fn === 'api_createQuotation' || c.fn === 'api_uploadQuotation')).toHaveLength(0);
+  });
+
+  test('Revision permits ordinary reassignment without a revision request', async () => {
+    stage = 'Revision'; await startCase(); press('reassign');
+    await waitFor(() => expect(document.getElementById('wk_q')).not.toBeNull());
+    window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
+    press('Reassign', document.getElementById('mfoot')!);
+    await waitFor(() => expect(calls.find(c => c.fn === 'api_assignTicket')?.args.slice(0, 3)).toEqual(['CASE-1', 'other@automationsystems.org', '']));
+    expect(calls.find(c => c.fn === 'api_assignTicket')?.args[4]).not.toBe(true);
+  });
+
+  test('an assignment-only user completing Quoted returns safely to their dashboard', async () => {
+    role = 'L1'; canQuote = false; stage = 'Opportunity'; loseAccess = true;
+    await startCase(); set('stSel', 'Quoted'); press('Update stage');
+    await screen.findByRole('heading', { name: 'My work' });
+    expect(calls.filter(c => c.fn === 'api_getCase')).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('No ticket access');
+  });
+
+  test('Cases offers customerless creation and posts the empty customer ID', async () => {
+    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
+    await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
+    set('fo_title', 'Panel upgrade'); set('fo_owner', 'other@automationsystems.org'); press('Create');
+    await waitFor(() => expect(calls.find(c => c.fn === 'api_createCase')?.args).toEqual(['', expect.objectContaining({ title: 'Panel upgrade', stage: 'Lead' })]));
+    await screen.findByRole('heading', { name: 'Panel upgrade' });
+    expect(document.getElementById('main')?.textContent).toContain('Customer not mapped');
+  });
+
+  test('Quick log explicitly defers customer selection', async () => {
+    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' }); press(/Quick log/);
+    const toggle = screen.getByRole('checkbox', { name: 'Choose customer later' }) as HTMLInputElement;
+    toggle.checked = true; window.eval(toggle.getAttribute('onchange') ?? '');
+    set('ql_title', 'Panel upgrade'); press('Log case');
+    await waitFor(() => expect(calls.find(c => c.fn === 'api_quickLog')?.args).toEqual([expect.objectContaining({ customerLater: true, title: 'Panel upgrade' })]));
+    await screen.findByRole('heading', { name: 'Panel upgrade' });
+  });
+
+  test.each(['builder', 'upload'])('unmapped %s chooses a FULL customer locally and cancel does not map', async (mode) => {
+    mapped = false; stage = 'Lead'; await startCase();
+    expect(document.getElementById('main')?.textContent).toContain('Customer not mapped');
+    press(mode === 'builder' ? '+ Quotation' : 'Upload quotation');
+    await chooseCustomer();
+    await waitFor(() => expect(document.getElementById(mode === 'builder' ? 'qb_save' : 'uq_save')).not.toBeNull());
+    press('Cancel');
+    expect(mapped).toBe(false);
+    expect(calls.filter(c => !['api_workspace', 'api_getCase', 'api_searchCustomers', 'api_getCustomer', 'api_listTemplates'].includes(c.fn))).toHaveLength(0);
+    expect(document.getElementById('main')?.textContent).toContain('Customer not mapped');
+  });
+
+  test.each(['builder', 'upload'])('first %s save sends selected customer with the original case, then refreshes mapped details', async (mode) => {
+    mapped = false; stage = 'Lead'; await startCase();
+    press(mode === 'builder' ? '+ Quotation' : 'Upload quotation'); await chooseCustomer();
+    if (mode === 'builder') {
+      await screen.findByRole('option', { name: 'Standard' });
+      set('qb_title', 'Panel quotation'); set('qb_tpl', 'TPL-1'); set('qb_sub', '100'); set('qb_bx_0', 'Item\nPanel'); press('Save quotation');
+    } else {
+      await waitFor(() => expect(document.getElementById('uq_file')).not.toBeNull());
+      set('uq_title', 'Panel quotation'); set('uq_total', '118');
+      Object.defineProperty(document.getElementById('uq_file'), 'files', { value: [new File(['quote'], 'quote.pdf', { type: 'application/pdf' })] });
+      press('Upload quotation', document.getElementById('mfoot')!);
+    }
+    await waitFor(() => expect(calls.find(c => c.fn === (mode === 'builder' ? 'api_createQuotation' : 'api_uploadQuotation'))?.args).toEqual([expect.objectContaining({ customerId: 'CUST-1', caseId: 'CASE-1' })]));
+    await waitFor(() => expect(document.getElementById('main')?.textContent).toContain('Acme Controls'));
+    expect(document.getElementById('main')?.textContent).not.toContain('Customer not mapped');
+    expect(document.getElementById('main')?.textContent).toContain('Original Owner');
+  });
+
+  test('readable cases without quotation permission expose no quotation mapping forms', async () => {
+    stage = 'Lead'; mapped = false; canQuote = false; role = 'L1'; await startCase();
+    expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
+  });
+
+  test('unmapped list rows have an explicit customer label', async () => {
+    mapped = false; stage = 'Lead'; await startCase(); window.eval('nav("cases")');
+    await waitFor(() => expect(document.getElementById('caseRes')?.textContent).toContain('Customer not mapped'));
+  });
+
+  test('a closed Quoted case (e.g. Won) hides the quote buttons instead of leaving dead controls', async () => {
+    outcome = 'Won';
+    await startCase();
+    expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Request revision' })).not.toBeInTheDocument();
+  });
+
+  test('the stage picker never offers Revision on a case that cannot use it', async () => {
+    stage = 'Lead';
+    await startCase();
+    const options = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map((o) => o.value);
+    expect(options).not.toContain('Revision');
+  });
+
+  test('submitting the stage picker unchanged on a Revision case is a no-op, not an error', async () => {
+    stage = 'Revision';
+    await startCase();
+    expect((document.getElementById('stSel') as HTMLSelectElement).value).toBe('Revision');
+    press('Update stage');
+    expect(calls.filter((c) => c.fn === 'api_setCaseStage')).toHaveLength(0);
+    expect(document.getElementById('toast')?.className ?? '').not.toContain('err');
+  });
+
+  test('customerless "New case" does not offer Order (Won), which the server always rejects for it', async () => {
+    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
+    await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
+    expect(screen.queryByRole('button', { name: 'Order (Won)' })).not.toBeInTheDocument();
   });
 });
