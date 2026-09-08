@@ -235,8 +235,16 @@ Completed:
     `docs/superpowers/plans/2026-08-24-case-aging-indicator.md`.
 
 - Case lifecycle: Quoted holder-clearing, Revision reassignment, customerless cases (2026-09-08,
-  branch `task4-integration`, merge commit `16ff1ac`; **NOT deployed - migrations not run against
-  Supabase in any environment, this section documents local implementation only**):
+  merge commit `1559f91`; **NOT deployed - migrations not run against Supabase in any environment,
+  this section documents local implementation only**):
+  - **Server-side (rules below) started as unmerged, uncommitted-to-`main` work already sitting in a
+    stale worktree when this was picked up** - the frontend UI and end-to-end integration/e2e/docs were
+    unfinished or broken. That work was finished, then a whole-branch review found 17 findings before
+    merge, the sharpest being **Critical**: `0012`'s audit insert recorded the case's *creator*, not
+    the ticket holder being cleared, as `who`, with a constant `details` string - the actual holder
+    was written nowhere before being permanently nulled. Caught before the migration had ever run
+    anywhere; fixed to record `assignee` itself. All 17 findings were fixed and independently
+    re-reviewed clean before this merge. See `git log --oneline 8084c1b..1559f91` for the full history.
   - **Three product rules, each enforceable in code and DB, not just convention:**
     1. **A Quoted case has no ticket holder.** A quoted case is waiting on the customer's decision,
        so it cannot have an active assignee. Case owners are unaffected - this only clears the
@@ -316,6 +324,10 @@ Completed:
     outright on a Quoted case (`'Request a revision and select a ticket holder before assigning this
     case.'`). `beginAttachmentUpload(user, caseId, files, requestRevision?)` mirrors the same flag for
     preparing handover attachments ahead of a revision request.
+  - Both migrations end with a `do $$ ... raise exception` post-condition block (matching `0009`/
+    `0011`'s pattern) asserting the change actually landed, and both set `local lock_timeout = '3s'`
+    before taking `ACCESS EXCLUSIVE` on `public.cases` - a long-running read would otherwise queue the
+    migration, and every reader behind it, indefinitely.
   - New DB migrations: `supabase/migrations/0012_case_revision_workflow.sql`,
     `supabase/migrations/0013_customerless_cases.sql`. Neither is in the "applied in every environment"
     list in the Supabase Migrations section below - do not add them there until they are actually run.
@@ -846,6 +858,8 @@ Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-c
 - 2026-08-11 (later same day): CRM points-manager feedback implementation landed on `feat/crm-points-manager-feedback` - repaired `scripts/port-legacy-index.mjs` (statement-terminator scanning, DOM-rewrite ordering), re-architected case ownership onto `cases.extra_owners` (`caseOwners()` no longer takes an ownership argument; `caseHandlerOwners()` removed), rejected L5/L6 as account handlers, added the `Direct` virtual account (`src/server/domain/direct.ts`), made customer location mandatory, converted `customers.sei` to a multi-select `text[]` validated against a live `SEI_NAMES` setting, and added `owned`/`assigned` filters to `api_listCases`. Four new migrations (`0005`-`0008`) shipped with this work; they were **not yet applied to any database as of this entry** - since then, all four have been applied everywhere (see the corrected Supabase Migrations section). New docs: `docs/role-matrix.md`, `docs/security-audit.md`, `docs/scalability-and-storage.md`. This `CONTEXT.md` update corrects the now-stale "treat the legacy artifact as frozen" instruction from earlier in this file and documents all of the above - see the Current Production Status and Architecture Overview sections.
 - 2026-08-19: `CONTEXT.md` correction pass (no code changes), verified against `git log`, the migration files, and source rather than trusting the prior draft. Corrected: the `public.settings` write-only issue is fixed (`src/server/settings/live.ts`, guarded by `no-hardcoded-reads.test.ts`); migrations `0005`-`0011` are all applied (`schema_migrations` holds 11 rows); `quotations.upload_data` is legacy-read-only now that uploads go to Drive; the `listCases` customer N+1 is fixed. Added entries for every feature shipped since 2026-08-11 (Drive-first upload `ffa5678`, handover notes `e44a342`, case-list batching `51fd057`, case attachments `cecce07`, case priority merge `459f924`, admin config module + placeholder removal merge `d1205d4`) and a "What The Admin Config Module Needs A Future Maintainer To Know" section. Verified HEAD is `d1205d4` on `main`.
 - 2026-08-19 (later same day): Admin bulk customer add shipped and merged to production (`8cc18c5`), on top of the `d1205d4` state above - the paste-based bulk-add tool replaced with structured repeatable rows, moved into Admin, restricted to L6, no server change. Built via subagent-driven-development; two of the four implementer subagents were orphaned mid-task by session interruptions (not code failures) and their uncommitted work was recovered by inspecting disk state directly rather than trusting any report - one recovery caught a real defect in its own first attempt (a byte-level NBSP-regex restore that was functionally correct but not actually identical to source) via the task review that followed it. A second, unrelated implementer report claimed a commit SHA that turned out to be a stale pre-existing commit, never actually committed - caught by cross-checking `git log` rather than trusting the text, which is now the standing practice in this project rather than the exception. Production smoke-checked live after deploy (`/login` 200, `/crm` 307). Added the admin-bulk-customer-add entry to Current Production Status, its design doc to Useful Docs, and a reusable note under Verification Commands about a recurring Playwright cold-dev-server-compile flake encountered twice during this work. Verified HEAD is `8cc18c5` on `main`.
+
+- 2026-09-08: Case lifecycle (Quoted holder-clearing, Revision reassignment, customerless cases) merged to `main` (`1559f91`) - **not deployed, migrations `0012`/`0013` not run anywhere**. Server-side lifecycle work was found sitting unmerged and partly uncommitted in a stale worktree (frontend broken mid-edit, end-to-end coverage and rollout docs never started); finished this session via three parallel subagents (frontend UI, server integration test, rollout docs), each in an isolated `git worktree`. A whole-branch review then found 17 issues before merge, the sharpest being Critical: `0012`'s audit trail recorded the case creator instead of the ticket holder being cleared, so the holder would have been unrecoverable the moment the migration ran - caught before first execution, fixed to record `assignee`, independently re-verified. Also rewrote `customerless-migration.test.ts`, which had asserted `0013`'s entire file text with `toBe` and so rejected the review's own requested safety additions (lock timeout, post-condition assertions); replaced with assertions on the migration's actual behavior and mutation-tested each one. Final state: 728/728 tests (41 files), 31/31 Playwright, typecheck clean, production build clean, deployed and smoke-checked (`/login` 200, `/crm` 307). See the Current Production Status entry above for the full design/decision record. Verified HEAD is `1559f91` on `main`.
 
 ## If A New Agent Takes Over
 
