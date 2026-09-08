@@ -24,8 +24,18 @@ environment. This checklist is what to do when the project owner decides to ship
 
 ## 2. Migration order: 0012 then 0013
 
-Apply migrations one at a time, in this exact order, with `scripts/apply-migrations.mjs` or the
-Supabase SQL editor. Do not batch them together and do not apply `0013` first.
+Apply migrations one at a time, in this exact order, with `scripts/apply-migrations.mjs`'s `--through`
+flag (it applies every pending migration by default, so `--through` is what makes "one at a time"
+actually possible) or the Supabase SQL editor. Do not batch them together and do not apply `0013`
+first. With `DATABASE_URL` set, run these two commands in sequence:
+
+```bash
+node scripts/apply-migrations.mjs --through 0012
+node scripts/apply-migrations.mjs --through 0013
+```
+
+(`--dry-run` can be added to either command first to preview what would be applied without changing
+anything.)
 
 - [ ] **Apply `0012_case_revision_workflow.sql` first.** It (a) adds `Revision` to the stage CHECK
       constraint, (b) writes one `CASE_QUOTED_HOLDER_CLEARED` activity-log row per existing Quoted
@@ -33,7 +43,9 @@ Supabase SQL editor. Do not batch them together and do not apply `0013` first.
       `cases_quoted_unassigned_check` constraint. Reason for going first: the constraint in (d) would
       fail outright against any existing Quoted-and-assigned row if the cleanup in (b)/(c) had not
       already run - `0012` does both the cleanup and the constraint together, in the right order,
-      inside one migration.
+      inside one migration. (This is also simply the lower-numbered migration, and
+      `scripts/apply-migrations.mjs` applies pending files in filename order - see the note on `0013`
+      below for why no deeper ordering hazard exists between the two.)
   - After it applies, check: `select count(*) from public.cases where stage = 'Quoted' and assignee is not null;`
     must return `0`. If it does not, the migration did not complete and the constraint add would have
     failed loudly - do not proceed to `0013` until this is `0`.
@@ -43,9 +55,13 @@ Supabase SQL editor. Do not batch them together and do not apply `0013` first.
 - [ ] **Apply `0013_customerless_cases.sql` second.** It drops the `NOT NULL` constraint on
       `cases.customer_id` (keeping the existing foreign key) and adds `cases_quoted_customer_check`,
       which requires a non-null `customer_id` whenever a case is `Quoted` or has `outcome = 'Won'`.
-      Reason it must come after `0012`: without `0012`'s Quoted-holder invariant already in place, a
-      customerless case reaching `Quoted` under old application code would have no holder-related
-      guard rail either, compounding two half-enforced invariants instead of one clean sequence.
+      Reason it must come after `0012`: this is sequential migration numbering, nothing more -
+      `0012` only touches `stage`/`assignee`, `0013` only touches `customer_id` nullability, and the
+      two constraints do not interact. (A customerless-Quoted case cannot exist before `0013` runs at
+      all, since `customer_id` is still `NOT NULL` until then, so there is no scenario where running
+      `0013` first would let a customerless case reach `Quoted` "before `0012`'s invariant is in
+      place" - both invariants are independent.) `scripts/apply-migrations.mjs` simply applies
+      pending files in filename order, so `0012` runs first because it is numbered first.
   - After it applies, check: `select count(*) from public.cases where customer_id is null;` should be
     `0` immediately after this migration (it does not touch existing rows - only new customerless
     cases created afterward will have `customer_id is null`), and
