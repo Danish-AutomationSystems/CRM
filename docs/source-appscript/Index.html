@@ -515,7 +515,12 @@ function warm(){
   return gs('api_workspace', S.caseF).then(function(w){
     if(w.boot){ S.boot=w.boot; S.bootAt=Date.now(); }
     if(w.customers){ CACHE.customers=w.customers; CACHE.customersAt=Date.now(); noteSeiNames(w.customers); }
-    if(w.cases){ CACHE.cases=w.cases; CACHE.casesAt=Date.now(); CACHE.casesKey=JSON.stringify(S.caseF); }
+    // Only seed the cache with a non-empty snapshot: an empty array here just means
+    // "the server had nothing to warm us with yet" (e.g. this boot cycle raced ahead
+    // of a write), not "there are truly zero matching cases" - caching it as fresh
+    // would suppress loadCases()'s real fetch for the full FRESH_MS window and leave
+    // the Cases tab showing a stale empty state.
+    if(w.cases && w.cases.length){ CACHE.cases=w.cases; CACHE.casesAt=Date.now(); CACHE.casesKey=JSON.stringify(S.caseF); }
     return w.boot;
   });
 }
@@ -639,8 +644,8 @@ function openCasesHTML(list){
   if(!list || !list.length) return '<div class="empty">No open cases assigned to you.</div>';
   return list.map(function(c){
     return '<div class="qr"><div style="flex:1;min-width:150px;cursor:pointer" onclick="nav(\'case\',\''+esc(c.id)+'\')"><b>'+esc(c.title)+'</b>'+
-      '<div class="sub">'+esc(c.customerName)+'</div></div>'+stageChip(c.stage)+priChip(c.priority)+agingChip(c.updatedOn,c.outcome)+
-      '<button class="btn ghost sm" onclick="event.stopPropagation();mAssign(\''+esc(c.id)+'\')">Reassign</button></div>';
+      '<div class="sub">'+esc(c.customerName||'Customer not mapped')+'</div></div>'+stageChip(c.stage)+priChip(c.priority)+agingChip(c.updatedOn,c.outcome)+
+      (c.stage==='Quoted'||c.outcome?'':'<button class="btn ghost sm" onclick="event.stopPropagation();mAssign(\''+esc(c.id)+'\')">Reassign</button>')+'</div>';
   }).join('');
 }
 function recentHTML(recent){
@@ -1387,7 +1392,8 @@ function saveNewCase(custId){
 /* pick a customer, then create a case (used from the Cases page) */
 function mPickCustomerThenCase(){
   openModal('New case — pick a customer',
-    '<label>Customer</label><input id="pc_q" oninput="pcSearch()">'+
+    '<button class="btn ghost" onclick="mNewCase(\'\')">Create without customer</button><p class="hint">Choose a customer when the first quotation is saved.</p>'+
+    '<label for="pc_q">Customer</label><input id="pc_q" oninput="pcSearch()">'+
     '<div id="pc_res" class="ql-res" style="display:none"></div>'+
     '<p class="hint" style="margin-top:10px">Don\'t see them? Add the customer first from the Customers tab, or use Quick log.</p>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>');
@@ -1424,17 +1430,18 @@ function renderCase(d){
     CUR.caseData = d;
     var o = d.case;
     var html = '<div class="pagehead"><div class="grow">'+
-      '<div class="crumb"><a onclick="nav(\'customers\')">Customers</a> / <a onclick="nav(\'customer\',\''+esc(d.customer.id)+'\')">'+esc(d.customer.name)+'</a> / <span class="mono">'+esc(o.id)+'</span></div>'+
+      '<div class="crumb">'+(d.customer?'<a onclick="nav(\'customers\')">Customers</a> / <a onclick="nav(\'customer\',\''+esc(d.customer.id)+'\')">'+esc(d.customer.name)+'</a>':'Customer not mapped')+' / <span class="mono">'+esc(o.id)+'</span></div>'+
       '<h1>'+esc(o.title)+'</h1>'+
       '<div class="sub" style="margin-top:5px">'+caseStatusChip(o.stage,o.outcome)+' '+priChip(o.priority)+
       ' &nbsp; Owners: <b>'+esc((o.owners||[]).join(', ')||'—')+'</b>'+
       (d.canEdit?' <button class="btn lk" onclick="mOwners()">manage</button>':'')+
-      (o.outcome ? '' :
+      (o.outcome || o.stage==='Quoted' ? '' :
         ' &nbsp;·&nbsp; Assigned to: <b>'+esc(o.assignee||'nobody')+'</b>'+
         (d.canAssignTicket?' <button class="btn lk" onclick="mAssignCase()">reassign</button>':''))+
       '</div></div>';
-    if(d.canEdit) html += '<button class="btn ghost" onclick="mEditCase(CUR.caseData.case)">Edit</button>'+
-      '<button class="btn ghost" onclick="openBuilderForCase()">+ Quotation</button>'+
+    if(d.canRequestRevision && o.stage==='Quoted' && !o.outcome) html += '<button class="btn ghost" onclick="mRequestRevision()">Request revision</button>';
+    if(d.canEdit) html += '<button class="btn ghost" onclick="mEditCase(CUR.caseData.case)">Edit</button>';
+    if(caseCanQuote(d)) html += '<button class="btn ghost" onclick="openBuilderForCase()">+ Quotation</button>'+
       '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
@@ -1519,28 +1526,33 @@ function mAssignCase(){
   var sug=(d.case.ownerList||[]).map(function(o){ return {name:o.name, email:o.email}; });
   mAssign(d.case.id, sug);
 }
-function mAssign(id, suggestions){
-  S._wk={ id:id, pick:null, sug:suggestions||[] };
+function mRequestRevision(after, caseData, note){
+  var d=caseData||CUR.caseData; if(!d || !d.canRequestRevision || d.case.outcome) return;
+  mAssign(d.case.id, d.case.ownerList||[], true, after, note);
+}
+function mAssign(id, suggestions, requestRevision, after, note){
+  S._wk={ id:id, pick:null, sug:suggestions||[], revision:!!requestRevision, after:after };
   ensureUsers().then(function(){
     var bubbles = S._wk.sug.length
       ? '<div class="hint" style="margin:0">Suggested — people who own this case</div><div class="bubbles">'+
         S._wk.sug.map(function(o){ return '<button type="button" class="bub" onclick="wkPick(\''+esc(o.email)+'\',\''+esc(String(o.name).replace(/\\/g,'').replace(/'/g,''))+'\')">'+esc(o.name)+'</button>'; }).join('')+'</div>'
       : '';
-    openModal('Reassign ticket',
+    openModal(S._wk.revision?'Request revision':'Reassign ticket',
       bubbles+
-      '<label style="margin-top:10px">Search for a user</label>'+
+      '<label for="wk_q" style="margin-top:10px">Search for a user</label>'+
       '<input id="wk_q" autocomplete="off" oninput="wkSearch()">'+
       '<div id="wk_res" class="reslist"></div>'+
       '<div id="wk_sel" class="hint" style="margin-top:8px">No one selected yet.</div>'+
-      '<div class="frow" style="margin-top:10px"><div><label>Handover note <span class="sub">(optional)</span></label>'+
+      '<div class="frow" style="margin-top:10px"><div><label for="wk_note">Handover note <span class="sub">(optional)</span></label>'+
       '<textarea id="wk_note" maxlength="2000"></textarea></div></div>'+
-      '<div class="frow" style="margin-top:10px"><div><label>Attachments <span class="sub">(optional, any type, up to 100 MB each)</span></label>'+
+      '<div class="frow" style="margin-top:10px"><div><label for="wk_files">Attachments <span class="sub">(optional, any type, up to 100 MB each)</span></label>'+
       '<input id="wk_files" type="file" multiple onchange="wkFilesPicked()">'+
       '<div id="wk_filelist" class="hint"></div></div></div>'+
       '<p class="hint">Any CRM user can hold this ticket; ownership is unchanged.</p>',
       '<button class="btn ghost" id="wk_cancel" style="display:none" onclick="wkCancelUpload()">Cancel upload</button>'+
       '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
-      '<button class="btn" id="wk_go" disabled onclick="doAssign()">Reassign</button>');
+      '<button class="btn" id="wk_go" disabled onclick="doAssign()">'+(S._wk.revision?'Request revision':'Reassign')+'</button>');
+    el('wk_note').value=note||'';
     wkSearch();
     el('wk_q').focus();
   }).catch(oops);
@@ -1585,10 +1597,18 @@ function doAssign(){
     }
   }
   if(!files.length){
-    gs('api_assignTicket', id, email, note).then(function(){ closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash(); }).catch(oops);
+    var wk=S._wk, go=el('wk_go');
+    if(go) go.disabled=true;
+    var args=wk.revision?[id,email,note,[],true]:[id,email,note];
+    gs.apply(null,['api_assignTicket'].concat(args)).then(function(){ wkAssigned(wk,nm); }).catch(function(e){ if(go) go.disabled=false; oops(e); });
     return;
   }
   wkUploadAndAssign(id, email, note, nm, files);
+}
+function wkAssigned(wk, name){
+  closeModal(); toast(wk.revision?'Revision requested — '+name+'.':'Ticket reassigned to '+name+'.');
+  if(S.route==='case') vCase(wk.id); else vDash();
+  if(wk.after) wk.after();
 }
 function wkSetUploading(on){
   var go = el('wk_go'), cancel = el('wk_cancel');
@@ -1627,19 +1647,17 @@ function wkUploadOne(sessionUrl, file, up, i){
   });
 }
 function wkUploadAndAssign(id, email, note, nm, files){
-  var up = { cancelled:false, xhrs:[] };
-  S._wk.upload = up;
+  var up = { cancelled:false, xhrs:[] }, wk=S._wk;
+  wk.upload = up;
   wkSetUploading(true);
-  gs('api_beginAttachmentUpload', id, files.map(function(f){ return { fileName:f.name, mimeType:f.type || 'application/octet-stream', sizeBytes:f.size }; }))
+  gs.apply(null, ['api_beginAttachmentUpload', id, files.map(function(f){ return { fileName:f.name, mimeType:f.type || 'application/octet-stream', sizeBytes:f.size }; })].concat(wk.revision?[true]:[]))
     .then(function(sessions){
       if(up.cancelled) return Promise.reject(new Error('cancelled'));
       return Promise.all(files.map(function(f, i){ return wkUploadOne(sessions[i].sessionUrl, f, up, i); }));
     })
     .then(function(uploaded){
       if(up.cancelled) return;
-      return gs('api_assignTicket', id, email, note, uploaded).then(function(){
-        closeModal(); toast('Ticket reassigned to '+nm+'.'); if(S.route==='case') vCase(id); else vDash();
-      });
+      return gs.apply(null, ['api_assignTicket', id, email, note, uploaded].concat(wk.revision?[true]:[])).then(function(){ wkAssigned(wk,nm); });
     })
     .catch(function(e){
       wkSetUploading(false);
@@ -1648,7 +1666,14 @@ function wkUploadAndAssign(id, email, note, nm, files){
     });
 }
 function doStage(id){
-  gs('api_setCaseStage', id, v('stSel'), v('stNote')).then(function(){ toast('Stage updated.'); vCase(id); }).catch(oops);
+  var stage=v('stSel'), d=CUR.caseData;
+  if(stage==='Revision' && d.case.stage==='Quoted'){ mRequestRevision(null,d,v('stNote')); return; }
+  gs('api_setCaseStage', id, stage, v('stNote')).then(function(){
+    toast('Stage updated.');
+    var owns=(d.case.ownerList||[]).some(function(o){ return low(o.email)===low(S.user.email); });
+    if(stage==='Quoted' && lvl()<4 && !owns && !caseCanQuote(d)) nav('dash');
+    else vCase(id);
+  }).catch(oops);
 }
 function doPriority(id){
   gs('api_setCasePriority', id, v('priSel')).then(function(){ toast('Priority updated.'); vCase(id); }).catch(oops);
@@ -1682,9 +1707,43 @@ function doOutcome(id, outcome){
 function reopenCase(id){
   gs('api_setCaseOutcome', id, 'Open', {}).then(function(){ toast('Case reopened.'); vCase(id); }).catch(oops);
 }
+function caseCanQuote(d){ return !!d && (d.canQuote===undefined?d.canEdit:d.canQuote); }
+function caseQuoteContext(d){
+  return {customerId:d.customer?d.customer.id:'', customerName:d.customer?d.customer.name:'', cases:[{id:d.case.id,title:d.case.title}], caseId:d.case.id, lockCase:true};
+}
 function openBuilderForCase(){
-  var d = CUR.caseData;
-  mQuoteBuilder({ customerId:d.customer.id, customerName:d.customer.name, cases:[{id:d.case.id, title:d.case.title}], caseId:d.case.id, lockCase:true });
+  var d=CUR.caseData; if(!caseCanQuote(d)) return;
+  var next=function(){ withQuoteCustomer(caseQuoteContext(d),mQuoteBuilder); };
+  if(d.case.stage==='Quoted'){ mRequestRevision(next,d); return; }
+  next();
+}
+var QC=null, qcT=null;
+function withQuoteCustomer(ctx, next){
+  if(ctx.customerId){ next(ctx); return; }
+  if(!CUR.caseData || !CUR.caseData.canMapCustomer){ toast('You cannot map a customer to this case.',true); return; }
+  QC={ctx:ctx,next:next,customers:[]};
+  openModal('Choose customer for quotation',
+    '<p class="hint">The customer is linked when you save the quotation.</p><label for="qc_q">Customer search</label><input id="qc_q" oninput="qcSearch()"><div id="qc_res" class="ql-res"></div>',
+    '<button class="btn ghost" onclick="closeModal()">Cancel</button>');
+  el('qc_q').focus();
+}
+function qcSearch(){ clearTimeout(qcT); qcT=setTimeout(qcRun,300); }
+function qcRun(){
+  var state=QC, q=v('qc_q'); if(q.length<2){ el('qc_res').innerHTML=''; return; }
+  gs('api_searchCustomers',q).then(function(list){
+    if(QC!==state || !el('qc_q') || v('qc_q')!==q) return;
+    state.customers=list.filter(function(c){ return c.access==='FULL'; });
+    el('qc_res').innerHTML=state.customers.length?state.customers.map(function(c,i){ return '<button class="btn ghost" onclick="qcPick('+i+')">'+esc(c.name)+'</button>'; }).join(''):'<div class="empty">No customers you can quote for.</div>';
+  }).catch(oops);
+}
+function qcPick(index){
+  var state=QC, c=state&&state.customers[index]; if(!c || c.access!=='FULL') return;
+  gs('api_getCustomer',c.id).then(function(d){
+    if(QC!==state || !el('qc_q')) return;
+    if(!d || d.access!=='FULL'){ toast('Full customer access is required.',true); return; }
+    state.ctx.customerId=c.id; state.ctx.customerName=d.customer.name;
+    state.next(state.ctx);
+  }).catch(oops);
 }
 
 /* ---------------- cases list ---------------- */
@@ -1742,11 +1801,11 @@ function renderCases(list){
       var val = o.outcome==='Won' ? o.orderValue : '';
       html += '<tr class="clk" onclick="nav(\'case\',\''+esc(o.id)+'\')">'+
         '<td class="mono">'+esc(o.id)+'</td><td><b>'+esc(o.title)+'</b></td>'+
-        '<td>'+esc(o.customerName)+'</td>'+
+        '<td>'+esc(o.customerName||'Customer not mapped')+'</td>'+
         '<td>'+caseStatusChip(o.stage,o.outcome)+'</td><td>'+(priChip(o.priority)||'<span class="sub">—</span>')+'</td>'+
         '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
         '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
-        '<td class="sub">'+(o.outcome ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
+        '<td class="sub">'+(o.outcome || o.stage==='Quoted' ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
         '<td class="sub mono">'+fmtDateTime(o.updatedOn)+' '+agingChip(o.updatedOn,o.outcome)+'</td></tr>';
     });
     el('caseRes').innerHTML = html+'</table></div><div class="hint">Showing up to 300 cases.</div>';
@@ -1759,9 +1818,10 @@ var QL = { customerId:'', customerName:'', newMode:false };
 function mQuickLog(){
   QL = { customerId:'', customerName:'', newMode:false };
   var body =
+    '<label class="cbx"><input id="ql_later" type="checkbox" onchange="qlCustomerLater()"> Choose customer later</label>'+
     '<div id="ql_cust"></div>'+
     '<div class="frow" style="margin-top:6px"><div style="flex:2"><label class="req">Case title</label><input id="ql_title"></div>'+
-    '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages, 'Lead')+'</select></div>'+
+    '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages.filter(function(s){ return s!=='Quoted' && s!=='Revision'; }), 'Lead')+'</select></div>'+
     '<div><label>Priority</label><select id="ql_casepri"><option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], '') +'</select></div></div>'+
     ''
   openModal('Quick log a case', body,
@@ -1769,7 +1829,9 @@ function mQuickLog(){
     '<button class="btn" id="ql_save" onclick="saveQuickLog()">Log case</button>');
   renderQLCust();
 }
+function qlCustomerLater(){ QL.customerLater=el('ql_later').checked; renderQLCust(); }
 function renderQLCust(){
+  if(QL.customerLater){ el('ql_cust').innerHTML='<p class="hint">Choose a customer when the first quotation is saved.</p>'; return; }
   if(QL.customerId){
     el('ql_cust').innerHTML = '<label>Customer</label><div class="qr"><div style="flex:1"><b>'+esc(QL.customerName)+'</b></div>'+
       '<button class="btn ghost sm" onclick="qlClear()">Change</button></div>';
@@ -1811,7 +1873,8 @@ function qlPick(id, name){ QL.customerId=id; QL.customerName=name; renderQLCust(
 function saveQuickLog(){
   var p = { title:v('ql_title'), stage:v('ql_stage'), priority:v('ql_casepri') };
   if(!p.title){ toast('Enter a case title.', true); return; }
-  if(QL.customerId){ p.customerId = QL.customerId; }
+  if(QL.customerLater){ p.customerLater=true; }
+  else if(QL.customerId){ p.customerId = QL.customerId; }
   else if(QL.newMode){
     var nm = v('ql_cname');
     if(!nm){ toast('Enter the new customer name.', true); return; }
@@ -1950,7 +2013,7 @@ function refreshBehind(){
 function uploadCtx(){
   if(S.route==='case' && CUR.caseData){
     var d=CUR.caseData;
-    return { customerId:d.customer.id, customerName:d.customer.name, caseId:d.case.id, lockCase:true, cases:[{id:d.case.id,title:d.case.title}] };
+    return caseCanQuote(d)?caseQuoteContext(d):null;
   }
   if(S.route==='customer' && CUR.customer){
     var x=CUR.customer;
@@ -1959,9 +2022,13 @@ function uploadCtx(){
   }
   return null;
 }
-function mUploadQuote(base){
-  var ctx = uploadCtx();
+function mUploadQuote(base, context){
+  var ctx = context||uploadCtx();
   if(!ctx){ toast('Open a customer or case first.', true); return; }
+  if(!context && S.route==='case' && CUR.caseData.case.stage==='Quoted'){
+    mRequestRevision(function(){ withQuoteCustomer(ctx,function(chosen){ mUploadQuote(base,chosen); }); }); return;
+  }
+  if(!ctx.customerId){ withQuoteCustomer(ctx,function(chosen){ mUploadQuote(base,chosen); }); return; }
   base = base || {};
   UQ = { ctx:ctx, base:base };
   var caseSel = '<select id="uq_case"'+(ctx.lockCase||base.quoteNo?' disabled':'')+'>';
@@ -2101,19 +2168,22 @@ function setQStatus(quoteNo, rev, status){
   gs('api_setQuoteStatus', quoteNo, rev, status).then(function(){ toast('Marked '+status+'.'); refreshBehind(); mQuoteViewer(quoteNo, rev); }).catch(oops);
 }
 function newRevision(){
-  var d = CUR.quote; if(!d) return;
-  var q = d.quote;
-  if(q.source==='External'){
-    closeModal();
-    mUploadQuote({ quoteNo:q.quoteNo, caseId:q.caseId, title:q.title, total:q.total, currency:q.currency, validUntil:q.validUntil, notes:q.notes, status:q.status });
-    return;
-  }
-  mQuoteBuilder({
-    customerId: '', customerName: d.customer.name,
-    cases: [{id:q.caseId, title:'(same as previous revision)'}], caseId: q.caseId, lockCase: true,
-    base: { quoteNo: q.quoteNo, title: q.title, templateId: q.templateId, taxPct: q.taxPct, currency: q.currency, validUntil: q.validUntil, notes: q.notes, blocks: d.blocks, subtotal: q.subtotal }
-  });
-  B.ctx.customerId = d.customer.id;
+  var d=CUR.quote; if(!d) return;
+  var q=d.quote;
+  gs('api_getCase',q.caseId).then(function(cd){
+    if(!caseCanQuote(cd)){ toast('Full customer access is required to create a revision.',true); return; }
+    var next=function(){
+      var ctx=caseQuoteContext(cd);
+      if(q.source==='External'){
+        mUploadQuote({quoteNo:q.quoteNo,caseId:q.caseId,title:q.title,total:q.total,currency:q.currency,validUntil:q.validUntil,notes:q.notes,status:q.status},ctx);
+      }else{
+        ctx.base={quoteNo:q.quoteNo,title:q.title,templateId:q.templateId,taxPct:q.taxPct,currency:q.currency,validUntil:q.validUntil,notes:q.notes,blocks:d.blocks,subtotal:q.subtotal};
+        mQuoteBuilder(ctx);
+      }
+    };
+    if(cd.case.stage==='Quoted'){ mRequestRevision(next,cd); return; }
+    next();
+  }).catch(oops);
 }
 
 /* =====================================================================
