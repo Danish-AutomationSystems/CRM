@@ -106,13 +106,11 @@ export const CASES_EXEMPT: Record<string, Record<string, string>> = {
   // updateCase identifies the row by case_id and must never rewrite creation facts.
   'cases.updateCase': {
     case_id: 'the WHERE key, never in the SET clause',
-    customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
     created_by: 'creation fact, immutable',
     created_at: 'creation fact, immutable'
   },
   'quotes.updateCase': {
     case_id: 'the WHERE key, never in the SET clause',
-    customer_id: 'creation fact, immutable - no service path reassigns a case to another customer',
     created_by: 'creation fact, immutable',
     created_at: 'creation fact, immutable'
   },

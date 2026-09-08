@@ -652,3 +652,16 @@ describe('dashboard service', () => {
     expect(repo.getCustomersByIdsCalls).toHaveLength(0);
   });
 });
+
+describe('customerless dashboard', () => {
+  it('labels unmapped owned and assigned work and hides it from unrelated peer viewers', async () => {
+    const { repo, dashboard } = makeService();
+    repo.cases = [caseRow({ customerId: '' })];
+    expect((await dashboard.dashboard(sales)).dash.cases[0].customerName).toBe('Customer not mapped');
+    expect((await dashboard.dashboard(sales)).dash.tickets[0].customerName).toBe('Customer not mapped');
+    const supervisor = repo.users.find((row) => row.role === 'L3')!;
+    expect((await dashboard.dashboard(supervisor, sales.email)).dash.cases).toEqual([]);
+    const manager = repo.users.find((row) => row.role === 'L4')!;
+    expect((await dashboard.dashboard(manager, sales.email)).dash.cases).toHaveLength(1);
+  });
+});

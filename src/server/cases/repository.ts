@@ -56,7 +56,7 @@ type UserDbRow = {
 
 type CaseDbRow = {
   case_id: string;
-  customer_id: string;
+  customer_id: string | null;
   title: string;
   details: string | null;
   source: string | null;
@@ -156,7 +156,7 @@ function toUser(row: UserDbRow): CaseUserRow {
 function toCase(row: CaseDbRow): CaseRow {
   return {
     id: row.case_id,
-    customerId: row.customer_id,
+    customerId: row.customer_id ?? '',
     title: row.title,
     details: row.details ?? '',
     source: row.source ?? '',
@@ -375,7 +375,7 @@ export class PostgresCaseRepository implements CaseRepository {
         created_by, created_at, updated_at
       )
       values (
-        ${row.id}, ${row.customerId}, ${row.title}, ${row.details}, ${row.source}, ${row.priority}, ${row.stage},
+        ${row.id}, ${row.customerId || null}, ${row.title}, ${row.details}, ${row.source}, ${row.priority}, ${row.stage},
         ${dbOutcome(row.outcome)}, ${dbNumber(row.orderValue)}, ${joinPipe(row.wonCategories)},
         ${row.outcomeNote}, ${dbEmail(row.owner)}, ${joinPipe(row.extraOwners)}, ${dbEmail(row.assignee)},
         ${dbDate(row.closedOn)}, ${dbEmail(row.createdBy)}, ${row.createdAt}, ${row.updatedAt}
@@ -386,6 +386,7 @@ export class PostgresCaseRepository implements CaseRepository {
   async updateCase(id: string, fields: Partial<CaseRow>): Promise<void> {
     fields = caseWritePatch(fields);
     const dbFields: Partial<CaseRow> = { ...fields };
+    if ('customerId' in dbFields) dbFields.customerId = (dbFields.customerId || null) as never;
     if ('outcome' in dbFields) dbFields.outcome = dbOutcome(dbFields.outcome ?? '') as CaseRow['outcome'];
     if ('orderValue' in dbFields) dbFields.orderValue = dbNumber(dbFields.orderValue ?? '') as CaseRow['orderValue'];
     if ('wonCategories' in dbFields) dbFields.wonCategories = joinPipe(dbFields.wonCategories ?? []) as never;

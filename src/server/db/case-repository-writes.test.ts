@@ -84,3 +84,19 @@ it('covers every persisted mutable column, including columns introduced by migra
   const columns = allCasesColumns(join(__dirname, '../../../supabase/migrations')).filter((column) => !immutable.includes(column));
   expect(Object.values(mappings).map(({ column }) => column).sort()).toEqual(columns.sort());
 });
+
+describe.each(factories)('%s nullable case SQL boundary', (_name, Repository) => {
+  it('serializes empty customer IDs as NULL in inserts and updates, and reads NULL as empty', async () => {
+    const db = Object.assign(vi.fn().mockResolvedValue([]), { unsafe: vi.fn().mockResolvedValue([]) });
+    const repo = new Repository(db as never);
+    const row: CaseRow = { id: 'CASE-1', customerId: '', title: 'Unmapped', details: '', source: '', priority: '', stage: 'Lead', outcome: '', orderValue: '', wonCategories: [], outcomeNote: '', owner: '', extraOwners: [], assignee: '', closedOn: '', createdBy: '', createdAt: '2026-09-07', updatedAt: '2026-09-07' };
+    await repo.createCase(row);
+    const [, ...values] = db.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(values[1]).toBeNull();
+    await repo.updateCase(row.id, { customerId: '' });
+    expect(db.unsafe.mock.calls[0][1]).toEqual([null, row.id]);
+    db.mockResolvedValue([{ case_id: row.id, customer_id: null, stage: 'Lead', extra_owners: '', won_categories: '' }]);
+    expect((await repo.getCase(row.id))?.customerId).toBe('');
+    expect((await repo.lockCase(row.id))?.customerId).toBe('');
+  });
+});

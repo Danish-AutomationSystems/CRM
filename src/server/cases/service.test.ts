@@ -1857,3 +1857,69 @@ describe('case service validates priorities and won categories against the live 
     expect(repo.cases[0]).toMatchObject({ outcome: 'Won', wonCategories: ['VFDs'] });
   });
 });
+
+describe('customerless cases', () => {
+  it.each(['Lead', 'Opportunity'])('creates %s with creator ownership and existing assignment defaults', async (stage) => {
+    const { repo, service } = makeService();
+    const before = structuredClone(repo.handlers);
+    const { id } = await service.createCase(sales, '', { title: 'New enquiry', stage });
+    expect(repo.cases[0]).toMatchObject({ customerId: '', stage, owner: sales.email, extraOwners: [sales.email], assignee: sales.email });
+    expect(await service.getCase(sales, id)).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
+    expect((await service.listCases(sales))[0]).toMatchObject({ customerName: 'Customer not mapped' });
+    expect(repo.handlers).toEqual(before);
+  });
+
+  it('requires L2, rejects dangling IDs and requires mapping before Quoted or Won', async () => {
+    const { repo, service } = makeService();
+    await expect(service.createCase({ ...sales, role: 'L1' }, '', { title: 'No' })).rejects.toThrow('L2');
+    await expect(service.createCase(sales, 'typo', { title: 'No' })).rejects.toThrow('Customer typo');
+    await expect(service.createCase(sales, '', { title: 'No', stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
+    await expect(service.createCase(sales, '', { title: 'No', order: true, orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
+    repo.cases = [caseRow({ customerId: '' })];
+    await expect(service.setCaseStage(sales, repo.cases[0].id, 'Quoted')).rejects.toThrow(/map.*customer/i);
+    await expect(service.setCaseOutcome(sales, repo.cases[0].id, 'Won', { orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
+    await service.setCaseStage(sales, repo.cases[0].id, 'Lead');
+    await service.updateCase(sales, repo.cases[0].id, { title: 'Updated' });
+    expect(repo.cases[0]).toMatchObject({ title: 'Updated', stage: 'Lead', customerId: '' });
+  });
+
+  it('allows owners, assigned L1 and L4+, denying unrelated users even with matching tags', async () => {
+    const { repo, service } = makeService();
+    repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org', extraOwners: [sales.email] })];
+    for (const viewer of [sales, repo.users[2], repo.users[3]]) {
+      expect((await service.getCase(viewer, repo.cases[0].id)).customer).toBeNull();
+      expect(await service.listCases(viewer)).toHaveLength(1);
+    }
+    expect(await service.getCase(repo.users[2], repo.cases[0].id)).toMatchObject({ canMapCustomer: false, canQuote: false });
+    const outsider = { ...sales, email: 'outsider@automationsystems.org', role: 'L3' as const };
+    await expect(service.getCase(outsider, repo.cases[0].id)).rejects.toThrow('access');
+    expect(await service.listCases(outsider)).toEqual([]);
+    repo.cases[0].customerId = 'dangling';
+    await expect(service.getCase(sales, repo.cases[0].id)).rejects.toThrow('Customer dangling');
+    expect(await service.listCases(sales)).toEqual([]);
+  });
+
+  it('supports explicit customerLater quick log without swallowing misspelled customer IDs', async () => {
+    const { repo, service } = makeService();
+    const input = { customerLater: true, title: 'Identify later', stage: 'Lead' };
+    const result = await service.quickLog(sales, input);
+    expect(result.customerId).toBe('');
+    expect(repo.cases[0]).toMatchObject({ owner: sales.email, assignee: sales.email, customerId: '' });
+    expect(repo.customers).toHaveLength(1);
+    await expect(service.quickLog(sales, { ...input, customerId: 'typo' })).rejects.toThrow('Customer typo');
+    await expect(service.quickLog(sales, { ...input, stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
+    await expect(service.quickLog(sales, { title: 'No choice' })).rejects.toThrow('Pick an existing');
+  });
+
+  it('retains backend explicit-assignee rule and supports unmapped handovers and Revision edits', async () => {
+    const { repo, service } = makeService();
+    const backend = { ...sales, role: 'L5' as const };
+    await expect(service.createCase(backend, '', { title: 'New' })).rejects.toThrow('Choose who');
+    const { id } = await service.createCase(backend, '', { title: 'New', assignee: 'worker@automationsystems.org' });
+    await service.assignTicket(sales, id, 'other@automationsystems.org', 'Please work');
+    repo.cases[0].stage = 'Revision';
+    await service.updateCase(sales, id, { details: 'Revision notes' });
+    await service.assignTicket(sales, id, 'worker@automationsystems.org');
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', details: 'Revision notes', customerId: '', assignee: 'worker@automationsystems.org' });
+  });
+});

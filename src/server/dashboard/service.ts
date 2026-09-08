@@ -96,12 +96,12 @@ function expandEmail(value: unknown): string {
 }
 
 export function createDashboardService(repo: DashboardRepository, dependencies: DashboardDependencies) {
-  async function computeDash(subjectEmailInput: string) {
+  async function computeDash(subjectEmailInput: string, viewer: CrmContext) {
     const subjectEmail = normalizeEmail(subjectEmailInput);
     const caseRows = await repo.listCases();
     const [cases, customers, handlers, users] = await Promise.all([
       Promise.resolve(caseRows),
-      Promise.all(caseRows.map((row) => repo.getCustomer(row.customerId))),
+      Promise.all(caseRows.map((row) => row.customerId ? repo.getCustomer(row.customerId) : null)),
       repo.listHandlers(),
       repo.listUsers()
     ]);
@@ -135,7 +135,10 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
     const directSubject = isDirect(subjectEmail);
 
     for (const row of cases) {
-      const customerName = customersById[row.customerId]?.name ?? row.customerId;
+      const customer = customersById[row.customerId];
+      if (row.customerId && !customer) continue;
+      if (!caseVisible(viewer, customer ? accessLevel(viewer, customerRecord(customer), ownership) : 'NONE', caseRecord(row))) continue;
+      const customerName = customer?.name ?? 'Customer not mapped';
       const owners = caseOwners(caseRecord(row));
       const mine = directSubject ? subjectHandles.has(row.customerId) : owners.includes(subjectEmail);
       if (mine && !row.outcome) {
@@ -279,7 +282,7 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
         isL1: level <= 1,
         isBackend: level >= 5,
         peers,
-        self: level <= 4 ? await computeDash(user.email).catch(() => null) : null,
+        self: level <= 4 ? await computeDash(user.email, user).catch(() => null) : null,
         recent
       };
     },
@@ -303,7 +306,7 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
         }
         return {
           subject: { email: DIRECT_EMAIL, name: DIRECT_NAME, role: '' },
-          dash: await computeDash(DIRECT_EMAIL)
+          dash: await computeDash(DIRECT_EMAIL, user)
         };
       }
 
@@ -323,7 +326,7 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
           name: idx[target]?.name || target,
           role: idx[target]?.role || ''
         },
-        dash: await computeDash(target)
+        dash: await computeDash(target, user)
       };
     },
 
