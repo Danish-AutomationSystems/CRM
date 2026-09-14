@@ -2510,4 +2510,38 @@ describe('case lifecycle UI', () => {
     await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
     expect(screen.queryByRole('button', { name: 'Order (Won)' })).not.toBeInTheDocument();
   });
+
+  test('Update stage button starts disabled and enables only when the selection differs from the current stage', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const btn = screen.getByRole('button', { name: 'Update stage' });
+    expect(btn).toBeDisabled();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Lead';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).not.toBeDisabled();
+
+    select.value = 'Opportunity';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).toBeDisabled();
+  });
+
+  test('Update priority button follows the same disabled-until-changed rule', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const btn = screen.getByRole('button', { name: 'Update priority' });
+    expect(btn).toBeDisabled();
+
+    const select = document.getElementById('priSel') as HTMLSelectElement;
+    select.value = 'High';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).not.toBeDisabled();
+
+    select.value = '';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).toBeDisabled();
+  });
 });

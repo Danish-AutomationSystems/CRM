@@ -1456,15 +1456,15 @@ function renderCase(d){
     }
     if(d.canEdit){
       if(o.outcome!=='Won' && o.outcome!=='Lost'){
-        html += '<div class="frow" style="align-items:flex-end"><div><label>Stage</label><select id="stSel">'+
+        html += '<div class="frow" style="align-items:flex-end"><div><label>Stage</label><select id="stSel" onchange="toggleStageBtn()">'+
           S.settings.stages.filter(function(st){ return st!=='Revision' || o.stage==='Quoted' || o.stage==='Revision'; })
             .map(function(st){ return '<option'+(st===o.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select></div>'+
           '<div style="flex:2"><label>Note (optional)</label><input id="stNote"></div>'+
-          '<div style="flex:0"><button class="btn" onclick="doStage(\''+esc(o.id)+'\')">Update stage</button></div></div>';
+          '<div style="flex:0"><button class="btn" id="stUpdateBtn" disabled onclick="doStage(\''+esc(o.id)+'\')">Update stage</button></div></div>';
       }
-      html += '<div class="frow" style="align-items:flex-end"><div><label>Priority</label><select id="priSel">'+
+      html += '<div class="frow" style="align-items:flex-end"><div><label>Priority</label><select id="priSel" onchange="togglePriBtn()">'+
         '<option value="">— none —</option>'+ selOptions(S.settings.priorities || ['High','Medium','Low'], o.priority||'') +
-        '</select></div><div style="flex:0"><button class="btn" onclick="doPriority(\''+esc(o.id)+'\')">Update priority</button></div></div>';
+        '</select></div><div style="flex:0"><button class="btn" id="priUpdateBtn" disabled onclick="doPriority(\''+esc(o.id)+'\')">Update priority</button></div></div>';
       html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">';
       if(o.outcome!=='Won') html += '<button class="btn sm" onclick="mWon(\''+esc(o.id)+'\')">Mark Won</button>';
       if(o.outcome!=='Lost') html += '<button class="btn danger sm" onclick="mOutcomeNote(\''+esc(o.id)+'\',\'Lost\')">Mark Lost</button>';
@@ -1662,6 +1662,8 @@ function wkUploadAndAssign(id, email, note, nm, files){
       oops(e);
     });
 }
+function toggleStageBtn(){ var b=el('stUpdateBtn'); if(b) b.disabled = (v('stSel')===CUR.caseData.case.stage); }
+function togglePriBtn(){ var b=el('priUpdateBtn'); if(b) b.disabled = (v('priSel')===(CUR.caseData.case.priority||'')); }
 function doStage(id){
   var stage=v('stSel'), d=CUR.caseData;
   if(stage===d.case.stage) return;
