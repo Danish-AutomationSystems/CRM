@@ -2318,7 +2318,17 @@ describe('case lifecycle UI', () => {
     if (fn === 'api_getCustomer') return customerDetail();
     if (fn === 'api_listTemplates') return [{ id: 'TPL-1', name: 'Standard' }];
     if (fn === 'api_getQuotation') return quote();
-    if (fn === 'api_createQuotation' || fn === 'api_uploadQuotation') { mapped = true; return { quoteNo: 'Q-1', rev: 0 }; }
+    if (fn === 'api_createQuotation') { mapped = true; return { quoteNo: 'Q-1', rev: 0 }; }
+    if (fn === 'api_uploadQuotation') {
+      mapped = true;
+      const payload = args[0] as { status?: string };
+      if (payload.status === 'Sent') stage = 'Quoted';
+      return { quoteNo: 'Q-1', rev: 0 };
+    }
+    if (fn === 'api_setQuoteStatus') {
+      if (args[2] === 'Sent') stage = 'Quoted';
+      return { ok: true };
+    }
     throw new Error(`Unexpected RPC ${fn}`);
   }
   function press(name: string | RegExp, scope: HTMLElement = document.body) {
@@ -2354,7 +2364,7 @@ describe('case lifecycle UI', () => {
     await startCase();
     expect(document.getElementById('main')?.textContent).not.toContain('Assigned to:');
     expect(screen.queryByRole('button', { name: 'reassign' })).not.toBeInTheDocument();
-    press('Request revision');
+    set('stSel', 'Revision'); press('Update stage');
     await screen.findByRole('textbox', { name: 'Search for a user' });
     expect(within(document.getElementById('mfoot')!).getByRole('button', { name: 'Request revision' })).toBeDisabled();
     press('Cancel');
@@ -2363,7 +2373,7 @@ describe('case lifecycle UI', () => {
 
   test('revision confirmation sends the active holder, note, attachments slot and revision flag, then refreshes', async () => {
     await startCase();
-    press('Request revision');
+    set('stSel', 'Revision'); press('Update stage');
     await screen.findByRole('textbox', { name: 'Search for a user' });
     window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
     set('wk_note', 'Revise panel dimensions');
@@ -2409,12 +2419,15 @@ describe('case lifecycle UI', () => {
     expect(calls.find(c => c.fn === 'api_assignTicket')?.args[4]).not.toBe(true);
   });
 
-  test('an assignment-only user completing Quoted returns safely to their dashboard', async () => {
+  test('a user without quote permission cannot open the Quoted entry point via the stage picker', async () => {
     role = 'L1'; canQuote = false; stage = 'Opportunity'; loseAccess = true;
-    await startCase(); set('stSel', 'Quoted'); press('Update stage');
-    await screen.findByRole('heading', { name: 'My work' });
-    expect(calls.filter(c => c.fn === 'api_getCase')).toHaveLength(1);
-    expect(document.body.textContent).not.toContain('No ticket access');
+    await startCase();
+    const options = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(options).not.toContain('Quoted');
+    press('Update stage');
+    expect(screen.queryByRole('button', { name: 'Create a new quotation' })).not.toBeInTheDocument();
+    expect(calls.filter(c => c.fn === 'api_setCaseStage')).toHaveLength(0);
+    expect(screen.getByRole('heading', { name: 'Panel upgrade' })).toBeInTheDocument();
   });
 
   test('Cases offers customerless creation and posts the empty customer ID', async () => {
@@ -2441,7 +2454,9 @@ describe('case lifecycle UI', () => {
   test.each(['builder', 'upload'])('unmapped %s chooses a FULL customer locally and cancel does not map', async (mode) => {
     mapped = false; stage = 'Lead'; await startCase();
     expect(document.getElementById('main')?.textContent).toContain('Customer not mapped');
-    press(mode === 'builder' ? '+ Quotation' : 'Upload quotation');
+    set('stSel', 'Quoted'); press('Update stage');
+    await screen.findByRole('button', { name: 'Create a new quotation' });
+    press(mode === 'builder' ? 'Create a new quotation' : 'Upload an existing one');
     await chooseCustomer();
     await waitFor(() => expect(document.getElementById(mode === 'builder' ? 'qb_save' : 'uq_save')).not.toBeNull());
     press('Cancel');
@@ -2452,7 +2467,10 @@ describe('case lifecycle UI', () => {
 
   test.each(['builder', 'upload'])('first %s save sends selected customer with the original case, then refreshes mapped details', async (mode) => {
     mapped = false; stage = 'Lead'; await startCase();
-    press(mode === 'builder' ? '+ Quotation' : 'Upload quotation'); await chooseCustomer();
+    set('stSel', 'Quoted'); press('Update stage');
+    await screen.findByRole('button', { name: 'Create a new quotation' });
+    press(mode === 'builder' ? 'Create a new quotation' : 'Upload an existing one');
+    await chooseCustomer();
     if (mode === 'builder') {
       await screen.findByRole('option', { name: 'Standard' });
       set('qb_title', 'Panel quotation'); set('qb_tpl', 'TPL-1'); set('qb_sub', '100'); set('qb_bx_0', 'Item\nPanel'); press('Save quotation');
@@ -2509,5 +2527,208 @@ describe('case lifecycle UI', () => {
     window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
     await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
     expect(screen.queryByRole('button', { name: 'Order (Won)' })).not.toBeInTheDocument();
+  });
+
+  test('Update stage button starts disabled and enables only when the selection differs from the current stage', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const btn = screen.getByRole('button', { name: 'Update stage' });
+    expect(btn).toBeDisabled();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Lead';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).not.toBeDisabled();
+
+    select.value = 'Opportunity';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).toBeDisabled();
+  });
+
+  test('Update priority button follows the same disabled-until-changed rule', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const btn = screen.getByRole('button', { name: 'Update priority' });
+    expect(btn).toBeDisabled();
+
+    const select = document.getElementById('priSel') as HTMLSelectElement;
+    select.value = 'High';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).not.toBeDisabled();
+
+    select.value = '';
+    window.eval(select.getAttribute('onchange') ?? '');
+    expect(btn).toBeDisabled();
+  });
+
+  test('the three old case-page buttons are gone at every stage', async () => {
+    for (const s of ['Lead', 'Opportunity', 'Quoted', 'Revision']) {
+      stage = s;
+      await startCase();
+      expect(screen.queryByRole('button', { name: 'Request revision' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
+      cleanup();
+      document.body.innerHTML = '';
+    }
+  });
+
+  test('picking Quoted and Update stage opens a Create/Upload choice instead of calling api_setCaseStage', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Quoted';
+    window.eval(select.getAttribute('onchange') ?? '');
+    press('Update stage');
+
+    await screen.findByRole('button', { name: 'Create a new quotation' });
+    expect(screen.getByRole('button', { name: 'Upload an existing one' })).toBeInTheDocument();
+    expect(calls.filter((c) => c.fn === 'api_setCaseStage')).toHaveLength(0);
+  });
+
+  test('choosing Create opens the quote builder and saving as Draft does not change the case stage', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Quoted';
+    window.eval(select.getAttribute('onchange') ?? '');
+    press('Update stage');
+    await screen.findByRole('button', { name: 'Create a new quotation' });
+    press('Create a new quotation');
+
+    await screen.findByRole('heading', { name: 'New quotation' });
+    set('qb_title', 'Panel quotation');
+    set('qb_tpl', 'TPL-1');
+    set('qb_sub', '100');
+    set('qb_bx_0', 'Item\nPanel');
+    press('Save quotation');
+
+    await waitFor(() => expect(calls.some((c) => c.fn === 'api_createQuotation')).toBe(true));
+    expect(calls.filter((c) => c.fn === 'api_setCaseStage' && c.args[1] === 'Quoted')).toHaveLength(0);
+    expect(stage).toBe('Opportunity');
+  });
+
+  test('choosing Upload and picking Sent status commits the case to Quoted', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Quoted';
+    window.eval(select.getAttribute('onchange') ?? '');
+    press('Update stage');
+    await screen.findByRole('button', { name: 'Upload an existing one' });
+    press('Upload an existing one');
+
+    await waitFor(() => expect(document.getElementById('uq_file')).not.toBeNull());
+    set('uq_title', 'Panel quotation');
+    set('uq_total', '118');
+    Object.defineProperty(document.getElementById('uq_file'), 'files', {
+      value: [new File(['quote'], 'quote.pdf', { type: 'application/pdf' })]
+    });
+    press('Upload quotation', document.getElementById('mfoot')!);
+
+    await waitFor(() => expect(calls.some((c) => c.fn === 'api_uploadQuotation')).toBe(true));
+    const uploadCall = calls.find((c) => c.fn === 'api_uploadQuotation');
+    expect(uploadCall?.args[0]).toMatchObject({ caseId: 'CASE-1', status: 'Sent' });
+    expect(stage).toBe('Quoted');
+  });
+
+  test('choosing Create, saving as Draft, then marking that quote Sent from the viewer commits the case to Quoted', async () => {
+    stage = 'Opportunity';
+    await startCase();
+
+    const select = document.getElementById('stSel') as HTMLSelectElement;
+    select.value = 'Quoted';
+    window.eval(select.getAttribute('onchange') ?? '');
+    press('Update stage');
+    await screen.findByRole('button', { name: 'Create a new quotation' });
+    press('Create a new quotation');
+    await screen.findByRole('heading', { name: 'New quotation' });
+    set('qb_title', 'Panel quotation');
+    set('qb_tpl', 'TPL-1');
+    set('qb_sub', '100');
+    set('qb_bx_0', 'Item\nPanel');
+    press('Save quotation');
+
+    await screen.findByRole('button', { name: 'Mark Sent' });
+    expect(stage).toBe('Opportunity');
+    press('Mark Sent');
+
+    await waitFor(() => expect(calls.some((c) => c.fn === 'api_setQuoteStatus')).toBe(true));
+    expect(stage).toBe('Quoted');
+  });
+
+  test('the Quotations card explains where to add a quotation, worded for the case\'s current stage', async () => {
+    stage = 'Opportunity';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).toContain('set the stage to Quoted above');
+
+    cleanup();
+    document.body.innerHTML = '';
+    stage = 'Quoted';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).toContain('set the stage to Revision above');
+  });
+
+  test('the Stage card does not show a Draft-quote hint when there are no unsent quotations', async () => {
+    stage = 'Opportunity';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).not.toContain('still Draft');
+  });
+
+  test('the Quotations card hides its hint on a Won case, since the Stage control it points at is gone', async () => {
+    outcome = 'Won';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).not.toContain('set the stage to Quoted above');
+    expect(document.getElementById('main')?.textContent).not.toContain('set the stage to Revision above');
+  });
+
+  test('the Stage dropdown omits Quoted for a canEdit user without quote permission, and offers it when they can', async () => {
+    role = 'L1'; canQuote = false; stage = 'Opportunity'; loseAccess = true;
+    await startCase();
+    const optionsWithoutQuote = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(optionsWithoutQuote).not.toContain('Quoted');
+
+    cleanup();
+    document.body.innerHTML = '';
+    canQuote = true;
+    await startCase();
+    const optionsWithQuote = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(optionsWithQuote).toContain('Quoted');
+  });
+
+  test('the Draft-quote hint names the count and does not pick one quote arbitrarily', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') {
+        const w = workspace('L6');
+        w.boot.settings.stages.push('Revision');
+        w.cases = [];
+        return w;
+      }
+      if (fn === 'api_getCase') {
+        return {
+          ...caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]),
+          canQuote: true,
+          canRequestRevision: false,
+          quotes: [
+            { quoteNo: 'Q-1', rev: 0, status: 'Draft', title: 'A', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 100 },
+            { quoteNo: 'Q-2', rev: 0, status: 'Draft', title: 'B', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 200 },
+            { quoteNo: 'Q-3', rev: 0, status: 'Sent', title: 'C', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 300 }
+          ]
+        };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("case", "CASE-1")');
+    await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+    expect(document.getElementById('main')?.textContent).toContain('2 quotations are still Draft');
+    expect(document.getElementById('main')?.textContent).not.toContain('1 quotation');
   });
 });
