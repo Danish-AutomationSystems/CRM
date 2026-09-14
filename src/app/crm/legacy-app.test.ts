@@ -2670,4 +2670,41 @@ describe('case lifecycle UI', () => {
     await startCase();
     expect(document.getElementById('main')?.textContent).toContain('request a revision above');
   });
+
+  test('the Stage card shows a Draft-quote hint when the case has unsent quotations', async () => {
+    stage = 'Opportunity';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).not.toContain('still Draft');
+  });
+
+  test('the Draft-quote hint names the count and does not pick one quote arbitrarily', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') {
+        const w = workspace('L6');
+        w.boot.settings.stages.push('Revision');
+        w.cases = [];
+        return w;
+      }
+      if (fn === 'api_getCase') {
+        return {
+          ...caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]),
+          canQuote: true,
+          canRequestRevision: false,
+          quotes: [
+            { quoteNo: 'Q-1', rev: 0, status: 'Draft', title: 'A', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 100 },
+            { quoteNo: 'Q-2', rev: 0, status: 'Draft', title: 'B', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 200 },
+            { quoteNo: 'Q-3', rev: 0, status: 'Sent', title: 'C', date: '2026-09-14', by: 'sales@automationsystems.org', currency: 'INR', total: 300 }
+          ]
+        };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("case", "CASE-1")');
+    await screen.findByRole('heading', { name: 'Panel upgrade' });
+
+    expect(document.getElementById('main')?.textContent).toContain('2 quotations are still Draft');
+    expect(document.getElementById('main')?.textContent).not.toContain('1 quotation');
+  });
 });

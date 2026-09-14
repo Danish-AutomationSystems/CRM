@@ -1453,6 +1453,8 @@ function renderCase(d){
     }
     if(d.canEdit){
       if(o.outcome!=='Won' && o.outcome!=='Lost'){
+        var draftCount = (d.quotes||[]).filter(function(q){ return q.status==='Draft'; }).length;
+        if(draftCount) html += '<p class="hint" style="margin-top:0">'+draftCount+' quotation'+(draftCount===1?' is':'s are')+' still Draft — see Quotations below.</p>';
         html += '<div class="frow" style="align-items:flex-end"><div><label>Stage</label><select id="stSel" onchange="toggleStageBtn()">'+
           S.settings.stages.filter(function(st){ return st!=='Revision' || o.stage==='Quoted' || o.stage==='Revision'; })
             .map(function(st){ return '<option'+(st===o.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select></div>'+
