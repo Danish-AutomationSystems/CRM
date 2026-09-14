@@ -1281,9 +1281,10 @@ test('a Quoted case has no ticket holder and offers Request revision, which move
   await expect(page.getByText('Assigned to:')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'reassign' })).toHaveCount(0);
 
-  const requestRevision = page.getByRole('button', { name: 'Request revision' });
-  await expect(requestRevision).toBeVisible();
-  await requestRevision.click();
+  await page.locator('#stSel').selectOption('Revision');
+  const updateStage = page.getByRole('button', { name: 'Update stage' });
+  await expect(updateStage).toBeEnabled();
+  await updateStage.click();
 
   await expect(page.locator('#mtitle')).toHaveText('Request revision');
   await page.locator('#wk_q').fill('Sales');
@@ -1429,7 +1430,12 @@ test('saving the first quotation on a customerless case sends the chosen custome
   await expect(page.getByRole('heading', { name: 'Lead without a customer' })).toBeVisible();
   await expect(page.locator('.crumb')).toContainText('Customer not mapped');
 
-  await page.getByRole('button', { name: 'Upload quotation' }).click();
+  await page.locator('#stSel').selectOption('Quoted');
+  const updateStage = page.getByRole('button', { name: 'Update stage' });
+  await expect(updateStage).toBeEnabled();
+  await updateStage.click();
+  await expect(page.locator('#mtitle')).toHaveText('Add a quotation');
+  await page.getByRole('button', { name: 'Upload an existing one' }).click();
   await expect(page.locator('#mtitle')).toHaveText('Choose customer for quotation');
   await page.locator('#qc_q').fill('Acme');
   await page.locator('#qc_res').getByRole('button', { name: 'Acme Controls' }).click();

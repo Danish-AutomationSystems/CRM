@@ -1435,10 +1435,7 @@ function renderCase(d){
         ' &nbsp;·&nbsp; Assigned to: <b>'+esc(o.assignee||'nobody')+'</b>'+
         (d.canAssignTicket?' <button class="btn lk" onclick="mAssignCase()">reassign</button>':''))+
       '</div></div>';
-    if(d.canRequestRevision && o.stage==='Quoted' && !o.outcome) html += '<button class="btn ghost" onclick="mRequestRevision()">Request revision</button>';
     if(d.canEdit) html += '<button class="btn ghost" onclick="mEditCase(CUR.caseData.case)">Edit</button>';
-    if(caseCanQuote(d) && !o.outcome) html += '<button class="btn ghost" onclick="openBuilderForCase()">+ Quotation</button>'+
-      '<button class="btn ghost" onclick="mUploadQuote()">Upload quotation</button>';
     html += '</div>';
 
     if(d.latestHandoverNote) html += '<div class="card" style="margin-bottom:12px"><div class="ovl">Latest handover note</div><div class="d" style="white-space:pre-wrap">'+esc(d.latestHandoverNote)+'</div>'+attachmentLinksHtml(latestNoteAttachments(d))+'</div>';
@@ -1477,7 +1474,8 @@ function renderCase(d){
     if(o.details){ html += '<div class="card"><div class="ovl">Details</div><div style="white-space:pre-wrap">'+esc(o.details)+'</div></div>'; }
 
     // quotations
-    html += '<div class="card"><div class="ovl">Quotations</div>';
+    html += '<div class="card"><div class="ovl">Quotations</div>'+
+      '<p class="hint" style="margin-top:0">'+(o.stage==='Quoted'?'To add a new quotation, request a revision above.':'To add a quotation, set the stage to Quoted above.')+'</p>';
     if(!(d.quotes||[]).length) html += '<div class="empty">No quotations yet for this case.</div>';
     else{
       var groups = {}, order = [];
@@ -1668,12 +1666,23 @@ function doStage(id){
   var stage=v('stSel'), d=CUR.caseData;
   if(stage===d.case.stage) return;
   if(stage==='Revision' && d.case.stage==='Quoted'){ mRequestRevision(null,d,v('stNote')); return; }
+  if(stage==='Quoted'){ mAddQuotationForCase(); return; }
   gs('api_setCaseStage', id, stage, v('stNote')).then(function(){
     toast('Stage updated.');
     var owns=(d.case.ownerList||[]).some(function(o){ return low(o.email)===low(S.user.email); });
     if(stage==='Quoted' && lvl()<4 && !owns && !caseCanQuote(d)) nav('dash');
     else vCase(id);
   }).catch(oops);
+}
+function mAddQuotationForCase(){
+  var d=CUR.caseData; if(!caseCanQuote(d)) return;
+  openModal('Add a quotation',
+    '<p class="hint" style="margin-top:0">This case doesn\'t have a sent quotation yet. Choose how to add one.</p>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+    '<button class="btn" onclick="closeModal();withQuoteCustomer(caseQuoteContext(CUR.caseData),mQuoteBuilder)">Create a new quotation</button>'+
+    '<button class="btn ghost" onclick="closeModal();mUploadQuote(undefined,caseQuoteContext(CUR.caseData))">Upload an existing one</button>'+
+    '</div>',
+    '<button class="btn ghost" onclick="closeModal()">Cancel</button>');
 }
 function doPriority(id){
   gs('api_setCasePriority', id, v('priSel')).then(function(){ toast('Priority updated.'); vCase(id); }).catch(oops);
@@ -1710,12 +1719,6 @@ function reopenCase(id){
 function caseCanQuote(d){ return !!d && (d.canQuote===undefined?d.canEdit:d.canQuote); }
 function caseQuoteContext(d){
   return {customerId:d.customer?d.customer.id:'', customerName:d.customer?d.customer.name:'', cases:[{id:d.case.id,title:d.case.title}], caseId:d.case.id, lockCase:true};
-}
-function openBuilderForCase(){
-  var d=CUR.caseData; if(!caseCanQuote(d)) return;
-  var next=function(){ withQuoteCustomer(caseQuoteContext(d),mQuoteBuilder); };
-  if(d.case.stage==='Quoted'){ mRequestRevision(next,d); return; }
-  next();
 }
 var QC=null, qcT=null;
 function withQuoteCustomer(ctx, next){
