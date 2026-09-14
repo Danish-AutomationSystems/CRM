@@ -1538,7 +1538,7 @@ function mAssign(id, suggestions, requestRevision, after, note){
       ? '<div class="hint" style="margin:0">Suggested — people who own this case</div><div class="bubbles">'+
         S._wk.sug.map(function(o){ return '<button type="button" class="bub" onclick="wkPick(\''+esc(o.email)+'\',\''+esc(String(o.name).replace(/\\/g,'').replace(/'/g,''))+'\')">'+esc(o.name)+'</button>'; }).join('')+'</div>'
       : '';
-    openModal(S._wk.revision?'Request revision':'Reassign ticket',
+    openModal(S._wk.revision?'Mark revision':'Reassign ticket',
       bubbles+
       '<label for="wk_q" style="margin-top:10px">Search for a user</label>'+
       '<input id="wk_q" autocomplete="off" oninput="wkSearch()">'+
@@ -1552,7 +1552,7 @@ function mAssign(id, suggestions, requestRevision, after, note){
       '<p class="hint">Any CRM user can hold this ticket; ownership is unchanged.</p>',
       '<button class="btn ghost" id="wk_cancel" style="display:none" onclick="wkCancelUpload()">Cancel upload</button>'+
       '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
-      '<button class="btn" id="wk_go" disabled onclick="doAssign()">'+(S._wk.revision?'Request revision':'Reassign')+'</button>');
+      '<button class="btn" id="wk_go" disabled onclick="doAssign()">'+(S._wk.revision?'Mark revision':'Reassign')+'</button>');
     el('wk_note').value=note||'';
     wkSearch();
     el('wk_q').focus();

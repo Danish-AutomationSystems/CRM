@@ -2366,7 +2366,7 @@ describe('case lifecycle UI', () => {
     expect(screen.queryByRole('button', { name: 'reassign' })).not.toBeInTheDocument();
     set('stSel', 'Revision'); press('Update stage');
     await screen.findByRole('textbox', { name: 'Search for a user' });
-    expect(within(document.getElementById('mfoot')!).getByRole('button', { name: 'Request revision' })).toBeDisabled();
+    expect(within(document.getElementById('mfoot')!).getByRole('button', { name: 'Mark revision' })).toBeDisabled();
     press('Cancel');
     expect(calls.filter(c => c.fn === 'api_assignTicket')).toHaveLength(0);
   });
@@ -2377,7 +2377,7 @@ describe('case lifecycle UI', () => {
     await screen.findByRole('textbox', { name: 'Search for a user' });
     window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
     set('wk_note', 'Revise panel dimensions');
-    press('Request revision', document.getElementById('mfoot')!);
+    press('Mark revision', document.getElementById('mfoot')!);
     await waitFor(() => expect(calls.find(c => c.fn === 'api_assignTicket')?.args).toEqual([
       'CASE-1', 'other@automationsystems.org', 'Revise panel dimensions', [], true
     ]));
@@ -2402,7 +2402,7 @@ describe('case lifecycle UI', () => {
     expect(document.getElementById('qb_save')).toBeNull();
     expect(document.getElementById('uq_save')).toBeNull();
     window.eval(document.querySelector('#wk_res .resrow')?.getAttribute('onclick') ?? '');
-    press('Request revision', document.getElementById('mfoot')!);
+    press('Mark revision', document.getElementById('mfoot')!);
     await waitFor(() => expect(document.getElementById(kind === 'Generated' ? 'qb_save' : 'uq_save')).not.toBeNull());
     expect(calls.find(c => c.fn === 'api_assignTicket')?.args[4]).toBe(true);
     press('Cancel');
@@ -2502,7 +2502,7 @@ describe('case lifecycle UI', () => {
     await startCase();
     expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Request revision' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Mark revision' })).not.toBeInTheDocument();
   });
 
   test('the stage picker never offers Revision on a case that cannot use it', async () => {
@@ -2567,7 +2567,7 @@ describe('case lifecycle UI', () => {
     for (const s of ['Lead', 'Opportunity', 'Quoted', 'Revision']) {
       stage = s;
       await startCase();
-      expect(screen.queryByRole('button', { name: 'Request revision' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Mark revision' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: '+ Quotation' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Upload quotation' })).not.toBeInTheDocument();
       cleanup();

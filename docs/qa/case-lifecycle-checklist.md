@@ -81,7 +81,8 @@ built into the migration itself.
 - [ ] For every distinct holder in that list, notify them directly (Slack/email, not just "check the
       CRM") that the ticket they held on that specific case was cleared because Quoted cases no
       longer carry a holder by design, and that if the case needs further work it must go through
-      Request Revision, which will explicitly reassign a holder again.
+      Mark Revision (pick "Revision" in the case's Stage dropdown), which will explicitly reassign
+      a holder again.
 - [ ] Keep the exported list. It is the only record of who held what before the cleanup - once
       cleared, the original `assignee` value is not recoverable from `public.cases` itself (see
       Rollback, below).
@@ -114,9 +115,10 @@ Perform these in the live app as a real user at each described role level, in or
    through to Quoted (or open a case already sitting in Quoted). Confirm: no assignee/ticket holder
    is shown, the reassignment/"working on" action is unavailable, and case owners are still listed
    and unchanged from before the stage move.
-2. **Request revision assigns a holder and returns to Quoted when Sent.** From that same Quoted
-   case, use Request Revision. Confirm the dialog requires picking an active ticket holder before it
-   can be confirmed, and canceling the dialog leaves the case in Quoted with no holder and no
+2. **Mark revision assigns a holder and returns to Quoted when Sent.** From that same Quoted
+   case, pick "Revision" in the Stage dropdown and click Update stage. Confirm the dialog requires
+   picking an active ticket holder before it can be confirmed, and canceling the dialog leaves the
+   case in Quoted with no holder and no
    activity-log entry. Confirm it, and check: the case is now in Revision with the selected person as
    holder. Prepare and save a revised quotation, mark it Sent, and confirm the case returns to Quoted
    with the holder cleared again - matching the original Quoted state.
