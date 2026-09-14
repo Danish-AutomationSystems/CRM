@@ -47,7 +47,10 @@ function bootPayload() {
     settings: {
       tags: ['Punjab', 'Chandigarh', 'NCR'],
       types: ['OEM', 'End User'],
-      stages: ['Lead', 'Opportunity', 'Quoted'],
+      // Revision is admin-configured but normally hidden from the stage picker
+      // (Index.html's stSel filter only surfaces it for a Quoted/Revision case) -
+      // it must still be present here for that filter to have anything to show.
+      stages: ['Lead', 'Opportunity', 'Quoted', 'Revision'],
       outcomes: ['Won', 'Lost', 'Hold'],
       priorities: ['High', 'Medium', 'Low'],
       categories: ['Lighting'],
@@ -1297,6 +1300,39 @@ test('a Quoted case has no ticket holder and offers Request revision, which move
   await expect(page.getByRole('button', { name: 'Request revision' })).toHaveCount(0);
 
   expect(assignArgs).toEqual(['CASE-2026-0020', 'sales@automationsystems.org', '', [], true]);
+});
+
+test('an Opportunity case has no old quote buttons; picking Quoted opens the Create/Upload choice', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm/case/CASE-2026-0001');
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+
+  await expect(page.getByRole('button', { name: 'Request revision' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '+ Quotation' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Upload quotation' })).toHaveCount(0);
+
+  const updateStage = page.getByRole('button', { name: 'Update stage' });
+  await expect(updateStage).toBeDisabled();
+
+  await page.locator('#stSel').selectOption('Quoted');
+  await expect(updateStage).toBeEnabled();
+  await updateStage.click();
+
+  await expect(page.getByRole('button', { name: 'Create a new quotation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upload an existing one' })).toBeVisible();
+});
+
+test('Update priority stays disabled until the priority dropdown actually changes', async ({ context, page }) => {
+  test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
+  await setUpAuthenticatedSession(context, page);
+  await page.goto('/crm/case/CASE-2026-0001');
+  await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
+
+  const updatePriority = page.getByRole('button', { name: 'Update priority' });
+  await expect(updatePriority).toBeDisabled();
+  await page.locator('#priSel').selectOption('High');
+  await expect(updatePriority).toBeEnabled();
 });
 
 function unmappedCaseGetCasePayload(overrides?: Record<string, unknown>) {
