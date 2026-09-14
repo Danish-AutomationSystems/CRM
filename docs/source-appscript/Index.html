@@ -1456,8 +1456,12 @@ function renderCase(d){
         var draftCount = (d.quotes||[]).filter(function(q){ return q.status==='Draft'; }).length;
         if(draftCount) html += '<p class="hint" style="margin-top:0">'+draftCount+' quotation'+(draftCount===1?' is':'s are')+' still Draft — see Quotations below.</p>';
         html += '<div class="frow" style="align-items:flex-end"><div><label>Stage</label><select id="stSel" onchange="toggleStageBtn()">'+
-          S.settings.stages.filter(function(st){ return st!=='Revision' || o.stage==='Quoted' || o.stage==='Revision'; })
-            .map(function(st){ return '<option'+(st===o.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select></div>'+
+          S.settings.stages.filter(function(st){
+            if(st===o.stage) return true;
+            if(st==='Revision' && o.stage!=='Quoted') return false;
+            if(st==='Quoted' && !caseCanQuote(d)) return false;
+            return true;
+          }).map(function(st){ return '<option'+(st===o.stage?' selected':'')+'>'+esc(st)+'</option>'; }).join('')+'</select></div>'+
           '<div style="flex:2"><label>Note (optional)</label><input id="stNote"></div>'+
           '<div style="flex:0"><button class="btn" id="stUpdateBtn" disabled onclick="doStage(\''+esc(o.id)+'\')">Update stage</button></div></div>';
       }
@@ -1477,7 +1481,7 @@ function renderCase(d){
 
     // quotations
     html += '<div class="card"><div class="ovl">Quotations</div>'+
-      '<p class="hint" style="margin-top:0">'+(o.stage==='Quoted'?'To add a new quotation, request a revision above.':'To add a quotation, set the stage to Quoted above.')+'</p>';
+      (d.canEdit && o.outcome!=='Won' && o.outcome!=='Lost' ? '<p class="hint" style="margin-top:0">'+(o.stage==='Quoted'?'To add a new quotation, set the stage to Revision above.':'To add a quotation, set the stage to Quoted above.')+'</p>' : '');
     if(!(d.quotes||[]).length) html += '<div class="empty">No quotations yet for this case.</div>';
     else{
       var groups = {}, order = [];
@@ -1671,9 +1675,7 @@ function doStage(id){
   if(stage==='Quoted'){ mAddQuotationForCase(); return; }
   gs('api_setCaseStage', id, stage, v('stNote')).then(function(){
     toast('Stage updated.');
-    var owns=(d.case.ownerList||[]).some(function(o){ return low(o.email)===low(S.user.email); });
-    if(stage==='Quoted' && lvl()<4 && !owns && !caseCanQuote(d)) nav('dash');
-    else vCase(id);
+    vCase(id);
   }).catch(oops);
 }
 function mAddQuotationForCase(){

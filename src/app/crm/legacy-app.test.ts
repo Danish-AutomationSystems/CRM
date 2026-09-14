@@ -2421,7 +2421,10 @@ describe('case lifecycle UI', () => {
 
   test('a user without quote permission cannot open the Quoted entry point via the stage picker', async () => {
     role = 'L1'; canQuote = false; stage = 'Opportunity'; loseAccess = true;
-    await startCase(); set('stSel', 'Quoted'); press('Update stage');
+    await startCase();
+    const options = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(options).not.toContain('Quoted');
+    press('Update stage');
     expect(screen.queryByRole('button', { name: 'Create a new quotation' })).not.toBeInTheDocument();
     expect(calls.filter(c => c.fn === 'api_setCaseStage')).toHaveLength(0);
     expect(screen.getByRole('heading', { name: 'Panel upgrade' })).toBeInTheDocument();
@@ -2668,13 +2671,34 @@ describe('case lifecycle UI', () => {
     document.body.innerHTML = '';
     stage = 'Quoted';
     await startCase();
-    expect(document.getElementById('main')?.textContent).toContain('request a revision above');
+    expect(document.getElementById('main')?.textContent).toContain('set the stage to Revision above');
   });
 
-  test('the Stage card shows a Draft-quote hint when the case has unsent quotations', async () => {
+  test('the Stage card does not show a Draft-quote hint when there are no unsent quotations', async () => {
     stage = 'Opportunity';
     await startCase();
     expect(document.getElementById('main')?.textContent).not.toContain('still Draft');
+  });
+
+  test('the Quotations card hides its hint on a Won case, since the Stage control it points at is gone', async () => {
+    outcome = 'Won';
+    await startCase();
+    expect(document.getElementById('main')?.textContent).not.toContain('set the stage to Quoted above');
+    expect(document.getElementById('main')?.textContent).not.toContain('set the stage to Revision above');
+  });
+
+  test('the Stage dropdown omits Quoted for a canEdit user without quote permission, and offers it when they can', async () => {
+    role = 'L1'; canQuote = false; stage = 'Opportunity'; loseAccess = true;
+    await startCase();
+    const optionsWithoutQuote = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(optionsWithoutQuote).not.toContain('Quoted');
+
+    cleanup();
+    document.body.innerHTML = '';
+    canQuote = true;
+    await startCase();
+    const optionsWithQuote = Array.from((document.getElementById('stSel') as HTMLSelectElement).options).map(o => o.value);
+    expect(optionsWithQuote).toContain('Quoted');
   });
 
   test('the Draft-quote hint names the count and does not pick one quote arbitrarily', async () => {
