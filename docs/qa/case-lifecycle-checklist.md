@@ -4,9 +4,10 @@ Covers the case-lifecycle feature built on `task4-integration` (merge commit `16
 Quoted cases have no ticket holder, a Revision stage with mandatory reassignment, and
 customerless case registration mapped atomically on the first quotation save.
 
-**Status: not deployed.** `supabase/migrations/0012_case_revision_workflow.sql` and
-`supabase/migrations/0013_customerless_cases.sql` have not been run against Supabase in any
-environment. This checklist is what to do when the project owner decides to ship it, in order.
+**Status: deployed to production 2026-09-14.** Both migrations applied and verified - see the
+Case lifecycle entry in `CONTEXT.md` for the deploy record (backup taken, holder-clearing audit
+confirmed, post-condition checks all passed). This checklist remains the reference for what was
+done and for any future environment (staging, a fresh scratch DB) that still needs it applied.
 
 ## 1. Pre-deploy
 

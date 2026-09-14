@@ -235,8 +235,18 @@ Completed:
     `docs/superpowers/plans/2026-08-24-case-aging-indicator.md`.
 
 - Case lifecycle: Quoted holder-clearing, Revision reassignment, customerless cases (2026-09-08,
-  merge commit `1559f91`; **NOT deployed - migrations not run against Supabase in any environment,
-  this section documents local implementation only**):
+  merge commit `1559f91`; **migrations `0012`/`0013` applied to production 2026-09-14 - live**):
+  - **Deploy record:** pre-migration backup taken as a full logical export of every `public` table
+    (all 16 tables, row counts verified against live counts before proceeding - no `pg_dump`/`psql`
+    available in the deploying environment, so this substituted for the checklist's binary-backup
+    step; dataset was still test-scale at the time, 7 cases/62 activity rows). `0012` cleared the
+    ticket holder on exactly 2 Quoted cases (`CASE-2026-0003`, `CASE-2026-0006`, both held by the
+    `testing@automationsystems.org` test account) - verified post-migration: 0 Quoted+assigned cases
+    remain, exactly 2 `CASE_QUOTED_HOLDER_CLEARED` audit rows written, each correctly recording the
+    actual holder (the fix from the whole-branch review, confirmed working against real production
+    data, not just tests). `0013` verified: `customer_id` nullable, FK intact, new CHECK present,
+    all 7 pre-existing cases untouched (0 have a null `customer_id`, as expected - none were
+    customerless before this). See `docs/qa/case-lifecycle-checklist.md` for the procedure followed.
   - **Server-side (rules below) started as unmerged, uncommitted-to-`main` work already sitting in a
     stale worktree when this was picked up** - the frontend UI and end-to-end integration/e2e/docs were
     unfinished or broken. That work was finished, then a whole-branch review found 17 findings before
@@ -479,7 +489,9 @@ Migrations:
 - `supabase/migrations/0009_activity_log_note.sql` - adds `activity_log.note text not null default ''` for ticket handover notes.
 - `supabase/migrations/0010_case_attachments.sql` - creates `public.case_attachments` for handover-note Drive attachments.
 - `supabase/migrations/0011_case_priority.sql` - adds `cases.priority text not null default ''`.
-- **All 11 migrations are applied in every environment, including production.** `public.schema_migrations` currently holds 11 rows. Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
+- `supabase/migrations/0012_case_revision_workflow.sql` - adds `Revision` to the stage CHECK constraint, clears (with audit) any existing Quoted case that still held an assignee, adds `cases_quoted_unassigned_check`.
+- `supabase/migrations/0013_customerless_cases.sql` - drops `cases.customer_id`'s NOT NULL (keeps the FK), adds `cases_quoted_customer_check` (Quoted/Won requires a customer).
+- **All 13 migrations are applied in every environment, including production.** `public.schema_migrations` currently holds 13 rows (`0012`/`0013` applied 2026-09-14). Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
 
