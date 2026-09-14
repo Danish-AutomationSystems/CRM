@@ -1241,7 +1241,7 @@ function quotedCaseGetCasePayload(overrides?: Record<string, unknown>) {
   };
 }
 
-test('a Quoted case has no ticket holder and offers Request revision, which moves it to Revision with the chosen holder', async ({
+test('a Quoted case has no ticket holder and offers Mark revision, which moves it to Revision with the chosen holder', async ({
   context,
   page
 }) => {
@@ -1289,7 +1289,7 @@ test('a Quoted case has no ticket holder and offers Request revision, which move
   await expect(updateStage).toBeEnabled();
   await updateStage.click();
 
-  await expect(page.locator('#mtitle')).toHaveText('Request revision');
+  await expect(page.locator('#mtitle')).toHaveText('Mark revision');
   await page.locator('#wk_q').fill('Sales');
   await page.locator('#wk_res').getByText('Sales User').click();
   await page.locator('#wk_go').click();
@@ -1297,7 +1297,7 @@ test('a Quoted case has no ticket holder and offers Request revision, which move
   await expect(page.getByText('Assigned to:')).toBeVisible();
   await expect(page.getByTestId('crm-route').getByText('Sales User')).toBeVisible();
   await expect(page.locator('.badge', { hasText: 'Revision' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Request revision' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Mark revision' })).toHaveCount(0);
 
   expect(assignArgs).toEqual(['CASE-2026-0020', 'sales@automationsystems.org', '', [], true]);
 });
@@ -1308,7 +1308,7 @@ test('an Opportunity case has no old quote buttons; picking Quoted opens the Cre
   await page.goto('/crm/case/CASE-2026-0001');
   await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
 
-  await expect(page.getByRole('button', { name: 'Request revision' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Mark revision' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '+ Quotation' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Upload quotation' })).toHaveCount(0);
 
