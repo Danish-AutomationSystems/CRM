@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-09-14 (settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator, case lifecycle: Quoted holder-clearing/Revision reassignment/customerless cases (migrations live in production), case page quote-entry redesign)
+Last updated: 2026-09-18 (case-owner layer eliminated: account/customer handlers are now the sole owners of every case, derived live, with a creator fallback; migration `0014` drops `cases.owner`/`extra_owners` but is NOT yet applied to production; settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator, case lifecycle: Quoted holder-clearing/Revision reassignment/customerless cases (migrations live in production), case page quote-entry redesign)
 
 ## Project Purpose
 
@@ -125,18 +125,18 @@ Completed:
   - Design doc: `docs/superpowers/specs/2026-07-31-google-docs-template-revival-design.md`. Plan: `docs/superpowers/plans/2026-07-31-google-docs-template-revival.md`.
 
 - CRM Points-Manager Feedback: case-ownership re-architecture and related fixes (2026-08-11):
-  - **Case ownership is now materialised on the case, not derived from `handlers` at read time.** Each case stores its own owner set in `cases.extra_owners` (a pipe-joined `text` column; parsed/joined via `parsePipe`/`joinPipe`). `caseOwners(caseRecord: CaseRecord)` in `src/server/auth/access.ts` now takes **no ownership argument** - it reads `caseRecord.extraOwners` directly, falling back to the case's creator (`caseRecord.owner`, excluding `direct`) only when nothing is stored. The old `caseHandlerOwners()` function that derived owners from `public.handlers` at read time no longer exists (its logic survives only as a frozen, explicitly-labeled reference copy in `src/server/cases/owner-seed.ts`, used solely to compute the one-time migration backfill).
-  - Practical effect of the re-architecture: adding a handler to a customer propagates that handler onto the customer's **ACTIVE** cases only (not closed ones); removing a handler from a customer **never** touches any case - previously, removing a handler silently stripped that person from every case on the account, including closed ones, with no way to recover it.
-  - Every case owner entry now carries an explicit `source: 'handler' | 'creator' | 'manual'` (`CaseOwnerSource`/`CaseOwnerEntry` in `src/server/auth/access.ts`, `caseOwnerSource()`/`caseOwnerEntries()`). Handler-sourced owners are non-removable from the case UI (removal happens on the customer instead); creator/manual owners are removable unless doing so would leave the case with zero owners.
+  - **Case ownership is now materialised on the case, not derived from `handlers` at read time.** Each case stores its own owner set in `cases.extra_owners` (a pipe-joined `text` column; parsed/joined via `parsePipe`/`joinPipe`). `caseOwners(caseRecord: CaseRecord)` in `src/server/auth/access.ts` now takes **no ownership argument** - it reads `caseRecord.extraOwners` directly, falling back to the case's creator (`caseRecord.owner`, excluding `direct`) only when nothing is stored. The old `caseHandlerOwners()` function that derived owners from `public.handlers` at read time no longer exists (its logic survives only as a frozen, explicitly-labeled reference copy in `src/server/cases/owner-seed.ts`, used solely to compute the one-time migration backfill). **Superseded 2026-09-18 by the "Eliminate the case-owner layer" entry below: `extra_owners`/`owner` are dropped from `cases` entirely (migration `0014`, not yet applied); ownership is once again derived live, via `caseHandlers()`, never materialised.**
+  - Practical effect of the re-architecture: adding a handler to a customer propagates that handler onto the customer's **ACTIVE** cases only (not closed ones); removing a handler from a customer **never** touches any case - previously, removing a handler silently stripped that person from every case on the account, including closed ones, with no way to recover it. **Superseded 2026-09-18: there is no propagation step left to run - handler add/remove touch zero cases, and ownership (including on closed cases) simply reflects the current handler set live, every time it's read.**
+  - Every case owner entry now carries an explicit `source: 'handler' | 'creator' | 'manual'` (`CaseOwnerSource`/`CaseOwnerEntry` in `src/server/auth/access.ts`, `caseOwnerSource()`/`caseOwnerEntries()`). Handler-sourced owners are non-removable from the case UI (removal happens on the customer instead); creator/manual owners are removable unless doing so would leave the case with zero owners. **Superseded 2026-09-18: `CaseOwnerSource`/`CaseOwnerEntry`/`caseOwnerSource()`/`caseOwnerEntries()` and the manage-owners UI are all removed - there is no more manual per-case ownership, no source to label, and no owner-removal path (the only ways to touch a case are: be an account handler, be the assignee, or be L4+).**
   - `customerRealHandlers()` (formerly folded into the same function as ownership derivation) now answers only "is this person an account handler" and is explicitly documented as unrelated to case ownership - keeping the two concerns separate is what fixes the underlying bug class.
-  - **L5/L6 users may no longer be added as account handlers** (enforced in `customers/service.ts`'s `addHandler`, with a comment: "an L5/L6 bulk-importer does not become a handler"). They remain valid as case owners/assignees directly - this restriction is handler-only.
+  - **L5/L6 users may no longer be added as account handlers** (enforced in `customers/service.ts`'s `addHandler`, with a comment: "an L5/L6 bulk-importer does not become a handler"). They remain valid as case owners/assignees directly - this restriction is handler-only. **Superseded 2026-09-18: "case owners" as a distinct, directly-assignable concept no longer exists - an L5/L6 can still be a case's assignee or its creator-fallback, but not a case "owner" separately from being an account handler.**
   - **`Direct` is a virtual account** (`src/server/domain/direct.ts`, `DIRECT_EMAIL='direct'`, `isDirect()`, `directVirtualUser()`): never a row in `public.users` (the table has a CHECK constraint requiring an `@automationsystems.org` address), only ever stored as `public.handlers.user_email='direct'`, and synthesised into user lists and the L4+ dashboard subject picker (`DIRECT_VISIBLE_FROM_LEVEL=4`) at read time. It can never hold a support ticket (case owner/assignee) or log in (`hasLogin: false`).
   - **At least one location (`customers.tags`) is now mandatory** on customer create/update. Existing customers with no location were backfilled to the placeholder `'TO BE FILLED'` (migration `0007`), which is a recognised value (present in `DEFAULT_SETTINGS.TAGS`) but deliberately excluded from `SELECTABLE_TAGS` so nobody can pick it on purpose and a later save can't silently strip a location back to empty.
   - **`customers.sei` changed from free text to `text[]`** (migration `0008`), multi-select, validated against a **live** `public.settings.SEI_NAMES` list (split on `\s*[|,]\s*`, parsed by `parseSeiText()` in `src/server/customers/sei.ts`; the same key is read live at request time by `customers/service.ts` via `SEI_NAMES_SETTING_KEY`, not from the hardcoded `DEFAULT_SETTINGS` - see the `public.settings` drift note below, which this partially resolves). `public.recycle_bin.sei` was converted too since `restoreCustomer()` copies it straight back onto `public.customers`. The migration seeds `SEI_NAMES` empty; an L6 populates it in Admin.
   - **`api_listCases` gained `owned`/`assigned` filters** (`src/server/cases/rpc.ts`/`service.ts`): `owned` (also accepting the legacy `mine` flag for backward compatibility with in-flight old clients) and `assigned` narrow the case list; neither set returns all cases the caller can see.
   - Four new DB migrations ship this work, in strict order:
-    - `0005_materialise_case_owners.sql` - seeds `cases.extra_owners` with exactly the set the old read-time derivation would have produced (reference implementation `src/server/cases/owner-seed.ts`), so behavior is unchanged on the day it ships. Re-verifies every case against the frozen old-derivation logic before committing, aborting on any mismatch.
-    - `0006_remove_l5_l6_handlers.sql` - deletes existing L5/L6 handler rows. **MUST run after `0005`** - under the old model, deleting a handler row would have silently stripped that person from every case (including closed ones); with `0005` already applied, case ownership is materialised, so this migration is inert with respect to `public.cases` (a check inside the migration asserts it writes zero rows there).
+    - `0005_materialise_case_owners.sql` - seeds `cases.extra_owners` with exactly the set the old read-time derivation would have produced (reference implementation `src/server/cases/owner-seed.ts`), so behavior is unchanged on the day it ships. Re-verifies every case against the frozen old-derivation logic before committing, aborting on any mismatch. **Superseded 2026-09-18: the column this migration seeded is dropped by `0014` (not yet applied) - kept here only as history of an already-applied migration, not as a description of current behavior.**
+    - `0006_remove_l5_l6_handlers.sql` - deletes existing L5/L6 handler rows. **MUST run after `0005`** - under the old model, deleting a handler row would have silently stripped that person from every case (including closed ones); with `0005` already applied, case ownership is materialised, so this migration is inert with respect to `public.cases` (a check inside the migration asserts it writes zero rows there). **Superseded 2026-09-18: "materialised" no longer describes the current model - see the "Eliminate the case-owner layer" entry above.**
     - `0007_backfill_customer_locations.sql` - backfills empty `customers.tags` to `['TO BE FILLED']`, asserts row count and empty-count invariants.
     - `0008_customer_sei_multi_select.sql` - converts `customers.sei` (and `recycle_bin.sei`) from `text` to `text[]`, drops the old btree index first (recreate if needed), seeds `SEI_NAMES` empty in `public.settings`.
     - All four (`0005`-`0008`) are applied in every environment, including production. See the Supabase Migrations section below for the full, current, applied list (now through `0011`).
@@ -298,7 +298,9 @@ Completed:
       violation rolls the mapping back with it.
     - Mapping never grants customer-handler membership and never changes case owners/assignee (except
       that Sent still clears the holder per rule 1/2) - `mapCustomer` only ever writes `customerId` on
-      the case row.
+      the case row. (Superseded 2026-09-18: "case owners" here predates the case-owner-layer removal -
+      still accurate that mapping never changes ownership, but ownership is now derived live from
+      handlers, never stored.)
     - An already-mapped case can never be remapped: `validateCase` throws `'That case belongs to a
       different customer.'` if `row.customerId` is set and differs from the quote's target customer.
     - A customerless case cannot reach Quoted or Won - enforced both server-side (`0013`'s CHECK) and
@@ -398,6 +400,57 @@ Completed:
     worktree-dispatched subagent in this project**, not just this branch.
   - Design: `docs/superpowers/specs/2026-09-14-case-page-quote-entry-redesign-design.md`. Plan:
     `docs/superpowers/plans/2026-09-14-case-page-quote-entry-redesign.md`.
+
+- Eliminate the case-owner layer (2026-09-18, branch `feat/eliminate-case-owner-layer`, HEAD `0ae7f83`;
+  **not yet merged to `main`, migration NOT yet applied to production**):
+  - **Goal: account/customer handlers are now the sole owners of every case.** The standalone
+    case-owner concept - explicit case-level owners materialised on `cases.extra_owners`/`owner`,
+    the handler/creator/manual source distinction, the manage-owners modal, the propagation step that
+    copied new handlers onto active cases - is removed entirely. Assignee (the ticket holder) is
+    unchanged. This supersedes essentially all of the "CRM Points-Manager Feedback" entry above
+    (2026-08-11) and its `P10`/`P11` propagation/source rules - see the "superseded" notes added
+    inline on that entry and its migrations `0005`/`0006`.
+  - **`caseHandlers(caseRecord, ownership)` (`src/server/auth/access.ts`) is the single source of
+    truth**, replacing `caseOwners`/`caseOwnerEntries`/`caseOwnerSource`. Ownership is derived live
+    from `customerRealHandlers()` every time it's read - never stored on the case, never frozen. When
+    the account has no real handler (a customerless case, or a Direct-only account), the case's
+    creator (`cases.created_by`, unchanged column) stands in as the sole owner so the case is never
+    orphaned; the moment a real handler exists, the creator's claim ends immediately, live, including
+    on already-closed (Won/Lost/Hold) cases - there is no historical freeze.
+  - **Two confirmed access reductions, both explicitly signed off by the project owner before this
+    shipped, neither with a migration path:**
+    1. The creator of a case loses visibility into it the instant a real handler is added to that
+       account, unless they're also the assignee.
+    2. Anyone who was a manually-added case owner (not a handler, not the creator, not the assignee)
+       loses access entirely - there is no replacement mechanism for manual per-case ownership.
+  - **Removed:** `addCaseOwner`/`removeCaseOwner` (`src/server/cases/service.ts`) and their RPCs
+    `api_addCaseOwner`/`api_removeCaseOwner` (kept in `api-parity.test.ts`'s `intentionallyUnmigrated`
+    list with a dated comment, asserted actually gone via `hasRpc`); the handler-add propagation loop
+    in `customers/service.ts`'s `addHandler` and its `CaseOwnerRow`/`listCaseOwnerRows`/
+    `setCaseExtraOwners` support; case-creation seeding (`seedOwners`, and the `owner`/`extraOwners`
+    writes in `createCase`/`quickLog`/the auto-case-from-quote path) - `created_by` alone is sufficient
+    for the fallback; the manage-owners modal and `mOwners`/`addOwner`/`removeOwner`/
+    `ownerSourceLabel` from `docs/source-appscript/Index.html`.
+  - **UI label "Owners" -> "Handlers" everywhere it names case ownership**: the case page header, the
+    Cases-tab table, and the customer-detail case list all now read `case.handlers`/`case.handlerList`
+    (API rename, `owners`/`ownerEmails`/`ownerList` dropped from `getCase`/`listCases`/the
+    customer-detail case payload). The case page shows a plain read-only handler list - no manage
+    button, no modal. `mAssign`'s reassignment-suggestion list now sources from the same handler list.
+    The Cases-tab "Owned by me" filter keeps its existing checkbox/wire field (`owned`) but now means
+    "cases of customers I handle" server-side, no client change.
+  - **Database**: migration `supabase/migrations/0014_drop_case_owner_columns.sql` drops
+    `cases.owner`, `cases.extra_owners`, and the `cases_owner_outcome_idx` index, with a post-condition
+    assertion both columns and the index are gone. **This migration is committed but has NOT been
+    applied to production, and its `--dry-run` has not even been run yet** (no `DATABASE_URL`/
+    `.env.local` was available in the implementing environment). Applying it is a separate,
+    owner-approved step, same as every other migration in this project. **Backup-restore caveat**
+    (verbatim from the migration's own comment): "Backups taken before this migration still carry
+    owner/extra_owners on public.cases rows. scripts/restore-database.mjs inserts every key it finds,
+    so strip those two keys before restoring such a backup into a post-0014 schema."
+  - Verification at HEAD `0ae7f83`: `npm test` 42 test files / 758 tests, all passing; `npm run
+    typecheck` clean; `npm run build` succeeds; Playwright 33/33 passed.
+  - Design: `docs/superpowers/specs/2026-09-18-eliminate-case-owner-layer-design.md`. Report:
+    `docs/reports/2026-09-18-case-owner-layer-removal.md`.
 
 ### Resolved: the legacy generator is fixed and back in normal use (2026-08-11)
 
@@ -536,7 +589,7 @@ Migrations:
 - `supabase/migrations/0002_external_quote_upload_data.sql`
 - `supabase/migrations/0003_performance_indexes.sql`
 - `supabase/migrations/0004_quotation_drive_link.sql`
-- `supabase/migrations/0005_materialise_case_owners.sql` - seeds `cases.extra_owners`. **MUST run before `0006`.**
+- `supabase/migrations/0005_materialise_case_owners.sql` - seeds `cases.extra_owners`. **MUST run before `0006`.** (Superseded 2026-09-18: the column it seeded is dropped by `0014`, below - not yet applied.)
 - `supabase/migrations/0006_remove_l5_l6_handlers.sql` - deletes L5/L6 handler rows; depends on `0005` having already materialised case ownership.
 - `supabase/migrations/0007_backfill_customer_locations.sql` - backfills empty `customers.tags` to `['TO BE FILLED']`.
 - `supabase/migrations/0008_customer_sei_multi_select.sql` - converts `customers.sei`/`recycle_bin.sei` from `text` to `text[]`, seeds `SEI_NAMES` empty.
@@ -545,7 +598,8 @@ Migrations:
 - `supabase/migrations/0011_case_priority.sql` - adds `cases.priority text not null default ''`.
 - `supabase/migrations/0012_case_revision_workflow.sql` - adds `Revision` to the stage CHECK constraint, clears (with audit) any existing Quoted case that still held an assignee, adds `cases_quoted_unassigned_check`.
 - `supabase/migrations/0013_customerless_cases.sql` - drops `cases.customer_id`'s NOT NULL (keeps the FK), adds `cases_quoted_customer_check` (Quoted/Won requires a customer).
-- **All 13 migrations are applied in every environment, including production.** `public.schema_migrations` currently holds 13 rows (`0012`/`0013` applied 2026-09-14). Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
+- `supabase/migrations/0014_drop_case_owner_columns.sql` - drops `cases.owner`, `cases.extra_owners`, and the `cases_owner_outcome_idx` index (case ownership is now derived live from account handlers, `src/server/auth/access.ts`'s `caseHandlers()`, never stored). **NOT applied to any environment as of this entry, and its `--dry-run` has not even been run** - no `DATABASE_URL` was available in the implementing environment. Applying it, like every migration here, requires the project owner's explicit go-ahead; see the backup-restore caveat in the migration file's own header comment before restoring any pre-`0014` backup afterward.
+- **13 of these 14 migrations are applied in every environment, including production** (`0001`-`0013`). `public.schema_migrations` currently holds 13 rows (`0012`/`0013` applied 2026-09-14; `0014` not yet run anywhere). Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
 
@@ -929,6 +983,27 @@ Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-c
 
 - 2026-09-14: Migrations `0012`/`0013` (case lifecycle, entry above) applied to production, by explicit project-owner go-ahead. Pre-migration backup taken as a full logical export of all 16 `public` tables (no `pg_dump`/`psql`/`docker` available in this environment - row counts verified against live counts instead of a binary-backup restore test, a deliberate, explicitly-confirmed deviation from the checklist's literal step). `0012` cleared the holder on 2 Quoted cases (both the `testing@` test account); post-migration checks all passed (0 Quoted+assigned cases remain, exactly 2 correctly-attributed audit rows, `0013`'s nullable-customer_id and new CHECK both verified, all 7 pre-existing cases unaffected). `schema_migrations` now holds 13 rows everywhere. Production smoke-checked after. `docs/qa/case-lifecycle-checklist.md` and this file's Supabase Migrations section updated to reflect deployed status.
 - 2026-09-14 (later same day): Case page quote-entry redesign merged to `main` (`8254551`) - see the Current Production Status entry above for the full design/decision record. Built via subagent-driven-development, 4 tasks plus a final whole-branch-review fix wave (3 Important findings, all fixed and re-verified). One task's first implementer attempt committed to `main` directly instead of its worktree (directory-discipline failure, not a code defect) - caught by checking `git log`/`git branch --show-current` independently rather than trusting the report; the stray commit was unpushed and harmless, and every subsequent subagent dispatch in this branch carried explicit pre-flight and pre-commit directory/branch checks as a result (see the Current Production Status entry for the standing-practice note). `git reset --hard` on `main` to correct its branch pointer was blocked by this environment's own safety classifier as irreversible-destruction; the non-`--hard` form (`git reset e3df896`, which keeps the reverted content as unstaged changes rather than discarding anything) succeeded on retry, followed by `git checkout -- .` to clear those now-orphaned unstaged changes before merging - both worth remembering as the safe fallback if `--hard` is ever blocked again. Final state: 740/740 tests (41 files), 33/33 Playwright, typecheck clean, production build clean, deployed and smoke-checked (`/login` 200, `/crm` 307). Verified HEAD is `8254551` on `main`.
+
+- 2026-09-18: Eliminate the case-owner layer - built via subagent-driven-development on
+  `feat/eliminate-case-owner-layer` (worktree
+  `.superpowers/worktrees/eliminate-case-owner-layer`), **not yet merged to `main`**. Five sequential
+  tasks: (1) taught the schema-parity test parser about `drop column`; (2) frontend "Handlers" instead
+  of "Owners", manage-owners modal removed; (3) `caseHandlers()`/`caseVisible()` derive ownership live
+  from account handlers in `src/server/auth/access.ts`, `addCaseOwner`/`removeCaseOwner` and their RPCs
+  removed, plus a fix-round covering three review findings (missing Direct-only two-creator test,
+  a tautological migration test deleted, missing handler-vs-creator dashboard coverage); (4) migration
+  `0014_drop_case_owner_columns.sql` written and every read/write path (`case-write.ts`,
+  `cases/repository.ts`, `cases/service.ts`, `quotes/service.ts`, `customers/service.ts`/
+  `repository.ts`) updated to stop writing `owner`/`extra_owners`, `owner-seed.ts` deleted; (5) this
+  documentation pass. See `.superpowers/sdd/2026-09-18-eliminate-case-owner-layer/task-1-report.md`
+  through `task-5-report.md` for full detail per task, and
+  `docs/reports/2026-09-18-case-owner-layer-removal.md` for the before/after report. Final state at
+  HEAD `0ae7f83`: 758/758 tests (42 files), typecheck clean, production build clean, 33/33 Playwright.
+  **Migration `0014` has NOT been applied to production, and its `--dry-run` has not even been run** -
+  no `DATABASE_URL` was available in the implementing environment; this needs the project owner's
+  explicit go-ahead before it runs anywhere, per this project's standing migration practice (see the
+  Current Production Status entry above for the backup-restore caveat). This branch has also not been
+  merged to `main` as of this entry.
 
 ## If A New Agent Takes Over
 
