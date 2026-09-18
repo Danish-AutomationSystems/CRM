@@ -263,18 +263,6 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
 
   settingRows: Record<string, string> = {};
 
-  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
-    return this.cases
-      .filter((row) => row.customerId === customerId)
-      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    const row = this.cases.find((item) => item.id === caseId);
-    if (!row) throw new Error('missing test case');
-    row.extraOwners = extraOwners;
-  }
-
   async getSetting(key: string): Promise<string | null> {
     return this.settingRows[key] ?? null;
   }
@@ -583,19 +571,20 @@ describe('CRM integrated service flows', () => {
 
     const leadRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(leadRow?.customerId).toBe('');
-    expect(leadRow?.owner).toBe(normalizeTestEmail(salesRep.email));
-    expect(leadRow?.extraOwners).toEqual([normalizeTestEmail(salesRep.email)]);
 
-    const ownersOriginal = [...(leadRow?.extraOwners ?? [])];
-    const ownerOriginal = leadRow?.owner;
+    // The case has no customer, so its handlers are derived with the creator as the
+    // fallback (caseHandlers). This stays true throughout the walk below, because the
+    // mapped customer never gains salesRep as a real handler.
+    const expectedHandlers = [normalizeTestEmail(salesRep.email)];
 
     // 2. Someone with no relationship to the case cannot see it.
     await expect(caseService.getCase(outsider, leadCaseId)).rejects.toThrow(/access/i);
 
-    // The creator (an owner) and an L4+ can see it, even customerless.
+    // The creator (a handler by fallback) and an L4+ can see it, even customerless.
     const ownedView = await caseService.getCase(salesRep, leadCaseId);
     expect(ownedView.customer).toBeNull();
     expect(ownedView.case.id).toBe(leadCaseId);
+    expect(ownedView.case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 3. First quotation saved against a real, fully-accessible customer - mapping happens
     // atomically inside that same call, by the case owner (salesRep) who has FULL customer access purely by
@@ -626,25 +615,23 @@ describe('CRM integrated service flows', () => {
     );
     // Mapping never grants handler membership.
     expect(repo.handlers.some((row) => row.customerId === customer.id && row.email === normalizeTestEmail(salesRep.email))).toBe(false);
-    // Owners are untouched by mapping.
-    expect(mappedRow?.owner).toBe(ownerOriginal);
-    expect(mappedRow?.extraOwners).toEqual(ownersOriginal);
+    // caseHandlers is untouched by mapping - still the creator fallback, since the
+    // mapped customer has no real handlers of its own.
+    expect((await caseService.getCase(salesRep, leadCaseId)).case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 4. Marking the first quotation Sent moves the case to Quoted with no ticket holder.
     await quoteService.setQuoteStatus(salesRep, firstQuote.quoteNo, firstQuote.rev, 'Sent');
     const quotedRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(quotedRow?.stage).toBe('Quoted');
     expect(quotedRow?.assignee).toBe('');
-    expect(quotedRow?.owner).toBe(ownerOriginal);
-    expect(quotedRow?.extraOwners).toEqual(ownersOriginal);
+    expect((await caseService.getCase(salesRep, leadCaseId)).case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 5. Requesting a revision moves Quoted -> Revision and sets the selected holder.
     await caseService.assignTicket(salesRep, leadCaseId, revisionHolder.email, 'please rework the pricing', undefined, true);
     const revisionRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(revisionRow?.stage).toBe('Revision');
     expect(revisionRow?.assignee).toBe(normalizeTestEmail(revisionHolder.email));
-    expect(revisionRow?.owner).toBe(ownerOriginal);
-    expect(revisionRow?.extraOwners).toEqual(ownersOriginal);
+    expect((await caseService.getCase(salesRep, leadCaseId)).case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 6. A revision quotation is saved and marked Sent -> case returns to Quoted, holder cleared again.
     const revisionQuote = await quoteService.createQuotation(salesRep, {
@@ -662,8 +649,7 @@ describe('CRM integrated service flows', () => {
     const backToQuotedRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(backToQuotedRow?.stage).toBe('Quoted');
     expect(backToQuotedRow?.assignee).toBe('');
-    expect(backToQuotedRow?.owner).toBe(ownerOriginal);
-    expect(backToQuotedRow?.extraOwners).toEqual(ownersOriginal);
+    expect((await caseService.getCase(salesRep, leadCaseId)).case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // Guardrail: an already-mapped case cannot be remapped to a different customer by a
     // later quotation.
@@ -698,6 +684,68 @@ describe('CRM integrated service flows', () => {
         note: 'no customer yet'
       })
     ).rejects.toThrow(/map a customer/i);
+  });
+
+  it('agrees across all three case-creation paths on who owns the case: the account handlers, or the creator when there are none', async () => {
+    const { repo, adminService, customerService, caseService, quoteService } = makeServices();
+
+    // U has FULL customer access purely by L3 tag match - never a handler on either
+    // customer below. Both createCase and quotation creation require FULL access, so an
+    // L2 (NAME-only by tag) would be rejected; L3 is the minimum that clears that bar
+    // without also being a handler.
+    const u: CrmContext = {
+      email: 'tag-match@automationsystems.org',
+      name: 'Tag Match User',
+      role: 'L3',
+      allowedTags: ['Punjab'],
+      active: true
+    };
+    const h: CrmContext = {
+      email: 'real-handler@automationsystems.org',
+      name: 'Real Handler',
+      role: 'L2',
+      allowedTags: ['Punjab'],
+      active: true
+    };
+    await adminService.saveUser(admin, { email: u.email, name: u.name, role: 'L3', allowedTags: ['Punjab'] });
+    await adminService.saveUser(admin, { email: h.email, name: h.name, role: 'L2', allowedTags: ['Punjab'] });
+
+    async function createThreeWays(customerId: string) {
+      const created = await caseService.createCase(u, customerId, { title: 'Via createCase', stage: 'Opportunity' });
+      const quickLogged = await caseService.quickLog(u, { customerId, title: 'Via quickLog', stage: 'Opportunity' });
+      const quoted = await quoteService.createQuotation(u, {
+        customerId,
+        title: 'Via first-quotation auto-case',
+        templateId: 'tpl-standard',
+        subtotal: 1000,
+        blocks: [{ title: 'Main', headers: ['Item', 'Amount'], rows: [['Panel', 1000]] }]
+      });
+      await quoteService.setQuoteStatus(u, quoted.quoteNo, quoted.rev, 'Sent');
+      return [created.id, quickLogged.caseId, quoted.caseId];
+    }
+
+    async function expectHandlers(caseIds: string[], expected: string[]) {
+      for (const caseId of caseIds) {
+        const detail = await caseService.getCase(u, caseId);
+        expect(detail.case.handlerList.map((row) => row.email)).toEqual(expected);
+      }
+    }
+
+    // A customer with a real handler H: all three creation paths must agree that H, not
+    // the creator U, owns the resulting case.
+    const handledCustomer = await customerService.createCustomer(admin, {
+      name: 'Handled Co', tags: ['Punjab'], type: 'OEM', priority: 'High', area: 'Ludhiana'
+    });
+    await customerService.addHandler(admin, handledCustomer.id, h.email);
+    await expectHandlers(await createThreeWays(handledCustomer.id), [h.email]);
+
+    // A Direct-only customer (no real handler, created by an L6 admin so nobody becomes a
+    // handler on creation): all three paths fall back to the creator, U.
+    const directCustomer = await customerService.createCustomer(admin, {
+      name: 'Direct Co', tags: ['Punjab'], type: 'OEM', priority: 'High', area: 'Ludhiana'
+    });
+    expect(repo.handlers.filter((row) => row.customerId === directCustomer.id).map((row) => row.email)).toEqual(['direct']);
+    await expectHandlers(await createThreeWays(directCustomer.id), [u.email]);
   });
 });
 

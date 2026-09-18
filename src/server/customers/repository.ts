@@ -3,10 +3,9 @@ import type { Sql, TransactionSql } from 'postgres';
 import { sql, withTransaction } from '../db/client';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS } from '../db/schema';
-import { joinPipe, normalizeEmail, parsePipe } from '../domain/lists';
+import { normalizeEmail } from '../domain/lists';
 import type {
   ActivityLogEntry,
-  CaseOwnerRow,
   CustomerCaseSummary,
   ContactRow,
   CustomerQuoteSummary,
@@ -445,31 +444,6 @@ export class PostgresCustomerRepository implements CustomerRepository {
       delete from public.handlers
       where customer_id = ${customerId}
         and user_email = 'direct'
-    `;
-  }
-
-  async listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]> {
-    const rows = (await this.db`
-      select case_id, customer_id, outcome, extra_owners
-      from public.cases
-      where customer_id = ${customerId}
-    `) as Array<{ case_id: string; customer_id: string; outcome: string | null; extra_owners: string | null }>;
-
-    return rows.map((row) => ({
-      id: row.case_id,
-      customerId: row.customer_id,
-      outcome: row.outcome ?? '',
-      extraOwners: parsePipe(row.extra_owners).map(normalizeEmail)
-    }));
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    await this.db`
-      update public.cases
-      set extra_owners = ${joinPipe(extraOwners)},
-          updated_at = now(),
-          version = version + 1
-      where case_id = ${caseId}
     `;
   }
 

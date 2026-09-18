@@ -2,7 +2,7 @@ import type { CrmContext } from '../auth/context';
 import { accessLevel, caseHandlers, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
-import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
+import { normalizeEmail, parseList, parsePipe } from '../domain/lists';
 import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';
 import { loadSettings, selectableTags, type LiveSettings } from '../settings/live';
 import { validSei } from './sei';
@@ -54,17 +54,6 @@ export type CustomerUserRow = {
   role: CrmRole;
   allowedTags: string[];
   active: boolean;
-};
-
-/**
- * Minimal projection of a case, used only to materialise ownership when a handler is added
- * (P11). `outcome` empty means the case is still active.
- */
-export type CaseOwnerRow = {
-  id: string;
-  customerId: string;
-  outcome: string;
-  extraOwners: string[];
 };
 
 export type ActivityLogEntry = {
@@ -129,8 +118,6 @@ export type CustomerRepository = {
   addHandler(handler: HandlerRow): Promise<void>;
   removeHandler(customerId: string, email: string): Promise<void>;
   removeDirectHandlers(customerId: string): Promise<void>;
-  listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]>;
-  setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void>;
   getSetting(key: string): Promise<string | null>;
   listSettings(): Promise<Array<{ key: string; value: string }>>;
   listUsers(): Promise<CustomerUserRow[]>;
@@ -905,11 +892,11 @@ export function createCustomerService(repo: CustomerRepository) {
       if (!email || !idx[email]?.active) {
         throw new Error('That email is not an active CRM user. Add them under Admin > Users first.');
       }
-      // P1: backend/admin users manage the whole book and are never account handlers. They
-      // remain fully eligible as case owners and as ticket assignees.
+      // P1: backend/admin users manage the whole book and are never account handlers.
+      // They remain fully eligible as ticket assignees.
       if (isBackendRole(idx[email].role)) {
         throw new Error(
-          `L5 and L6 users cannot be account handlers. ${nameOf(idx, email)} can still be added as a case owner or a ticket assignee.`
+          `L5 and L6 users cannot be account handlers. ${nameOf(idx, email)} can still be a ticket assignee.`
         );
       }
       if (currentHandlers.includes(email)) {
@@ -925,14 +912,6 @@ export function createCustomerService(repo: CustomerRepository) {
           assignedBy: normalizeEmail(user.email),
           assignedAt: nowIso()
         });
-        // P11: a new handler becomes an owner of this customer's ACTIVE cases only.
-        // Closed cases (any outcome, including Hold) are left byte-identical.
-        for (const caseRow of await trx.listCaseOwnerRows(customerId)) {
-          if (asText(caseRow.outcome)) continue;
-          const owners = uniqueEmails([...caseRow.extraOwners, email]);
-          if (owners.length === uniqueEmails(caseRow.extraOwners).length) continue;
-          await trx.setCaseExtraOwners(caseRow.id, owners);
-        }
         await trx.logActivity({
           action: 'HANDLER_ADD',
           entity: customerId,

@@ -46,8 +46,6 @@ export type QuoteCaseRow = {
   orderValue: number | '';
   wonCategories: string[];
   outcomeNote: string;
-  owner: string;
-  extraOwners: string[];
   assignee: string;
   closedOn: string;
   createdBy: string;
@@ -413,8 +411,6 @@ async function createAutoCase(
     orderValue: '',
     wonCategories: [],
     outcomeNote: '',
-    owner: normalizeEmail(user.email),
-    extraOwners: [],
     assignee: stage === 'Quoted' ? '' : normalizeEmail(user.email),
     closedOn: '',
     createdBy: normalizeEmail(user.email),

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { CrmContext } from '../auth/context';
-import { createCustomerService, type CaseOwnerRow, type CustomerRepository } from './service';
+import { createCustomerService, type CustomerRepository } from './service';
 
 const baseUser: CrmContext = {
   email: 'sales@automationsystems.org',
@@ -26,8 +26,6 @@ class FakeCustomerRepository implements CustomerRepository {
   cases: Awaited<ReturnType<CustomerRepository['listCasesByCustomer']>> = [];
   quotes: Awaited<ReturnType<CustomerRepository['listQuotesByCustomer']>> = [];
   lockedNames: string[] = [];
-  caseOwnerRows: CaseOwnerRow[] = [];
-  caseWrites: Array<{ caseId: string; extraOwners: string[] }> = [];
   settings: Record<string, string> = {};
   getSettingCalls = 0;
   listSettingsCalls = 0;
@@ -140,17 +138,6 @@ class FakeCustomerRepository implements CustomerRepository {
     this.handlers = this.handlers.filter(
       (handler) => !(handler.customerId === customerId && handler.email === 'direct')
     );
-  }
-
-  async listCaseOwnerRows(customerId: string): Promise<CaseOwnerRow[]> {
-    return this.caseOwnerRows.filter((row) => row.customerId === customerId);
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    const row = this.caseOwnerRows.find((item) => item.id === caseId);
-    if (!row) throw new Error('missing test case');
-    row.extraOwners = extraOwners;
-    this.caseWrites.push({ caseId, extraOwners });
   }
 
   async getSetting(key: string): Promise<string | null> {
@@ -924,28 +911,52 @@ describe('contact and handler service APIs', () => {
     ]);
   });
 
-  it('P11: adding a handler makes them an owner of the customer active cases only', async () => {
+  it('adding a handler performs no case write, and the new handler is seen on both the active and closed case via caseHandlers', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
     repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
-    repo.caseOwnerRows = [
-      { id: 'CASE-2026-0001', customerId: 'CUST-0001', outcome: '', extraOwners: [baseUser.email] },
-      { id: 'CASE-2026-0002', customerId: 'CUST-0001', outcome: 'Won', extraOwners: [baseUser.email] },
-      { id: 'CASE-2026-0003', customerId: 'CUST-0001', outcome: 'Hold', extraOwners: [baseUser.email] },
-      { id: 'CASE-2026-0004', customerId: 'CUST-0002', outcome: '', extraOwners: [baseUser.email] }
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'Active case',
+        stage: 'Opportunity',
+        priority: '',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        createdBy: baseUser.email,
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      },
+      {
+        id: 'CASE-2026-0002',
+        customerId: 'CUST-0001',
+        title: 'Closed case',
+        stage: 'Opportunity',
+        priority: '',
+        outcome: 'Won',
+        orderValue: 1000,
+        quotedValue: '',
+        createdBy: baseUser.email,
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      }
     ];
-    const closedBefore = { ...repo.caseOwnerRows[1], extraOwners: [...repo.caseOwnerRows[1].extraOwners] };
+    const casesBefore = JSON.parse(JSON.stringify(repo.cases));
 
     await service.addHandler(baseUser, 'CUST-0001', 'target');
 
-    // Active case on this customer gains the new handler.
-    expect(repo.caseOwnerRows[0].extraOwners).toEqual([baseUser.email, 'target@automationsystems.org']);
-    // Closed case is byte-identical.
-    expect(repo.caseOwnerRows[1]).toEqual(closedBefore);
-    // Hold counts as closed (outcome is set).
-    expect(repo.caseOwnerRows[2].extraOwners).toEqual([baseUser.email]);
-    // Another customer's case is untouched.
-    expect(repo.caseOwnerRows[3].extraOwners).toEqual([baseUser.email]);
+    // No case row is ever written when a handler is added - ownership is derived live.
+    expect(repo.cases).toEqual(casesBefore);
+
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+    const handlersByCase = Object.fromEntries(detail.cases.map((row) => [row.id, row.handlers]));
+    // The new handler shows up as a handler on both cases, active and closed alike -
+    // handlers are derived from the account, not materialised per case.
+    expect(handlersByCase['CASE-2026-0001']).toContain('Target User');
+    expect(handlersByCase['CASE-2026-0002']).toContain('Target User');
   });
 
   it('P11: removing a handler does not touch any case', async () => {
@@ -955,40 +966,26 @@ describe('contact and handler service APIs', () => {
       { customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' },
       { customerId: 'CUST-0001', email: 'target@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' }
     ];
-    repo.caseOwnerRows = [
+    repo.cases = [
       {
         id: 'CASE-2026-0001',
         customerId: 'CUST-0001',
+        title: 'Active case',
+        stage: 'Opportunity',
+        priority: '',
         outcome: '',
-        extraOwners: [baseUser.email, 'target@automationsystems.org']
-      },
-      { id: 'CASE-2026-0002', customerId: 'CUST-0001', outcome: 'Won', extraOwners: ['target@automationsystems.org'] }
+        orderValue: '',
+        quotedValue: '',
+        createdBy: baseUser.email,
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      }
     ];
-    const before = JSON.parse(JSON.stringify(repo.caseOwnerRows));
+    const before = JSON.parse(JSON.stringify(repo.cases));
 
     await service.removeHandler(baseUser, 'CUST-0001', 'target@automationsystems.org');
 
-    expect(repo.caseOwnerRows).toEqual(before);
-    expect(repo.caseWrites).toEqual([]);
-  });
-
-  it('P11: a handler already stored on an active case is not duplicated', async () => {
-    const { repo, service } = makeService();
-    repo.customers = [customer()];
-    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
-    repo.caseOwnerRows = [
-      {
-        id: 'CASE-2026-0001',
-        customerId: 'CUST-0001',
-        outcome: '',
-        extraOwners: [baseUser.email, 'target@automationsystems.org']
-      }
-    ];
-
-    await service.addHandler(baseUser, 'CUST-0001', 'target');
-
-    expect(repo.caseOwnerRows[0].extraOwners).toEqual([baseUser.email, 'target@automationsystems.org']);
-    expect(repo.caseWrites).toEqual([]);
+    expect(repo.cases).toEqual(before);
   });
 
   it('lets an existing handler remove handlers and rejects absent handlers', async () => {

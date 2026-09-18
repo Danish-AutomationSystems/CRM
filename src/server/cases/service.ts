@@ -2,7 +2,6 @@ import type { CrmContext } from '../auth/context';
 import {
   accessLevel,
   caseHandlers,
-  customerRealHandlers,
   ensureCanSeeCase,
   ensureFull
 } from '../auth/access';
@@ -10,7 +9,7 @@ import { CASE_STAGES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
 import { loadSettings } from '../settings/live';
-import { joinPipe, normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
+import { normalizeEmail, parseList, parsePipe } from '../domain/lists';
 import type { CustomerRecord } from '../domain/types';
 import type { DriveClient, DriveFileMeta } from '../drive/client';
 import { buildDriveName, disambiguate, validateRequestedUploads } from './attachments';
@@ -61,8 +60,6 @@ export type CaseRow = {
   orderValue: number | '';
   wonCategories: string[];
   outcomeNote: string;
-  owner: string;
-  extraOwners: string[];
   assignee: string;
   closedOn: string;
   createdBy: string;
@@ -367,15 +364,6 @@ function formatCase(row: CaseRow, ownership: Ownership, users: Record<string, Ca
   };
 }
 
-/**
- * P11: the owner set a brand-new case starts with. The customer's real account handlers, or
- * the creator when there are none (e.g. a Direct-handled account). Never empty.
- */
-function seedOwners(customerId: string, creatorEmail: string, ownership: Ownership): string[] {
-  const handlers = customerRealHandlers(customerId, ownership);
-  return handlers.length > 0 ? handlers : uniqueEmails([creatorEmail]);
-}
-
 function sortableUpdated(row: CaseRow): string {
   return String(row.updatedAt || row.createdAt || '');
 }
@@ -675,10 +663,6 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           orderValue: order ? Number(input.orderValue) : '',
           wonCategories: order ? validCategories(input.categories, live.categories) : [],
           outcomeNote: '',
-          owner: normalizeEmail(user.email),
-          // P11: ownership is materialised at creation - the customer's real handlers, or
-          // the creator when the only handler is the virtual Direct account.
-          extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownership),
           assignee: order || (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : assignee,
           closedOn: order ? now : '',
           createdBy: normalizeEmail(user.email),
@@ -1240,8 +1224,6 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           orderValue: '',
           wonCategories: [],
           outcomeNote: '',
-          owner: normalizeEmail(user.email),
-          extraOwners: seedOwners(customerId, normalizeEmail(user.email), ownershipFor(await trx.listHandlers())),
           assignee: (validOne(input.stage, CASE_STAGES) === 'Quoted') ? '' : normalizeEmail(user.email),
           closedOn: '',
           createdBy: normalizeEmail(user.email),

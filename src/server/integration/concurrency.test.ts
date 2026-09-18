@@ -216,18 +216,6 @@ class ConcurrentRepository implements CustomerRepository, CaseRepository, QuoteR
 
   settingRows: Record<string, string> = {};
 
-  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
-    return this.cases
-      .filter((row) => row.customerId === customerId)
-      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    const row = this.cases.find((item) => item.id === caseId);
-    if (!row) throw new Error('missing test case');
-    row.extraOwners = extraOwners;
-  }
-
   async listSettings(): Promise<Array<{ key: string; value: string }>> {
     return Object.entries(this.settingRows).map(([key, value]) => ({ key, value }));
   }
@@ -412,7 +400,7 @@ describe('CRM concurrency behavior', () => {
     const repo = new ConcurrentRepository();
     const service = createCaseService(repo);
     const created = await service.createCase(sales, 'CUST-9999', { title: 'Original', stage: 'Opportunity' });
-    Object.assign(repo.cases[0], { stage: initial, assignee: holder, extraOwners: ['worker@automationsystems.org'] });
+    Object.assign(repo.cases[0], { stage: initial, assignee: holder });
     let readReached!: () => void;
     let releaseRead!: () => void;
     const reached = new Promise<void>((resolve) => { readReached = resolve; });
@@ -442,7 +430,7 @@ describe('CRM concurrency behavior', () => {
       await editPromise;
     }
     expect(repo.cases[0]).toMatchObject({
-      stage: next, assignee: nextHolder, owner: sales.email, extraOwners: ['worker@automationsystems.org'],
+      stage: next, assignee: nextHolder,
       ...(edit === 'title' ? { title: 'Renamed' } : { priority: 'High' })
     });
   });
@@ -502,8 +490,6 @@ describe('CRM concurrency behavior', () => {
         orderValue: '',
         wonCategories: [],
         outcomeNote: '',
-        owner: sales.email,
-        extraOwners: [],
         assignee: sales.email,
         closedOn: '',
         createdBy: sales.email,
@@ -567,8 +553,11 @@ describe('CRM concurrency behavior', () => {
     }
     expect(new Set(repo.quotes.map((quote) => quote.customerId))).toEqual(new Set([repo.cases[0].customerId]));
     expect(repo.logs.filter((row) => row.action === 'CASE_CUSTOMER_MAP')).toHaveLength(1);
-    expect(repo.cases[0]).toMatchObject({ owner: original.owner, extraOwners: original.extraOwners, assignee: original.assignee, stage: 'Lead' });
+    expect(repo.cases[0]).toMatchObject({ createdBy: original.createdBy, assignee: original.assignee, stage: 'Lead' });
     expect(repo.handlers).toEqual(handlers);
-    expect((await cases.getCase(sales, id)).customer?.id).toBe(repo.cases[0].customerId);
+    const detail = await cases.getCase(sales, id);
+    expect(detail.customer?.id).toBe(repo.cases[0].customerId);
+    // caseHandlers is unaffected by the mapping race - still the creator fallback.
+    expect(detail.case.handlerList.map((h) => h.email)).toEqual([sales.email]);
   });
 });

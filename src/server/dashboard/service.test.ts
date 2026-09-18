@@ -154,18 +154,6 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
 
   settingRows: Record<string, string> = {};
 
-  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
-    return this.cases
-      .filter((row) => row.customerId === customerId)
-      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    const row = this.cases.find((item) => item.id === caseId);
-    if (!row) throw new Error('missing test case');
-    row.extraOwners = extraOwners;
-  }
-
   async getSetting(key: string): Promise<string | null> {
     return this.settingRows[key] ?? null;
   }
@@ -369,8 +357,6 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     orderValue: '',
     wonCategories: [],
     outcomeNote: '',
-    owner: sales.email,
-    extraOwners: [sales.email, 'peer@automationsystems.org'],
     assignee: sales.email,
     closedOn: '',
     createdBy: sales.email,
@@ -406,8 +392,6 @@ function makeService() {
       id: 'CASE-2026-0004',
       customerId: 'CUST-0002',
       title: 'NCR case',
-      owner: 'ncr@automationsystems.org',
-      extraOwners: ['ncr@automationsystems.org'],
       assignee: 'ncr@automationsystems.org'
     })
   ];
@@ -684,8 +668,6 @@ describe('mapped dashboard visibility filtering', () => {
         id: 'CASE-2026-0005',
         customerId: 'CUST-0003',
         title: 'NCR-tagged won case',
-        owner: sales.email,
-        extraOwners: [sales.email],
         assignee: sales.email,
         outcome: 'Won',
         orderValue: 4000,

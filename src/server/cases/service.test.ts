@@ -224,8 +224,6 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     orderValue: '',
     wonCategories: [],
     outcomeNote: '',
-    owner: sales.email,
-    extraOwners: [],
     assignee: sales.email,
     closedOn: '',
     createdBy: sales.email,
@@ -371,13 +369,13 @@ describe('quoted and revision lifecycle', () => {
 
   it('commits a verified Revision handover with its holder, stage and attachment', async () => {
     const { repo, drive, service } = makeAttachmentService();
-    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '', extraOwners: ['other@automationsystems.org'] });
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
     drive.put({ id: 'FILE-1', name: driveNameFor('revision.pdf'), size: 1, mimeType: 'application/pdf' });
     const result = await service.assignTicket(sales, repo.cases[0].id, 'worker', 'Revise panel', [
       { fileId: 'FILE-1', fileName: 'revision.pdf', mimeType: 'application/pdf', sizeBytes: 1 }
     ], true);
     expect(result).toMatchObject({ stage: 'Revision', assigneeEmail: 'worker@automationsystems.org' });
-    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org', owner: sales.email, extraOwners: ['other@automationsystems.org'] });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'worker@automationsystems.org' });
     expect(repo.attachments).toHaveLength(1);
     expect(repo.attachments[0]).toMatchObject({ driveFileId: 'FILE-1', activityId: repo.logIds[0] });
   });
@@ -411,13 +409,13 @@ describe('quoted and revision lifecycle', () => {
     expect(repo.cases[0]).toMatchObject({ stage: 'Quoted', assignee: '' });
   });
 
-  it('reassigns a repeat Revision request while preserving owners', async () => {
+  it('reassigns a repeat Revision request', async () => {
     const { repo, service } = makeAttachmentService();
-    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '', extraOwners: ['other@automationsystems.org'] });
+    repo.cases[0] = caseRow({ stage: 'Quoted', assignee: '' });
     await service.assignTicket(sales, repo.cases[0].id, 'worker', '', [], true);
     const result = await service.assignTicket(sales, repo.cases[0].id, 'other', '', [], true);
     expect(result).toMatchObject({ stage: 'Revision', assigneeEmail: 'other@automationsystems.org' });
-    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'other@automationsystems.org', owner: sales.email, extraOwners: ['other@automationsystems.org'] });
+    expect(repo.cases[0]).toMatchObject({ stage: 'Revision', assignee: 'other@automationsystems.org' });
   });
 
   it('requires a holder action instead of a direct Revision stage change', async () => {
@@ -1861,12 +1859,15 @@ describe('case service validates priorities and won categories against the live 
 });
 
 describe('customerless cases', () => {
-  it.each(['Lead', 'Opportunity'])('creates %s with creator ownership and existing assignment defaults', async (stage) => {
+  it.each(['Lead', 'Opportunity'])('creates %s with the creator as fallback handler and existing assignment defaults', async (stage) => {
     const { repo, service } = makeService();
     const before = structuredClone(repo.handlers);
     const { id } = await service.createCase(sales, '', { title: 'New enquiry', stage });
-    expect(repo.cases[0]).toMatchObject({ customerId: '', stage, owner: sales.email, extraOwners: [sales.email], assignee: sales.email });
-    expect(await service.getCase(sales, id)).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
+    expect(repo.cases[0]).toMatchObject({ customerId: '', stage, createdBy: sales.email, assignee: sales.email });
+    const detail = await service.getCase(sales, id);
+    expect(detail).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
+    // No customer means no handlers to derive from - the creator is the fallback.
+    expect(detail.case.handlerList.map((h) => h.email)).toEqual([sales.email]);
     expect((await service.listCases(sales))[0]).toMatchObject({ customerName: 'Customer not mapped' });
     expect(repo.handlers).toEqual(before);
   });
@@ -1887,7 +1888,7 @@ describe('customerless cases', () => {
 
   it('allows owners, assigned L1 and L4+, denying unrelated users even with matching tags', async () => {
     const { repo, service } = makeService();
-    repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org', extraOwners: [sales.email] })];
+    repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org' })];
     for (const viewer of [sales, repo.users[2], repo.users[3]]) {
       expect((await service.getCase(viewer, repo.cases[0].id)).customer).toBeNull();
       expect(await service.listCases(viewer)).toHaveLength(1);
@@ -1906,7 +1907,7 @@ describe('customerless cases', () => {
     const input = { customerLater: true, title: 'Identify later', stage: 'Lead' };
     const result = await service.quickLog(sales, input);
     expect(result.customerId).toBe('');
-    expect(repo.cases[0]).toMatchObject({ owner: sales.email, assignee: sales.email, customerId: '' });
+    expect(repo.cases[0]).toMatchObject({ createdBy: sales.email, assignee: sales.email, customerId: '' });
     expect(repo.customers).toHaveLength(1);
     await expect(service.quickLog(sales, { ...input, customerId: 'typo' })).rejects.toThrow('Customer typo');
     await expect(service.quickLog(sales, { ...input, stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);

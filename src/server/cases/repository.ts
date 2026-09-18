@@ -291,7 +291,7 @@ export class PostgresCaseRepository implements CaseRepository {
   async listCases(): Promise<CaseRow[]> {
     const rows = (await this.db`
       select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-             won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
+             won_categories, outcome_note, assignee, closed_on,
              created_by, created_at, updated_at
       from public.cases
     `) as CaseWriteDbRow[];
