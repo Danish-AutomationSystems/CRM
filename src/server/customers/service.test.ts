@@ -298,7 +298,7 @@ describe('customer service mutations', () => {
         outcome: '',
         orderValue: '',
         quotedValue: 1180,
-        owners: [baseUser.email],
+        createdBy: baseUser.email,
         assignee: baseUser.email,
         updatedAt: '2026-07-29T00:00:00.000Z'
       }
@@ -346,7 +346,7 @@ describe('customer service mutations', () => {
         outcome: '',
         orderValue: '',
         quotedValue: '',
-        owners: [baseUser.email],
+        createdBy: baseUser.email,
         assignee: baseUser.email,
         updatedAt: '2026-07-01T00:00:00.000Z'
       }
@@ -358,10 +358,13 @@ describe('customer service mutations', () => {
     expect(detail.cases[0].priority).toBe('High');
   });
 
-  it('resolves createdBy and each case owner email to a display name in the full customer detail response', async () => {
+  it('resolves createdBy and each account real handler to a display name in the full customer detail response', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer({ createdBy: 'manager@automationsystems.org' })];
-    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.handlers = [
+      { customerId: 'CUST-0001', email: 'backend@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' },
+      { customerId: 'CUST-0001', email: 'manager@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' }
+    ];
     repo.contacts = [];
     repo.cases = [
       {
@@ -373,23 +376,26 @@ describe('customer service mutations', () => {
         outcome: '',
         orderValue: '',
         quotedValue: '',
-        owners: ['backend@automationsystems.org', 'manager@automationsystems.org'],
+        createdBy: baseUser.email,
         assignee: baseUser.email,
         updatedAt: '2026-07-29T00:00:00.000Z'
       }
     ];
 
-    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    // Neither backend nor manager is baseUser, so view as an L4+ user - access level is
+    // not what this test is about.
+    const detail = await service.getCustomer({ ...baseUser, role: 'L4', allowedTags: ['*'] }, 'CUST-0001');
     if (detail.access !== 'FULL') throw new Error('expected FULL access');
 
     expect(detail.customer.createdBy).toBe('Manager User');
-    expect(detail.cases[0].owners).toEqual(['Backend User', 'Manager User']);
+    // The case's handlers come from the account's real handlers, not from who created it.
+    expect(detail.cases[0].handlers).toEqual(['Backend User', 'Manager User']);
   });
 
-  it('falls back to the raw email for a case owner with no matching user, without dropping the entry', async () => {
+  it('falls back to the raw email for a real handler with no matching user, without dropping the entry', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
-    repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.handlers = [{ customerId: 'CUST-0001', email: 'ghost@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' }];
     repo.contacts = [];
     repo.cases = [
       {
@@ -401,16 +407,18 @@ describe('customer service mutations', () => {
         outcome: '',
         orderValue: '',
         quotedValue: '',
-        owners: ['ghost@automationsystems.org'],
+        createdBy: baseUser.email,
         assignee: baseUser.email,
         updatedAt: '2026-07-29T00:00:00.000Z'
       }
     ];
 
-    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    // A ghost handler alone gives baseUser no FULL access (it isn't a handler here), so
+    // view as an L4+ user instead - access level is not what this test is about.
+    const detail = await service.getCustomer({ ...baseUser, role: 'L4', allowedTags: ['*'] }, 'CUST-0001');
     if (detail.access !== 'FULL') throw new Error('expected FULL access');
 
-    expect(detail.cases[0].owners).toEqual(['ghost@automationsystems.org']);
+    expect(detail.cases[0].handlers).toEqual(['ghost@automationsystems.org']);
   });
 
   it('leaves the account handlers array (name + raw email) untouched by createdBy/owner name resolution', async () => {

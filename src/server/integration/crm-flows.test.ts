@@ -194,7 +194,7 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
         outcome: row.outcome,
         orderValue: row.orderValue,
         quotedValue: '',
-        owners: [row.owner, ...row.extraOwners].filter(Boolean),
+        createdBy: row.createdBy,
         assignee: row.assignee,
         updatedAt: row.updatedAt
       }));

@@ -277,7 +277,7 @@ async function validateCase(
   if (!row) throw new Error(`Case ${caseId} was not found.`);
   if (row.customerId && row.customerId !== customerId) throw new Error('That case belongs to a different customer.');
   const { customer, ownership } = await ensureFullCustomer(repo, user, customerId);
-  ensureCanSeeCase(user, row.customerId ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE', row);
+  ensureCanSeeCase(user, row.customerId ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE', row, ownership);
   if (!row.customerId && mapCustomer) {
     await repo.updateCase(caseId, { customerId, updatedAt: nowIso() });
     await repo.logActivity({

@@ -1207,7 +1207,13 @@ describe('first quotation customer mapping', () => {
     for (const denial of ['source', 'NAME', 'NONE']) {
       const { deps, calls } = fakeDriveDeps();
       const { repo, service } = makeService(deps);
-      repo.cases[0] = caseRow({ customerId: '', owner: denial === 'source' ? 'other@automationsystems.org' : sales.email, extraOwners: [], assignee: '' });
+      repo.cases[0] = caseRow({
+        customerId: '',
+        createdBy: denial === 'source' ? 'other@automationsystems.org' : sales.email,
+        owner: denial === 'source' ? 'other@automationsystems.org' : sales.email,
+        extraOwners: [],
+        assignee: ''
+      });
       if (denial !== 'source') repo.handlers = [];
       if (denial === 'NONE') repo.customers[0].tags = ['NCR'];
       const transaction = vi.spyOn(repo, 'withTransaction');
@@ -1249,7 +1255,7 @@ describe('first quotation customer mapping', () => {
       repo.cases[0].customerId = '';
       const transact = repo.withTransaction.bind(repo);
       repo.withTransaction = async (fn) => {
-        if (revocation === 'case') Object.assign(repo.cases[0], { owner: 'other@example.com', extraOwners: [], assignee: '' });
+        if (revocation === 'case') Object.assign(repo.cases[0], { createdBy: 'other@example.com', owner: 'other@example.com', extraOwners: [], assignee: '' });
         else repo.handlers = [];
         return transact(fn);
       };

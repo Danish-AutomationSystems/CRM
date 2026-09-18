@@ -1,5 +1,5 @@
 import type { CrmContext } from '../auth/context';
-import { accessLevel, ensureFull } from '../auth/access';
+import { accessLevel, caseHandlers, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, parsePipe, uniqueEmails } from '../domain/lists';
@@ -84,7 +84,7 @@ export type CustomerCaseSummary = {
   outcome: string;
   orderValue: number | '';
   quotedValue: number | '';
-  owners: string[];
+  createdBy: string;
   assignee: string;
   updatedAt: string;
 };
@@ -598,9 +598,12 @@ export function createCustomerService(repo: CustomerRepository) {
         customer: { ...customer, createdBy: nameOf(idx, customer.createdBy) },
         handlers: handlerList,
         contacts,
-        cases: cases.map((caseRow) => ({
+        cases: cases.map(({ createdBy, ...caseRow }) => ({
           ...caseRow,
-          owners: caseRow.owners.map((email) => nameOf(idx, email))
+          handlers: caseHandlers(
+            { id: caseRow.id, customerId: caseRow.customerId, title: caseRow.title, createdBy, assignee: caseRow.assignee },
+            accessOwnership(ownership)
+          ).map((email) => nameOf(idx, email))
         })),
         quotes
       };

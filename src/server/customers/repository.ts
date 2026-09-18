@@ -66,7 +66,7 @@ type CustomerCaseDbRow = {
   outcome: string | null;
   order_value: string | number | null;
   quoted_value: string | number | null;
-  owners: string[] | null;
+  created_by: string | null;
   assignee: string | null;
   updated_at: string | Date;
 };
@@ -171,7 +171,7 @@ function toCustomerCase(row: CustomerCaseDbRow): CustomerCaseSummary {
     outcome: row.outcome ?? '',
     orderValue: numberOrBlank(row.order_value),
     quotedValue: numberOrBlank(row.quoted_value),
-    owners: row.owners ?? [],
+    createdBy: normalizeEmail(row.created_by),
     assignee: normalizeEmail(row.assignee),
     updatedAt: dateString(row.updated_at)
   };
@@ -336,26 +336,11 @@ export class PostgresCustomerRepository implements CustomerRepository {
           and case_id is not null
         order by case_id, rev desc
       )
-      -- P11: owners are materialised on the case, never derived from public.handlers.
       select c.case_id, c.customer_id, c.title, c.stage, c.priority, c.outcome, c.order_value,
              lq.quoted_value,
-             case
-               when cardinality(so.owners) > 0 then so.owners
-               when lower(btrim(coalesce(c.owner, ''))) in ('', 'direct') then '{}'::text[]
-               else array[lower(btrim(c.owner))]
-             end as owners,
+             c.created_by,
              c.assignee, c.updated_at
       from public.cases c
-      left join lateral (
-        select coalesce(
-          (
-            select array_agg(distinct lower(btrim(t)))
-            from unnest(string_to_array(coalesce(c.extra_owners, ''), '|')) as t
-            where btrim(t) <> ''
-          ),
-          '{}'::text[]
-        ) as owners
-      ) so on true
       left join latest_quotes lq on lq.case_id = c.case_id
       where c.customer_id = ${customerId}
       order by c.updated_at desc

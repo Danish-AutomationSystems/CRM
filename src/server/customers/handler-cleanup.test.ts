@@ -2,14 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { caseOwners } from '../auth/access';
-
 const MIGRATIONS_DIR = join(process.cwd(), 'supabase/migrations');
 const SEED_MIGRATION = '0005_materialise_case_owners.sql';
 const CLEANUP_MIGRATION = '0006_remove_l5_l6_handlers.sql';
 
 type Handler = { customerId: string; email: string };
 type Case = { id: string; customerId: string; title: string; assignee: string; owner: string; extraOwners: string[] };
+
+/**
+ * `access.ts`'s `caseOwners` (the materialised-ownership reader this migration pair was
+ * originally verified against) was retired when case ownership became a live derivation
+ * from account handlers (2026-09-18). This test is about the historical migration's own
+ * invariant - that `0006` never touches `public.cases` - so it keeps a frozen, local copy
+ * of exactly the old read semantics rather than reaching into current production code.
+ */
+function caseOwners(row: Case): string[] {
+  const stored = [...new Set(row.extraOwners.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+  if (stored.length > 0) return stored;
+  const owner = row.owner.trim().toLowerCase();
+  return owner && owner !== 'direct' ? [owner] : [];
+}
 
 /** Mirrors the DELETE the migration performs. */
 function applyCleanup(handlers: readonly Handler[], roles: Record<string, string>): Handler[] {

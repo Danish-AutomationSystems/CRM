@@ -1,8 +1,7 @@
 import type { CrmContext } from '../auth/context';
 import {
   accessLevel,
-  caseOwnerEntries,
-  caseOwners,
+  caseHandlers,
   customerRealHandlers,
   ensureCanSeeCase,
   ensureFull
@@ -311,8 +310,7 @@ function caseForAccess(row: CaseRow) {
     id: row.id,
     customerId: row.customerId,
     title: row.title,
-    owner: row.owner,
-    extraOwners: row.extraOwners,
+    createdBy: row.createdBy,
     assignee: row.assignee
   };
 }
@@ -320,7 +318,7 @@ function caseForAccess(row: CaseRow) {
 function visibleCase(user: CrmContext, customer: CaseCustomerRow | null | undefined, row: CaseRow, ownership: Ownership): boolean {
   const level = customer ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE';
   try {
-    ensureCanSeeCase(user, level, caseForAccess(row));
+    ensureCanSeeCase(user, level, caseForAccess(row), ownership);
     return true;
   } catch {
     return false;
@@ -329,7 +327,7 @@ function visibleCase(user: CrmContext, customer: CaseCustomerRow | null | undefi
 
 function ensureVisible(user: CrmContext, customer: CaseCustomerRow | null | undefined, row: CaseRow, ownership: Ownership): void {
   const level = customer ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE';
-  ensureCanSeeCase(user, level, caseForAccess(row));
+  ensureCanSeeCase(user, level, caseForAccess(row), ownership);
 }
 
 async function loadVisibleCase(repo: CaseRepository, user: CrmContext, id: string) {
@@ -342,17 +340,12 @@ async function loadVisibleCase(repo: CaseRepository, user: CrmContext, id: strin
   return { row, customer, ownership };
 }
 
-function ownerEmails(row: CaseRow): string[] {
-  return caseOwners(caseForAccess(row));
-}
-
-/** The customer's real account handlers - used for labelling only, never to derive ownership. */
-function realHandlerEmails(row: CaseRow, ownership: Ownership): string[] {
-  return customerRealHandlers(row.customerId, ownership);
+function handlerEmails(row: CaseRow, ownership: Ownership): string[] {
+  return caseHandlers(caseForAccess(row), ownership);
 }
 
 function formatCase(row: CaseRow, ownership: Ownership, users: Record<string, CaseUserRow>) {
-  const owners = ownerEmails(row);
+  const handlers = handlerEmails(row, ownership);
   return {
     id: row.id,
     title: row.title,
@@ -364,16 +357,8 @@ function formatCase(row: CaseRow, ownership: Ownership, users: Record<string, Ca
     orderValue: row.orderValue,
     wonCategories: row.wonCategories,
     outcomeNote: row.outcomeNote,
-    owners: owners.map((email) => nameOf(users, email)),
-    ownerEmails: owners,
-    // P10: each entry says WHY this person owns the case, so the UI stops calling the
-    // creator an account handler.
-    ownerList: caseOwnerEntries(caseForAccess(row), ownership).map((entry) => ({
-      email: entry.email,
-      name: nameOf(users, entry.email),
-      source: entry.source,
-      removable: entry.removable
-    })),
+    handlers: handlers.map((email) => nameOf(users, email)),
+    handlerList: handlers.map((email) => ({ email, name: nameOf(users, email) })),
     assignee: row.assignee ? nameOf(users, row.assignee) : '',
     assigneeEmail: normalizeEmail(row.assignee),
     closedOn: row.closedOn,
@@ -842,58 +827,6 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       });
     },
 
-    async addCaseOwner(user: CrmContext, caseId: string, who: unknown) {
-      const { row } = await loadVisibleCase(repo, user, caseId);
-      const owners = ownerEmails(row);
-      if (!owners.includes(normalizeEmail(user.email)) && roleLevel(user) < 4) {
-        throw new Error('Only a current owner of this case can add owners.');
-      }
-      const users = userIndex(await repo.listUsers());
-      const email = resolveUser(users, who);
-      const extras = uniqueEmails([...owners, email]);
-      if (extras.length === owners.length) throw new Error(`${nameOf(users, email)} is already an owner of this case.`);
-      await repo.updateCase(caseId, { extraOwners: extras, updatedAt: nowIso() });
-      await repo.logActivity({
-        action: 'CASE_OWNER_ADD',
-        entity: caseId,
-        customerId: row.customerId,
-        details: nameOf(users, email),
-        who: normalizeEmail(user.email)
-      });
-      return { ok: true };
-    },
-
-    async removeCaseOwner(user: CrmContext, caseId: string, who: unknown) {
-      const { row, ownership } = await loadVisibleCase(repo, user, caseId);
-      const owners = ownerEmails(row);
-      if (!owners.includes(normalizeEmail(user.email)) && roleLevel(user) < 4) {
-        throw new Error('Only a current owner of this case can remove owners.');
-      }
-      const email = expandEmail(who);
-      if (!owners.includes(email)) {
-        throw new Error('That user is not an owner of this case.');
-      }
-      // P11: a case must always keep at least one owner. Checked before the handler rule so
-      // a sole creator-owner gets the accurate message rather than a handler refusal.
-      if (owners.length <= 1) {
-        throw new Error('A case must always have at least one owner. Add another owner before removing this one.');
-      }
-      if (realHandlerEmails(row, ownership).includes(email)) {
-        throw new Error('Account handlers are owners of every case on the account and cannot be removed here. Remove them as a handler on the customer instead.');
-      }
-      const extras = owners.filter((owner) => owner !== email);
-      const users = userIndex(await repo.listUsers());
-      await repo.updateCase(caseId, { extraOwners: extras, updatedAt: nowIso() });
-      await repo.logActivity({
-        action: 'CASE_OWNER_REMOVE',
-        entity: caseId,
-        customerId: row.customerId,
-        details: nameOf(users, email),
-        who: normalizeEmail(user.email)
-      });
-      return { ok: true };
-    },
-
     /**
      * Issues one Drive resumable upload session per requested file so the
      * browser can send the bytes straight to Google - 100 MB cannot pass
@@ -1185,7 +1118,8 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
       const me = normalizeEmail(user.email);
       // P6: two independent filters combined with OR. The legacy `mine` flag is retained and
       // treated as `owned`, so an in-flight old client keeps working. Neither set = all
-      // visible cases, which is today's behaviour.
+      // visible cases, which is today's behaviour. owned = the case's account is one I
+      // handle, or I created it and the account has no handler.
       const wantOwned = asBool(filter.owned) || asBool(filter.mine);
       const wantAssigned = asBool(filter.assigned);
 
@@ -1194,7 +1128,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           const customer = customersById[row.customerId];
           if ((row.customerId && !customer) || !visibleCase(user, customer, row, ownership)) return false;
           if (wantOwned || wantAssigned) {
-            const isOwned = wantOwned && ownerEmails(row).includes(me);
+            const isOwned = wantOwned && handlerEmails(row, ownership).includes(me);
             const isAssigned = wantAssigned && normalizeEmail(row.assignee) === me;
             if (!isOwned && !isAssigned) return false;
           }
@@ -1223,7 +1157,7 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
             outcome: outcomeText,
             orderValue: row.orderValue,
             quotedValue: quotedValues[row.id] ?? '',
-            owners: ownerEmails(row).map((email) => nameOf(idx, email)),
+            handlers: handlerEmails(row, ownership).map((email) => nameOf(idx, email)),
             assignee: outcomeText ? '' : row.assignee ? nameOf(idx, row.assignee) : '',
             updatedOn: row.updatedAt
           };
