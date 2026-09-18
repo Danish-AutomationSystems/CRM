@@ -81,7 +81,7 @@ describe('accessLevel', () => {
     ).toBe('FULL');
   });
 
-  it('does not grant customer access to a ticket assignee or extra owner', () => {
+  it('gives an L2 user who is not a handler and has no matching tag no customer access', () => {
     const assignee = user('L2', ['NCR']);
 
     expect(accessLevel(assignee, customer, ownership())).toBe('NONE');

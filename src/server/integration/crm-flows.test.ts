@@ -532,9 +532,9 @@ describe('CRM integrated service flows', () => {
     const { repo, adminService, customerService, caseService, quoteService } = makeServices();
 
     // L3+ with a matching tag gets FULL access to a matching-tag customer purely by tag
-    // match - never having been added as a handler. Also the case's owner/creator, so it
-    // has case visibility while the case is still customerless (owner-visible, not
-    // customer-visible). Used to prove mapping neither needs nor grants handler membership.
+    // match - never having been added as a handler. Also the case's creator, so it is the
+    // case's handler by the creator fallback and has case visibility while the case is
+    // still customerless (handler-visible, not customer-visible). Used to prove mapping neither needs nor grants handler membership.
     const salesRep: CrmContext = {
       email: 'lead-sales@automationsystems.org',
       name: 'Lead Sales',
@@ -549,7 +549,7 @@ describe('CRM integrated service flows', () => {
       allowedTags: ['Punjab'],
       active: true
     };
-    // No shared tag, not an owner, not an assignee, below L4 - genuinely unrelated to the case.
+    // No shared tag, not a handler, not an assignee, below L4 - genuinely unrelated to the case.
     const outsider: CrmContext = {
       email: 'lead-outsider@automationsystems.org',
       name: 'Lead Outsider',
@@ -587,7 +587,7 @@ describe('CRM integrated service flows', () => {
     expect(ownedView.case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 3. First quotation saved against a real, fully-accessible customer - mapping happens
-    // atomically inside that same call, by the case owner (salesRep) who has FULL customer access purely by
+    // atomically inside that same call, by the case creator (salesRep) who has FULL customer access purely by
     // tag match and was never added as a handler.
     const customer = await customerService.createCustomer(admin, {
       name: 'Beta Switchgear',

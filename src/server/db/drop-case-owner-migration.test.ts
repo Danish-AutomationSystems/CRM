@@ -41,6 +41,14 @@ describe('drop case owner columns migration', () => {
     expect(sql.match(/raise exception/g)?.length).toBe(2);
   });
 
+  it('points its post-condition checks at the dropped columns and index, not at something else', () => {
+    const block = sql.match(/do \$\$([\s\S]*?)\$\$;/)?.[1].replace(/\s+/g, ' ') ?? '';
+    expect(block).toContain(
+      "from information_schema.columns where table_schema = 'public' and table_name = 'cases' and column_name in ('owner', 'extra_owners')"
+    );
+    expect(block).toContain("from pg_indexes where schemaname = 'public' and indexname = 'cases_owner_outcome_idx'");
+  });
+
   it('leaves the column-parity parser with neither column', () => {
     const columns = allCasesColumns(migrationsDir);
     expect(columns).not.toContain('owner');

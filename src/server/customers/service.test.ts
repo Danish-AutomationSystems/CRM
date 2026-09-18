@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { accessLevel, ensureCanSeeCase } from '../auth/access';
 import type { CrmContext } from '../auth/context';
+import { normalizeEmail } from '../domain/lists';
 import { createCustomerService, type CustomerRepository } from './service';
 
 const baseUser: CrmContext = {
@@ -206,6 +208,45 @@ function user(overrides: Partial<UserRow> = {}): UserRow {
   };
 }
 
+/** An L2 viewer whose tags match no test customer tagged NCR, so any access must come from handling. */
+const targetViewer: CrmContext = {
+  email: 'target@automationsystems.org',
+  name: 'Target User',
+  role: 'L2',
+  allowedTags: ['Punjab'],
+  active: true
+};
+
+/**
+ * Opens a case through the real access checks, with ownership built from the repository's
+ * handler rows exactly as `cases/service.ts` `ownershipFor` + `ensureVisible` build it.
+ * Throws 'You do not have access to this case.' when the viewer may not open it.
+ */
+function openCaseAs(repo: FakeCustomerRepository, viewer: CrmContext, caseId: string) {
+  const row = repo.cases.find((item) => item.id === caseId);
+  if (!row) throw new Error(`missing test case ${caseId}`);
+  const ownership = {
+    handlerEmailsByCustomerId: repo.handlers.reduce<Record<string, string[]>>((map, handler) => {
+      (map[handler.customerId] = map[handler.customerId] ?? []).push(normalizeEmail(handler.email));
+      return map;
+    }, {})
+  };
+  const owningCustomer = repo.customers.find((item) => item.id === row.customerId);
+  const level = owningCustomer
+    ? accessLevel(
+        viewer,
+        { id: owningCustomer.id, name: owningCustomer.name, tags: owningCustomer.tags, type: owningCustomer.type },
+        ownership
+      )
+    : 'NONE';
+  return ensureCanSeeCase(
+    viewer,
+    level,
+    { id: row.id, customerId: row.customerId, title: row.title, createdBy: row.createdBy, assignee: row.assignee },
+    ownership
+  );
+}
+
 function makeService(repo = new FakeCustomerRepository()) {
   repo.users = [
     user({ email: 'sales@automationsystems.org', name: 'Sales User' }),
@@ -408,7 +449,7 @@ describe('customer service mutations', () => {
     expect(detail.cases[0].handlers).toEqual(['ghost@automationsystems.org']);
   });
 
-  it('a Direct-only account falls each case back to its own creator, not a shared owner', async () => {
+  it('a Direct-only account falls each case back to its own creator as handler, not one shared handler', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
     // The only handler is the virtual Direct account - no real handler exists.
@@ -449,7 +490,7 @@ describe('customer service mutations', () => {
     if (detail.access !== 'FULL') throw new Error('expected FULL access');
 
     const byId = Object.fromEntries(detail.cases.map((row) => [row.id, row]));
-    // Each case falls back to ITS OWN creator - there is no single shared "account owner".
+    // Each case falls back to ITS OWN creator - there is no single shared account-level fallback.
     expect(byId['CASE-2026-0001'].handlers).toEqual([baseUser.name]);
     expect(byId['CASE-2026-0002'].handlers).toEqual(['Manager User']);
     for (const row of detail.cases) {
@@ -458,7 +499,7 @@ describe('customer service mutations', () => {
     }
   });
 
-  it('leaves the account handlers array (name + raw email) untouched by createdBy/owner name resolution', async () => {
+  it('leaves the account handlers array (name + raw email) untouched by per-case handler name resolution', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
     repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
@@ -911,9 +952,9 @@ describe('contact and handler service APIs', () => {
     ]);
   });
 
-  it('adding a handler performs no case write, and the new handler is seen on both the active and closed case via caseHandlers', async () => {
+  it('adding a handler shows the new handler on both the active and the closed case, and lets them open the closed case', async () => {
     const { repo, service } = makeService();
-    repo.customers = [customer()];
+    repo.customers = [customer({ tags: ['NCR'] })];
     repo.handlers = [{ customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' }];
     repo.cases = [
       {
@@ -943,12 +984,13 @@ describe('contact and handler service APIs', () => {
         updatedAt: '2026-07-29T00:00:00.000Z'
       }
     ];
-    const casesBefore = JSON.parse(JSON.stringify(repo.cases));
+    // Before: the target is neither a handler nor tag-matched, so the closed case is closed to them.
+    expect(() => openCaseAs(repo, targetViewer, 'CASE-2026-0002')).toThrow('You do not have access to this case.');
 
     await service.addHandler(baseUser, 'CUST-0001', 'target');
 
-    // No case row is ever written when a handler is added - ownership is derived live.
-    expect(repo.cases).toEqual(casesBefore);
+    // Closed cases are not frozen: the new handler can open the Won case straight away.
+    expect(openCaseAs(repo, targetViewer, 'CASE-2026-0002').id).toBe('CASE-2026-0002');
 
     const detail = await service.getCustomer(baseUser, 'CUST-0001');
     if (detail.access !== 'FULL') throw new Error('expected FULL access');
@@ -959,33 +1001,39 @@ describe('contact and handler service APIs', () => {
     expect(handlersByCase['CASE-2026-0002']).toContain('Target User');
   });
 
-  it('P11: removing a handler does not touch any case', async () => {
+  it('removing a handler drops them from the closed case they created, and denies them access to it', async () => {
     const { repo, service } = makeService();
-    repo.customers = [customer()];
+    repo.customers = [customer({ tags: ['NCR'] })];
     repo.handlers = [
       { customerId: 'CUST-0001', email: baseUser.email, assignedBy: baseUser.email, assignedAt: 'now' },
       { customerId: 'CUST-0001', email: 'target@automationsystems.org', assignedBy: baseUser.email, assignedAt: 'now' }
     ];
     repo.cases = [
       {
-        id: 'CASE-2026-0001',
+        id: 'CASE-2026-0002',
         customerId: 'CUST-0001',
-        title: 'Active case',
+        title: 'Closed case',
         stage: 'Opportunity',
         priority: '',
-        outcome: '',
-        orderValue: '',
+        outcome: 'Won',
+        orderValue: 1000,
         quotedValue: '',
-        createdBy: baseUser.email,
+        // The removed handler created this case; the account keeps another handler, so the
+        // creator fallback must not bring them back.
+        createdBy: 'target@automationsystems.org',
         assignee: baseUser.email,
         updatedAt: '2026-07-29T00:00:00.000Z'
       }
     ];
-    const before = JSON.parse(JSON.stringify(repo.cases));
+    expect(openCaseAs(repo, targetViewer, 'CASE-2026-0002').id).toBe('CASE-2026-0002');
 
     await service.removeHandler(baseUser, 'CUST-0001', 'target@automationsystems.org');
 
-    expect(repo.cases).toEqual(before);
+    const detail = await service.getCustomer(baseUser, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+    const closed = detail.cases.find((row) => row.id === 'CASE-2026-0002');
+    expect(closed?.handlers).toEqual(['Sales User']);
+    expect(() => openCaseAs(repo, targetViewer, 'CASE-2026-0002')).toThrow('You do not have access to this case.');
   });
 
   it('lets an existing handler remove handlers and rejects absent handlers', async () => {

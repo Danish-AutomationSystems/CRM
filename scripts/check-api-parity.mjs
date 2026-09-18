@@ -23,6 +23,10 @@ export function extractRegisteredApis(source) {
   );
 }
 
+// Retired 2026-09-18: case-level ownership was eliminated; a case's owners are its account's
+// handlers. Keep in step with `intentionallyUnmigrated` in src/server/rpc/api-parity.test.ts.
+const intentionallyUnmigrated = ['api_addCaseOwner', 'api_removeCaseOwner'];
+
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
 }
@@ -42,7 +46,9 @@ function main() {
 
   const uiMissingInSource = uiApis.filter((api) => !sourceApis.includes(api));
   const uiMissingInRegistry = uiApis.filter((api) => !registeredApis.includes(api));
-  const sourceMissingInRegistry = sourceApis.filter((api) => !registeredApis.includes(api));
+  const sourceMissingInRegistry = sourceApis.filter(
+    (api) => !registeredApis.includes(api) && !intentionallyUnmigrated.includes(api)
+  );
 
   if (uiMissingInSource.length || uiMissingInRegistry.length || sourceMissingInRegistry.length) {
     console.error('API parity check failed.');

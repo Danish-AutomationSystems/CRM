@@ -1111,6 +1111,31 @@ describe('case service ownership and assignment', () => {
     expect(detail.case.handlerList).toEqual([{ email: admin.email, name: 'Admin User' }]);
   });
 
+  it('listCases rows carry live handler display names and no owners key', async () => {
+    const { repo, service } = makeService();
+    repo.handlers.push({ customerId: 'CUST-0001', email: 'other@automationsystems.org', assignedBy: sales.email, assignedAt: 'now' });
+    // CASE-2026-0002 sits on a second account with no real handler, so its creator stands in.
+    repo.customers.push(customer({ id: 'CUST-0002', name: 'Handlerless Account' }));
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0001', createdBy: 'worker@automationsystems.org' }),
+      caseRow({ id: 'CASE-2026-0002', customerId: 'CUST-0002', createdBy: 'worker@automationsystems.org' })
+    ];
+    const manager: CrmContext = { ...sales, email: 'manager@automationsystems.org', name: 'Manager User', role: 'L4', allowedTags: ['*'] };
+
+    const rows = Object.fromEntries((await service.listCases(manager)).map((row) => [row.id, row]));
+
+    expect(rows['CASE-2026-0001'].handlers).toEqual([sales.name, 'Other Sales']);
+    expect(rows['CASE-2026-0002'].handlers).toEqual(['Ticket Worker']);
+    for (const row of Object.values(rows)) {
+      expect(row).not.toHaveProperty('owners');
+    }
+
+    // Derived live: a handler added afterwards replaces the creator on the next read.
+    repo.handlers.push({ customerId: 'CUST-0002', email: 'other@automationsystems.org', assignedBy: 'admin', assignedAt: 'now' });
+    const reread = (await service.listCases(manager)).find((row) => row.id === 'CASE-2026-0002');
+    expect(reread?.handlers).toEqual(['Other Sales']);
+  });
+
   it('the service object no longer offers addCaseOwner/removeCaseOwner', async () => {
     const { service } = makeService();
 
@@ -1457,7 +1482,7 @@ describe('case reads, lists, and quick log', () => {
     expect(result.case.assignee).toBe('Ticket Worker');
   });
 
-  it('filters visible cases, mine by owners only, open excluding Hold, search text, quoted value, and caps at 300', async () => {
+  it('filters visible cases, mine by handled accounts only, open excluding Hold, search text, quoted value, and caps at 300', async () => {
     const { repo, service } = makeService();
     repo.cases = Array.from({ length: 305 }, (_, index) =>
       caseRow({
@@ -1674,7 +1699,7 @@ describe('setCasePriority', () => {
   // Same user/handler shape as makeService()'s default fixtures, reused so we know it is
   // genuinely denied: 'refuses a user who cannot see the case and creates no upload session'
   // (beginAttachmentUpload access and validation, near line 352) proves this exact user -
-  // not a handler, not the assignee, not an owner of CASE-2026-0001 - fails loadVisibleCase.
+  // not a handler, not the creator, not the assignee of CASE-2026-0001 - fails loadVisibleCase.
   const outsider: CrmContext = {
     ...sales,
     email: 'other@automationsystems.org',
@@ -1886,7 +1911,7 @@ describe('customerless cases', () => {
     expect(repo.cases[0]).toMatchObject({ title: 'Updated', stage: 'Lead', customerId: '' });
   });
 
-  it('allows owners, assigned L1 and L4+, denying unrelated users even with matching tags', async () => {
+  it('allows the creator (handler by fallback), assigned L1 and L4+ on a customerless case, denying unrelated users even with matching tags', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org' })];
     for (const viewer of [sales, repo.users[2], repo.users[3]]) {

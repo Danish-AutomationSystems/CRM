@@ -51,9 +51,10 @@ export function accessLevel(
 
 /**
  * The customer's real account handlers, i.e. excluding the virtual `direct` placeholder.
- * This answers "is this person an account handler", and NOTHING else - in particular it is
- * no longer the source of case ownership (see `caseHandlers`). Keeping the two separate is
- * what fixes P10: the creator fallback used to be returned from the same function.
+ * This answers "is this person an account handler" and never includes the case creator.
+ * `caseHandlers` builds case ownership on top of it and adds the creator fallback itself when
+ * this returns nothing. Keeping the fallback out of this function is what fixes P10: the
+ * creator fallback used to be returned from the same function.
  */
 export function customerRealHandlers(customerId: string, ownership: AccessOwnership = EMPTY_OWNERSHIP): string[] {
   return customerHandlers(customerId, ownership).filter((email) => !isDirect(email));

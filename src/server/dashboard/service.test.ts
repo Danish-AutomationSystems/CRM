@@ -424,7 +424,7 @@ describe('dashboard service', () => {
     expect(backend.self).toBeNull();
   });
 
-  it('caps dashboard case and ticket lists at 60 and credits won value in full to every handler owner', async () => {
+  it('caps dashboard case and ticket lists at 60 and credits won value in full to every account handler', async () => {
     const { repo, dashboard } = makeService();
     repo.cases = Array.from({ length: 65 }, (_, index) =>
       caseRow({
@@ -651,13 +651,13 @@ describe('customerless dashboard', () => {
 });
 
 // Finding 4: computeDash used to have no viewer filter at all - a subject's own
-// dashboard aggregated every case it owned/was assigned, regardless of whether
+// dashboard aggregated every case it handled/was assigned, regardless of whether
 // the *viewer* (an L3 tag-matched into the subject's dashboard) could see that
 // case's customer. Intended behavior, matching every other per-case visibility
 // check in this file: a mapped case the viewer cannot see (no FULL customer
-// access, and the viewer is neither the case's owner nor its assignee) is
+// access, and the viewer is neither one of the case's handlers nor its assignee) is
 // dropped from that viewer's copy of the subject's stats and lists, even though
-// it is the subject's own work. An L4+ (seesAll) or the case owner/assignee
+// it is the subject's own work. An L4+ (seesAll) or a case handler/assignee
 // themselves still sees it - see auth/access.ts's caseVisible.
 describe('mapped dashboard visibility filtering', () => {
   it("drops a mapped case the viewer cannot see from the subject's dashboard, but keeps it for L4+", async () => {
@@ -675,13 +675,13 @@ describe('mapped dashboard visibility filtering', () => {
       })
     ];
 
-    // The subject (sales) always sees their own owned/assigned work.
+    // The subject (sales) always sees their own handled/assigned work.
     const own = await dashboard.dashboard(sales);
     expect(own.dash.stats.wonMonthValue).toBe(4000);
     expect(own.dash.stats.wonMonthCount).toBe(1);
 
     // supervisor (L3, allowedTags ['Punjab']) has no tag match on the NCR
-    // customer and is neither owner nor assignee of the case - it must be
+    // customer and is neither handler nor assignee of the case - it must be
     // invisible in supervisor's view of sales's dashboard.
     const supervisor = repo.users.find((row) => row.role === 'L3')!;
     const asSupervisor = await dashboard.dashboard(supervisor, sales.email);
