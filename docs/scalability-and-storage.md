@@ -148,7 +148,8 @@ round trip is typical for that geography, not a measured number). With `N` cases
 Both are called on nearly every service method that needs to compute ownership/visibility:
 `searchCustomers`, `myCustomers`, `allCustomers`, `getCustomer`, `createCase`, every case
 mutation (`addCaseOwner`, `removeCaseOwner`, `assignTicket`, `getCase`, `listCases`), and both
-dashboard functions. At **20-100 users this table stays tiny** (a few hundred bytes × user
+dashboard functions. (Superseded 2026-09-18: `addCaseOwner`/`removeCaseOwner` are removed; case
+ownership is now derived by `caseHandlers()` from the same `listHandlers()` read.) At **20-100 users this table stays tiny** (a few hundred bytes × user
 count — Section 3) so this specific pattern is not a near-term problem in isolation. It
 compounds the two problems above: every one of those requests already pays the cost of a full
 `customers`/`cases` scan, and now pays two more full-table reads on top, all sequentially
@@ -185,7 +186,8 @@ where status='Active'`; on `cases.customer_id`, `.assignee`, `.outcome`, `.stage
   to maintain them on every insert/update (write-amplification cost with zero read benefit
   today).
 - `cases_assignee_idx`, `cases_outcome_idx`, `cases_stage_idx`, `cases_updated_at_idx`,
-  `cases_closed_on_idx`, `cases_customer_stage_idx`, `cases_owner_outcome_idx` — same
+  `cases_closed_on_idx`, `cases_customer_stage_idx`, `cases_owner_outcome_idx` (superseded
+  2026-09-18: dropped with `cases.owner` by migration `0014`, not yet applied) — same
   situation: `listCases()` has no WHERE, so none of these can be used by the planner for that
   query. They would immediately become valuable the day `listCases()`/`listCustomers()` gain
   real `WHERE` clauses (Section 6, fix #1) — they were evidently added in anticipation of that
@@ -246,7 +248,8 @@ case_id(9, `CASE-2026-0001` style, yearly) + customer_id(9) + title(40) + detail
 free-text case notes) + source(15) + stage(9) + outcome(4) + order_value numeric(8) +
 won_categories(30) + outcome_note(60) + owner(28) + extra_owners(40) + assignee(28) +
 closed_on timestamptz(8) + created_by(28) + 2×timestamptz(16) + version(8) + header(28) ≈
-**≈ 520 bytes/row.** Round to **550 bytes**.
+**≈ 520 bytes/row.** Round to **550 bytes**. (Superseded 2026-09-18: migration `0014`, not yet
+applied, drops `owner` and `extra_owners`, about 68 bytes of the estimate above.)
 
 ### 3.5 `quotations` — the important one (`0001_initial_schema.sql:110-136`, plus `upload_data
 bytea` added in `0002_external_quote_upload_data.sql:1-3`)
