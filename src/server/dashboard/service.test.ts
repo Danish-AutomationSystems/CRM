@@ -714,3 +714,50 @@ describe('mapped dashboard visibility filtering', () => {
     expect(asManager.dash.stats.wonMonthCount).toBe(1);
   });
 });
+
+// Every default fixture case is createdBy sales, who is also a CUST-0001 handler - so
+// nothing in the default fixtures distinguishes "handler" from "creator". These tests
+// deliberately separate the two.
+describe('handler vs creator dashboard attribution', () => {
+  it("excludes a case from its non-handler creator's dashboard, but includes it for the account's real handler", async () => {
+    const { repo, dashboard } = makeService();
+    // CUST-0001's real handlers are sales and peer (makeService fixture). ncr created
+    // this case but is not a handler of CUST-0001 - the account already has real
+    // handlers, so ncr gets no creator fallback either.
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0010', title: 'Created by a non-handler', createdBy: 'ncr@automationsystems.org', assignee: '' })
+    ];
+
+    const manager: CrmContext = { ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] };
+    const asManagerViewingNcr = await dashboard.dashboard(manager, 'ncr');
+    expect(asManagerViewingNcr.dash.cases.map((row) => row.id)).not.toContain('CASE-2026-0010');
+
+    const peerContext: CrmContext = { ...sales, email: 'peer@automationsystems.org', name: 'Peer Sales', role: 'L2', allowedTags: ['Punjab'] };
+    const asPeer = await dashboard.dashboard(peerContext);
+    expect(asPeer.dash.cases.map((row) => row.id)).toContain('CASE-2026-0010');
+  });
+
+  it('gives an unrelated subject (no handler, creator or assignee relationship to anything) an empty case list', async () => {
+    const { dashboard } = makeService();
+    // Default fixtures only relate sales/peer/ncr to cases - an entirely unrelated
+    // user has no handler, creator or assignee claim on any of them.
+    const unrelated: CrmContext = { ...sales, email: 'unrelated@automationsystems.org', name: 'Unrelated User', role: 'L2', allowedTags: ['Punjab'] };
+
+    const result = await dashboard.dashboard(unrelated);
+
+    expect(result.dash.cases).toEqual([]);
+  });
+
+  it('lets the creator of an OPEN case on a handler-less mapped account see it on their dashboard', async () => {
+    const { repo, dashboard } = makeService();
+    repo.customers.push(customer({ id: 'CUST-0005', name: 'Delta Unmanaged', tags: ['Punjab'] }));
+    // No repo.handlers entry for CUST-0005 at all - the account has no real handler.
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0011', customerId: 'CUST-0005', title: 'Unhandled account enquiry', createdBy: sales.email, assignee: '' })
+    ];
+
+    const result = await dashboard.dashboard(sales);
+
+    expect(result.dash.cases.map((row) => row.id)).toContain('CASE-2026-0011');
+  });
+});

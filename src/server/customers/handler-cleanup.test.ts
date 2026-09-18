@@ -7,21 +7,6 @@ const SEED_MIGRATION = '0005_materialise_case_owners.sql';
 const CLEANUP_MIGRATION = '0006_remove_l5_l6_handlers.sql';
 
 type Handler = { customerId: string; email: string };
-type Case = { id: string; customerId: string; title: string; assignee: string; owner: string; extraOwners: string[] };
-
-/**
- * `access.ts`'s `caseOwners` (the materialised-ownership reader this migration pair was
- * originally verified against) was retired when case ownership became a live derivation
- * from account handlers (2026-09-18). This test is about the historical migration's own
- * invariant - that `0006` never touches `public.cases` - so it keeps a frozen, local copy
- * of exactly the old read semantics rather than reaching into current production code.
- */
-function caseOwners(row: Case): string[] {
-  const stored = [...new Set(row.extraOwners.map((email) => email.trim().toLowerCase()).filter(Boolean))];
-  if (stored.length > 0) return stored;
-  const owner = row.owner.trim().toLowerCase();
-  return owner && owner !== 'direct' ? [owner] : [];
-}
 
 /** Mirrors the DELETE the migration performs. */
 function applyCleanup(handlers: readonly Handler[], roles: Record<string, string>): Handler[] {
@@ -44,42 +29,6 @@ describe('P1 L5/L6 handler-removal migration', () => {
     { customerId: 'CUST-0004', email: 'bob@automationsystems.org' }
   ];
 
-  // Post-P11 state: every case carries its own materialised owner set.
-  const cases: Case[] = [
-    {
-      id: 'CASE-2026-0001',
-      customerId: 'CUST-0001',
-      title: 'Case CASE-2026-0001',
-      assignee: '',
-      owner: 'anita@automationsystems.org',
-      extraOwners: ['anita@automationsystems.org', 'boss@automationsystems.org']
-    },
-    {
-      id: 'CASE-2026-0002',
-      customerId: 'CUST-0002',
-      title: 'Case CASE-2026-0002',
-      assignee: '',
-      owner: 'admin@automationsystems.org',
-      extraOwners: ['admin@automationsystems.org']
-    },
-    {
-      id: 'CASE-2026-0003',
-      customerId: 'CUST-0003',
-      title: 'Case CASE-2026-0003',
-      assignee: '',
-      owner: 'anita@automationsystems.org',
-      extraOwners: ['anita@automationsystems.org']
-    },
-    {
-      id: 'CASE-2026-0004',
-      customerId: 'CUST-0004',
-      title: 'Case CASE-2026-0004',
-      assignee: '',
-      owner: 'bob@automationsystems.org',
-      extraOwners: ['bob@automationsystems.org']
-    }
-  ];
-
   it('deletes every L5/L6 handler row: count is > 0 before and exactly 0 after', () => {
     const before = handlers.filter((row) => ['L5', 'L6'].includes(roles[row.email] ?? ''));
     const after = applyCleanup(handlers, roles);
@@ -92,20 +41,6 @@ describe('P1 L5/L6 handler-removal migration', () => {
       'direct',
       'bob@automationsystems.org'
     ]);
-  });
-
-  it('no case loses an owner across the migration, because ownership is materialised', () => {
-    const ownersBefore = Object.fromEntries(cases.map((row) => [row.id, caseOwners(row)]));
-
-    applyCleanup(handlers, roles); // handler rows change; case rows are not touched at all.
-
-    for (const row of cases) {
-      expect({ id: row.id, owners: caseOwners(row) }).toEqual({ id: row.id, owners: ownersBefore[row.id] });
-      expect(caseOwners(row).length).toBeGreaterThan(0);
-    }
-    // Specifically: the L5 and the L6 stay owners of the cases they already owned.
-    expect(caseOwners(cases[0])).toContain('boss@automationsystems.org');
-    expect(caseOwners(cases[1])).toContain('admin@automationsystems.org');
   });
 
   it('is ordered strictly after the P11 seed migration and only touches public.handlers', () => {

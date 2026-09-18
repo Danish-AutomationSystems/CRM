@@ -421,6 +421,56 @@ describe('customer service mutations', () => {
     expect(detail.cases[0].handlers).toEqual(['ghost@automationsystems.org']);
   });
 
+  it('a Direct-only account falls each case back to its own creator, not a shared owner', async () => {
+    const { repo, service } = makeService();
+    repo.customers = [customer()];
+    // The only handler is the virtual Direct account - no real handler exists.
+    repo.handlers = [{ customerId: 'CUST-0001', email: 'direct', assignedBy: baseUser.email, assignedAt: 'now' }];
+    repo.contacts = [];
+    repo.cases = [
+      {
+        id: 'CASE-2026-0001',
+        customerId: 'CUST-0001',
+        title: 'First enquiry',
+        stage: 'Lead',
+        priority: '',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        createdBy: baseUser.email,
+        assignee: baseUser.email,
+        updatedAt: '2026-07-29T00:00:00.000Z'
+      },
+      {
+        id: 'CASE-2026-0002',
+        customerId: 'CUST-0001',
+        title: 'Second enquiry',
+        stage: 'Lead',
+        priority: '',
+        outcome: '',
+        orderValue: '',
+        quotedValue: '',
+        createdBy: 'manager@automationsystems.org',
+        assignee: 'manager@automationsystems.org',
+        updatedAt: '2026-07-30T00:00:00.000Z'
+      }
+    ];
+
+    // A Direct-only account gives baseUser no FULL access by being a handler, so view
+    // as an L4+ user - access level is not what this test is about.
+    const detail = await service.getCustomer({ ...baseUser, role: 'L4', allowedTags: ['*'] }, 'CUST-0001');
+    if (detail.access !== 'FULL') throw new Error('expected FULL access');
+
+    const byId = Object.fromEntries(detail.cases.map((row) => [row.id, row]));
+    // Each case falls back to ITS OWN creator - there is no single shared "account owner".
+    expect(byId['CASE-2026-0001'].handlers).toEqual([baseUser.name]);
+    expect(byId['CASE-2026-0002'].handlers).toEqual(['Manager User']);
+    for (const row of detail.cases) {
+      expect(row).not.toHaveProperty('owners');
+      expect(row).not.toHaveProperty('createdBy');
+    }
+  });
+
   it('leaves the account handlers array (name + raw email) untouched by createdBy/owner name resolution', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
