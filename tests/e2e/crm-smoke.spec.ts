@@ -94,7 +94,7 @@ const caseSummary = {
   stage: 'Opportunity',
   outcome: '',
   quotedValue: 120000,
-  owners: ['Playwright Admin'],
+  handlers: ['Playwright Admin'],
   assignee: 'Sales User',
   updatedOn: '2026-07-29'
 };
@@ -135,7 +135,7 @@ function customerDetailPayload() {
     },
     handlers: customerSummary.handlers,
     contacts: [{ id: 'CT-1', name: 'Primary contact', phone: '9999999999', email: '', designation: '', notes: '' }],
-    // Deliberately reuses caseSummary, whose long owner/assignee email
+    // Deliberately reuses caseSummary, whose long handler/assignee email
     // strings are exactly what previously blew the embedded Cases table
     // wider than its card (see the "customer detail page does not
     // overflow" test below).
@@ -186,9 +186,8 @@ function rpcData(fn: string) {
           details: 'Replace panel controls',
           orderValue: '',
           wonCategories: [],
-          // P10: owners now say WHY they own the case.
-          ownerList: [
-            { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+          handlerList: [
+            { email: 'playwright@automationsystems.org', name: 'Playwright Admin' }
           ]
         },
         canEdit: true,
@@ -234,8 +233,7 @@ function rpcData(fn: string) {
         blocks: [{ title: 'Items', headers: ['Item', 'Amount'], rows: [['Panel upgrade', '120000']] }],
         revisions: [{ quoteNo: 'QTN-2026-0001', rev: 0, status: 'Sent', date: '2026-07-29', total: 120000 }]
       };
-    // The Case-owners modal builds its "add another owner" picker from this, so
-    // the modal renders empty without it - which is what made the P10 test fail.
+    // The reassign-case modal builds its "suggested handlers" and search picker from this.
     case 'api_listAssignableUsers':
       return [
         { email: 'playwright@automationsystems.org', name: 'Playwright Admin', role: 'L6' },
@@ -545,7 +543,7 @@ test('the customer detail page does not overflow the mobile viewport', async ({ 
     `Set NEXT_PUBLIC_SUPABASE_URL=${fakeSupabaseUrl} and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to a dummy value to run the mocked-auth shell smoke test.`
   );
 
-  // Regression test: the embedded Cases table's long owner/assignee email
+  // Regression test: the embedded Cases table's long handler/assignee email
   // columns forced <table> past its card's width with nowhere to go,
   // widening #main/body/<html> along with it - the whole page became wider
   // than the viewport, matching the "have to pinch-zoom out to see it"
@@ -1053,17 +1051,14 @@ test('P9 - a Direct handler has no Remove button and no email address', async ({
   await expect(page.locator('#dashWho option[value="direct"]')).toHaveText('Direct (no login)');
 });
 
-test('P10 - a case creator is not mislabelled as the account handler', async ({ context, page }) => {
+test('P10 - the case page shows the account handlers, and there is no manage link', async ({ context, page }) => {
   test.skip(!isFakeSupabaseConfigured(), 'Needs the fake Supabase env.');
   await setUpAuthenticatedSession(context, page);
 
   await page.goto('/crm/case/CASE-2026-0001');
   await expect(page.getByRole('heading', { name: 'Panel upgrade' })).toBeVisible();
-  await page.getByRole('button', { name: 'manage' }).click();
-
-  const body = page.locator('#mbody');
-  await expect(body).toContainText('created this case');
-  await expect(body).not.toContainText('account handler — owner of every case on the account');
+  await expect(page.getByText('Handlers: Playwright Admin')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'manage' })).toHaveCount(0);
 });
 
 test('Admin config cards show configured items with edit/delete controls, and Case sources is gone', async ({
@@ -1210,7 +1205,7 @@ function quotedCaseFixture() {
     stage: 'Quoted',
     outcome: '',
     quotedValue: 120000,
-    owners: ['Playwright Admin'],
+    handlers: ['Playwright Admin'],
     assignee: '',
     priority: '',
     updatedOn: freshUpdatedOn
@@ -1226,8 +1221,8 @@ function quotedCaseGetCasePayload(overrides?: Record<string, unknown>) {
       details: 'Awaiting the customer PO.',
       orderValue: '',
       wonCategories: [],
-      ownerList: [
-        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+      handlerList: [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin' }
       ]
     },
     canEdit: true,
@@ -1343,7 +1338,7 @@ function unmappedCaseGetCasePayload(overrides?: Record<string, unknown>) {
       title: 'Lead without a customer',
       stage: 'Lead',
       outcome: '',
-      owners: ['Playwright Admin'],
+      handlers: ['Playwright Admin'],
       assignee: '',
       priority: '',
       updatedOn: freshUpdatedOn,
@@ -1351,8 +1346,8 @@ function unmappedCaseGetCasePayload(overrides?: Record<string, unknown>) {
       details: '',
       orderValue: '',
       wonCategories: [],
-      ownerList: [
-        { email: 'playwright@automationsystems.org', name: 'Playwright Admin', source: 'creator', removable: true }
+      handlerList: [
+        { email: 'playwright@automationsystems.org', name: 'Playwright Admin' }
       ]
     },
     canEdit: true,

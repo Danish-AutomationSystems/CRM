@@ -1181,14 +1181,14 @@ function renderCustomer(d){
     html += '<div class="card"><div class="ovl">Cases</div>';
     if(!(d.cases||[]).length) html += '<div class="empty">No cases yet — create one, or it will be created automatically with the first quotation.</div>';
     else{
-      html += '<table><tr><th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th class="tnum-r">Quotes</th><th>Updated</th></tr>';
+      html += '<table><tr><th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Handlers</th><th>Assigned to</th><th class="tnum-r">Quotes</th><th>Updated</th></tr>';
       d.cases.forEach(function(o){
         var val = o.outcome==='Won' ? o.orderValue : '';
         html += '<tr class="clk" onclick="nav(\'case\',\''+esc(o.id)+'\')">'+
           '<td class="mono">'+esc(o.id)+'</td><td><b>'+esc(o.title)+'</b></td>'+
           '<td>'+caseStatusChip(o.stage,o.outcome)+'</td><td>'+(priChip(o.priority)||'<span class="sub">—</span>')+'</td>'+
           '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
-          '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
+          '<td class="sub">'+esc((o.handlers||[]).join(', ')||'—')+'</td>'+
           '<td class="sub">'+(o.outcome ? '—' : esc(o.assignee||'—'))+'</td>'+
           '<td class="tnum-r mono">'+esc(o.quotes)+'</td>'+
           '<td class="sub mono">'+fmtDateTime(o.updatedOn)+'</td></tr>';
@@ -1329,40 +1329,6 @@ function mNewCase(custId){
     el('fo_title').focus();
   }).catch(oops);
 }
-/* P10: the modal used to call EVERY non-removable owner an account handler.
-   On a Direct-handled customer that made the person who merely created the
-   case look like the account handler. The server now says why each person
-   owns the case, so say exactly that. */
-function ownerSourceLabel(o){
-  if(o.source==='handler') return '(account handler — owner of every case on the account)';
-  if(o.source==='creator') return '(created this case)';
-  if(o.source==='manual')  return '(added to this case)';
-  /* Pre-P10 payloads carry no source; fall back to the old removable split. */
-  return o.removable ? '(added to this case)' : '(account handler — owner of every case on the account)';
-}
-function mOwners(){
-  var d=CUR.caseData; if(!d) return;
-  ensureUsers().then(function(){
-    var list=d.case.ownerList||[];
-    var rowsH = list.map(function(o){
-      return '<div class="qr"><div style="flex:1">'+esc(o.name)+' <span class="sub">'+esc(ownerSourceLabel(o))+'</span></div>'+
-        (o.removable?'<button class="btn lk" onclick="removeOwner(\''+esc(o.email)+'\')">remove</button>':'')+'</div>';
-    }).join('');
-    var body='<p class="hint" style="margin-top:0">Account handlers are always owners and can\'t be removed here (remove them as a handler on the customer instead). You can add other users as owners of this case.</p>'+
-      rowsH+
-      '<div class="frow" style="margin-top:12px"><div><label>Add another owner</label>'+userSelectHTML('own_user','')+'</div>'+
-      '<div style="display:flex;align-items:flex-end"><button class="btn" onclick="addOwner()">Add</button></div></div>';
-    openModal('Case owners', body, '<button class="btn ghost" onclick="closeModal()">Close</button>');
-  }).catch(oops);
-}
-function addOwner(){
-  var id=CUR.caseData.case.id;
-  gs('api_addCaseOwner', id, v('own_user')).then(function(){ closeModal(); toast('Owner added.'); vCase(id); }).catch(oops);
-}
-function removeOwner(email){
-  var id=CUR.caseData.case.id;
-  gs('api_removeCaseOwner', id, email).then(function(){ closeModal(); toast('Owner removed.'); vCase(id); }).catch(oops);
-}
 function setCaseKind(k){
   NEWCASE.kind = k;
   el('fk_seg').querySelectorAll('button').forEach(function(b){ b.className = (b.textContent.indexOf(k)===0 || (k==='Order'&&b.textContent.indexOf('Order')===0))?'on':''; });
@@ -1429,8 +1395,7 @@ function renderCase(d){
       '<div class="crumb">'+(d.customer?'<a onclick="nav(\'customers\')">Customers</a> / <a onclick="nav(\'customer\',\''+esc(d.customer.id)+'\')">'+esc(d.customer.name)+'</a>':'Customer not mapped')+' / <span class="mono">'+esc(o.id)+'</span></div>'+
       '<h1>'+esc(o.title)+'</h1>'+
       '<div class="sub" style="margin-top:5px">'+caseStatusChip(o.stage,o.outcome)+' '+priChip(o.priority)+
-      ' &nbsp; Owners: <b>'+esc((o.owners||[]).join(', ')||'—')+'</b>'+
-      (d.canEdit?' <button class="btn lk" onclick="mOwners()">manage</button>':'')+
+      ' &nbsp; Handlers: <b>'+esc((o.handlers||[]).join(', ')||'—')+'</b>'+
       (o.outcome || o.stage==='Quoted' ? '' :
         ' &nbsp;·&nbsp; Assigned to: <b>'+esc(o.assignee||'nobody')+'</b>'+
         (d.canAssignTicket?' <button class="btn lk" onclick="mAssignCase()">reassign</button>':''))+
@@ -1524,18 +1489,18 @@ function saveEditCase(id){
 }
 function mAssignCase(){
   var d=CUR.caseData; if(!d) return;
-  var sug=(d.case.ownerList||[]).map(function(o){ return {name:o.name, email:o.email}; });
+  var sug=(d.case.handlerList||[]).map(function(o){ return {name:o.name, email:o.email}; });
   mAssign(d.case.id, sug);
 }
 function mRequestRevision(after, caseData, note){
   var d=caseData||CUR.caseData; if(!d || !d.canRequestRevision || d.case.outcome) return;
-  mAssign(d.case.id, d.case.ownerList||[], true, after, note);
+  mAssign(d.case.id, d.case.handlerList||[], true, after, note);
 }
 function mAssign(id, suggestions, requestRevision, after, note){
   S._wk={ id:id, pick:null, sug:suggestions||[], revision:!!requestRevision, after:after };
   ensureUsers().then(function(){
     var bubbles = S._wk.sug.length
-      ? '<div class="hint" style="margin:0">Suggested — people who own this case</div><div class="bubbles">'+
+      ? '<div class="hint" style="margin:0">Suggested — this account\'s handlers</div><div class="bubbles">'+
         S._wk.sug.map(function(o){ return '<button type="button" class="bub" onclick="wkPick(\''+esc(o.email)+'\',\''+esc(String(o.name).replace(/\\/g,'').replace(/'/g,''))+'\')">'+esc(o.name)+'</button>'; }).join('')+'</div>'
       : '';
     openModal(S._wk.revision?'Mark revision':'Reassign ticket',
@@ -1803,7 +1768,7 @@ function loadCases(){
 function renderCases(list){
     if(!el('caseRes')) return;
     if(!list.length){ el('caseRes').innerHTML = '<div class="empty">No cases match these filters.</div>'; return; }
-    var html = '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Title</th><th>Customer</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Owners</th><th>Assigned to</th><th>Updated</th></tr>';
+    var html = '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Title</th><th>Customer</th><th>Status</th><th>Priority</th><th class="tnum-r">Value</th><th>Handlers</th><th>Assigned to</th><th>Updated</th></tr>';
     list.forEach(function(o){
       var val = o.outcome==='Won' ? o.orderValue : '';
       html += '<tr class="clk" onclick="nav(\'case\',\''+esc(o.id)+'\')">'+
@@ -1811,7 +1776,7 @@ function renderCases(list){
         '<td>'+esc(o.customerName||'Customer not mapped')+'</td>'+
         '<td>'+caseStatusChip(o.stage,o.outcome)+'</td><td>'+(priChip(o.priority)||'<span class="sub">—</span>')+'</td>'+
         '<td class="tnum-r">'+caseValueCell(o)+'</td>'+
-        '<td class="sub">'+esc((o.owners||[]).join(', ')||'—')+'</td>'+
+        '<td class="sub">'+esc((o.handlers||[]).join(', ')||'—')+'</td>'+
         '<td class="sub">'+(o.outcome || o.stage==='Quoted' ? '<span class="sub">—</span>' : esc(o.assignee||'—'))+'</td>'+
         '<td class="sub mono">'+fmtDateTime(o.updatedOn)+' '+agingChip(o.updatedOn,o.outcome)+'</td></tr>';
     });
