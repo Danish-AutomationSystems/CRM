@@ -1,6 +1,6 @@
 # AS CRM Migration Context
 
-Last updated: 2026-09-19 (case-owner layer eliminated, final review fixes applied: account/customer handlers are now the sole owners of every case, derived live, with a creator fallback; migration `0014` drops `cases.owner`/`extra_owners` but is NOT yet applied to production; settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator, case lifecycle: Quoted holder-clearing/Revision reassignment/customerless cases (migrations live in production), case page quote-entry redesign)
+Last updated: 2026-09-19 (case-owner layer eliminated, final review fixes applied: account/customer handlers are now the sole owners of every case, derived live, with a creator fallback; migration `0014` drops `cases.owner`/`extra_owners`, applied to production 2026-09-19; settings-drift fixed, Drive-first quotation uploads, ticket handover notes, case attachments, optional case priority, admin config module, form placeholders removed, admin bulk customer add, IST date formatting, customer view names not emails, case aging indicator, case lifecycle: Quoted holder-clearing/Revision reassignment/customerless cases (migrations live in production), case page quote-entry redesign)
 
 ## Project Purpose
 
@@ -403,7 +403,7 @@ Completed:
     `docs/superpowers/plans/2026-09-14-case-page-quote-entry-redesign.md`.
 
 - Eliminate the case-owner layer (2026-09-18, branch `feat/eliminate-case-owner-layer`;
-  **not yet merged to `main`, migration NOT yet applied to production**):
+  **merged to `main` and migration `0014` applied to production, both 2026-09-19**):
   - **Goal: account/customer handlers are now the sole owners of every case.** The standalone
     case-owner concept - explicit case-level owners materialised on `cases.extra_owners`/`owner`,
     the handler/creator/manual source distinction, the manage-owners modal, the propagation step that
@@ -602,7 +602,7 @@ Migrations:
 - `supabase/migrations/0002_external_quote_upload_data.sql`
 - `supabase/migrations/0003_performance_indexes.sql`
 - `supabase/migrations/0004_quotation_drive_link.sql`
-- `supabase/migrations/0005_materialise_case_owners.sql` - seeds `cases.extra_owners`. **MUST run before `0006`.** (Superseded 2026-09-18: the column it seeded is dropped by `0014`, below - not yet applied.)
+- `supabase/migrations/0005_materialise_case_owners.sql` - seeds `cases.extra_owners`. **MUST run before `0006`.** (Superseded 2026-09-18: the column it seeded is dropped by `0014`, below - applied 2026-09-19.)
 - `supabase/migrations/0006_remove_l5_l6_handlers.sql` - deletes L5/L6 handler rows; depends on `0005` having already materialised case ownership.
 - `supabase/migrations/0007_backfill_customer_locations.sql` - backfills empty `customers.tags` to `['TO BE FILLED']`.
 - `supabase/migrations/0008_customer_sei_multi_select.sql` - converts `customers.sei`/`recycle_bin.sei` from `text` to `text[]`, seeds `SEI_NAMES` empty.
@@ -611,8 +611,8 @@ Migrations:
 - `supabase/migrations/0011_case_priority.sql` - adds `cases.priority text not null default ''`.
 - `supabase/migrations/0012_case_revision_workflow.sql` - adds `Revision` to the stage CHECK constraint, clears (with audit) any existing Quoted case that still held an assignee, adds `cases_quoted_unassigned_check`.
 - `supabase/migrations/0013_customerless_cases.sql` - drops `cases.customer_id`'s NOT NULL (keeps the FK), adds `cases_quoted_customer_check` (Quoted/Won requires a customer).
-- `supabase/migrations/0014_drop_case_owner_columns.sql` - drops `cases.owner`, `cases.extra_owners`, and the `cases_owner_outcome_idx` index (case ownership is now derived live from account handlers, `src/server/auth/access.ts`'s `caseHandlers()`, never stored). **NOT applied to any environment as of this entry, and its `--dry-run` has not even been run** - no `DATABASE_URL` was available in the implementing environment. Applying it, like every migration here, requires the project owner's explicit go-ahead; see the backup-restore caveat in the migration file's own header comment before restoring any pre-`0014` backup afterward. Before its dry-run, check `select count(*) from public.cases where created_by is null and owner is not null` - those rows would lose the creator fallback after `0014` (`cases.created_by` is nullable per `0001`).
-- **13 of these 14 migrations are applied in every environment, including production** (`0001`-`0013`). `public.schema_migrations` held 13 rows as last verified 2026-09-14; not re-checked in the 2026-09-18 case-owner work (no DB access) (`0012`/`0013` applied 2026-09-14; `0014` not yet run anywhere). Verify with `scripts/apply-migrations.mjs` (or a direct `select count(*) from public.schema_migrations`) before assuming otherwise - do not trust a stale count in this file.
+- `supabase/migrations/0014_drop_case_owner_columns.sql` - drops `cases.owner`, `cases.extra_owners`, and the `cases_owner_outcome_idx` index (case ownership is now derived live from account handlers, `src/server/auth/access.ts`'s `caseHandlers()`, never stored). **Applied to production 2026-09-19** with the owner's go-ahead, after a clean pre-flight (0 cases with null `created_by` + `owner`) and dry-run. See the backup-restore caveat in the migration file's own header comment before restoring any pre-`0014` backup afterward. Before its dry-run, check `select count(*) from public.cases where created_by is null and owner is not null` - those rows would lose the creator fallback after `0014` (`cases.created_by` is nullable per `0001`).
+- **All 14 migrations are applied in production** (`0001`-`0014`). `0014` applied 2026-09-19 after a read-only pre-flight (7 cases, 0 with null `created_by` + `owner`) and dry-run; verified after: both columns and `cases_owner_outcome_idx` gone, `public.schema_migrations` = 14 rows. Verify with `scripts/apply-migrations.mjs --dry-run` before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
 
@@ -1014,11 +1014,9 @@ Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-c
   `docs/reports/2026-09-18-case-owner-layer-removal.md` for the before/after report. Final state at the
   tip of the branch: 760/760 tests (42 files), typecheck clean, production build clean, 33/33
   Playwright.
-  **Migration `0014` has NOT been applied to production, and its `--dry-run` has not even been run** -
-  no `DATABASE_URL` was available in the implementing environment; this needs the project owner's
-  explicit go-ahead before it runs anywhere, per this project's standing migration practice (see the
-  Current Production Status entry above for the backup-restore caveat). This branch has also not been
-  merged to `main` as of this entry.
+  Merged to `main` (`c4e8d43`) and pushed 2026-09-19. Migration `0014` applied to production
+  2026-09-19 after a clean pre-flight and dry-run (see the Current Production Status entry above for
+  the backup-restore caveat).
 
 ## If A New Agent Takes Over
 

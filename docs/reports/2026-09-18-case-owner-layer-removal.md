@@ -38,7 +38,7 @@ this documentation pass), followed by a final review fix wave; the commit list o
 | What changed | Previous behavior | New behavior |
 |---|---|---|
 | Who owns a case | Materialized per-case owner set (`cases.extra_owners`, falling back to `cases.owner`), independently editable from account handlers via `addCaseOwner`/`removeCaseOwner`. | Derived live from the account's real handlers, via `caseHandlers()` (`src/server/auth/access.ts`). No independent per-case owner concept exists. |
-| Where ownership is stored | `cases.owner` (set once at creation) + `cases.extra_owners` (pipe-text, kept in sync by a propagation loop). | Nowhere. `caseHandlers()` recomputes it on every read from `public.handlers` (via `AccessOwnership.handlerEmailsByCustomerId`) and `cases.created_by`. Both storage columns are dropped by migration `0014` (not yet applied). |
+| Where ownership is stored | `cases.owner` (set once at creation) + `cases.extra_owners` (pipe-text, kept in sync by a propagation loop). | Nowhere. `caseHandlers()` recomputes it on every read from `public.handlers` (via `AccessOwnership.handlerEmailsByCustomerId`) and `cases.created_by`. Both storage columns are dropped by migration `0014` (applied to production 2026-09-19). |
 | Account with no real handler (customerless / Direct-only) | `owner` (the creator, excluding `direct`) was the fallback, seeded at creation time into `extra_owners`/`owner` by `seedOwners`. | `caseHandlers()` falls back live to `normalizeEmail(caseRecord.createdBy)` (excluding `direct`) whenever `customerRealHandlers()` returns zero handlers - no seeding at creation, nothing stored. |
 | Closed (Won/Lost/Hold) cases when handlers change | Frozen: the handler-add propagation loop in `addHandler` (`src/server/customers/service.ts`) only touched the account's **active** cases, explicitly skipping closed ones - a closed case kept whatever owners it had at close time. | Live, no freeze: `caseHandlers()` is recomputed on every read regardless of case state, so adding a handler to an account changes that account's closed cases' handler list too, exactly like its open ones. Covered in `src/server/customers/service.test.ts` by `'adding a handler shows the new handler on both the active and the closed case, and lets them open the closed case'` and `'removing a handler drops them from the closed case they created, and denies them access to it'`, both of which check access through `accessLevel`/`ensureCanSeeCase`, not just the handler list. |
 | Adding a handler to a customer | `addHandler` propagated the new handler onto every active case via `listCaseOwnerRows`/`setCaseExtraOwners` (a DB write per active case). | `addHandler` performs zero case writes - the propagation loop, `CaseOwnerRow`, `listCaseOwnerRows`, and `setCaseExtraOwners` are all deleted. The new handler is simply visible the next time any of the account's cases (active or closed) is read. |
@@ -50,7 +50,7 @@ this documentation pass), followed by a final review fix wave; the commit list o
 | Case page / Cases tab / customer case list label | "Owners: `<names>` manage" with a manage-owners modal (`mOwners`/`addOwner`/`removeOwner`/`ownerSourceLabel`), table columns headed "Owners". | "Handlers: `<names>`" plain read-only list, no manage button, no modal (`docs/source-appscript/Index.html`). Table headers read "Handlers". API responses rename `owners`/`ownerEmails`/`ownerList` to `handlers`/`handlerList` in `getCase`, `listCases`, and the customer-detail case payload. |
 | Reassignment suggestions | `mAssign`'s suggestion-bubble hint sourced names from `ownerList`, worded "people who own this case." | Sources from `d.case.handlerList` (`mAssignCase()` in `Index.html`); hint reworded "this account's handlers." |
 | RPC surface | `api_addCaseOwner`, `api_removeCaseOwner` registered and callable (`src/server/cases/rpc.ts`). | Both removed. `src/server/rpc/api-parity.test.ts` asserts `hasRpc('api_addCaseOwner')`/`hasRpc('api_removeCaseOwner')` are both `false`, and lists them in `intentionallyUnmigrated` with a dated comment. |
-| Database schema | `public.cases` carried `owner` (text) and `extra_owners` (pipe-text), plus the `cases_owner_outcome_idx` index. | Migration `supabase/migrations/0014_drop_case_owner_columns.sql` drops both columns and the index, with a post-condition assertion both are gone. **Committed but NOT applied to production**; its `--dry-run` has not been run either (see Open before production, below). `cases.created_by` is untouched and unaffected - it is what the creator fallback reads. |
+| Database schema | `public.cases` carried `owner` (text) and `extra_owners` (pipe-text), plus the `cases_owner_outcome_idx` index. | Migration `supabase/migrations/0014_drop_case_owner_columns.sql` drops both columns and the index, with a post-condition assertion both are gone. **Applied to production 2026-09-19** after a clean pre-flight and dry-run (see Production rollout, below). `cases.created_by` is untouched and unaffected - it is what the creator fallback reads. |
 | Number of implementations of the ownership rule | Two: TypeScript `caseOwners()` (`src/server/auth/access.ts`) and a raw-SQL `CASE ... WHEN cardinality(...) > 0 ...` expression (`src/server/customers/repository.ts`), kept in sync by hand. | One: `caseHandlers()` (`src/server/auth/access.ts`). `customers/repository.ts`'s `listCasesByCustomer` query now selects `c.created_by` directly and the customer service layer calls `caseHandlers()` on each row - no SQL-side duplicate of the rule remains. |
 
 ## Known access reductions
@@ -93,21 +93,17 @@ migration or replacement path:
   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` exported in the same shell as the test run): **33 passed, 0
   failed, 0 skipped.** Run before the final review fix wave, which changed no UI code.
 
-## Open before production
+## Production rollout (2026-09-19)
 
-- **Migration `0014_drop_case_owner_columns.sql` has not been applied to any environment, including
-  production.** `public.schema_migrations` held 13 rows as last verified 2026-09-14; not re-checked
-  in this work (no DB access).
-- **Its `--dry-run` has also not been run** (`node scripts/apply-migrations.mjs --through 0014
-  --dry-run`) - no `DATABASE_URL`/`.env.local` was available in the environment this work was done in.
-  Run the dry-run first, then apply, both with the project owner's explicit go-ahead, exactly like every
-  other migration in this project's history.
-- **Before the dry-run, check for cases that would lose the creator fallback**:
-  `select count(*) from public.cases where created_by is null and owner is not null`. `cases.created_by`
-  is nullable (`0001_initial_schema.sql`), the old fallback read `owner`, and the new one reads
-  `created_by`; any such row has no fallback owner after `0014`. A related read-only check,
-  `select count(*) from public.cases where owner is distinct from created_by`, shows rows whose
-  fallback person changes.
+- Code pushed to `origin/main` and redeployed on Vercel (with the reset database password).
+- Pre-flight, read-only: 7 cases, 0 with `created_by is null and owner is not null` - no case lost its
+  fallback owner. `public.schema_migrations` held 13 rows.
+- `--dry-run`: only `0014` pending. Then applied: "Applied 0014_drop_case_owner_columns.sql".
+- Verified after apply: `owner`/`extra_owners` columns gone, `cases_owner_outcome_idx` gone,
+  7 cases all with `created_by`, `schema_migrations` = 14 rows. Site responds (`/` 307 to `/crm`, 200).
+
+## Still worth knowing
+
 - **Backup-restore caveat**, verbatim from the migration file's own header comment: "Backups taken
   before this migration still carry owner/extra_owners on public.cases rows. scripts/restore-database.mjs
   inserts every key it finds, so strip those two keys before restoring such a backup into a post-0014
