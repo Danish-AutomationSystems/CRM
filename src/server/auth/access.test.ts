@@ -3,8 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CrmUser } from './context';
 import {
   accessLevel,
-  caseOwnerEntries,
-  caseOwners,
+  caseHandlers,
   caseVisible,
   customerRealHandlers,
   ensureAdmin,
@@ -24,8 +23,7 @@ const caseRecord: CaseRecord = {
   id: 'CASE-2026-0001',
   customerId: customer.id,
   title: 'Panel enquiry',
-  owner: 'creator@automationsystems.org',
-  extraOwners: [],
+  createdBy: 'creator@automationsystems.org',
   assignee: ''
 };
 
@@ -83,88 +81,15 @@ describe('accessLevel', () => {
     ).toBe('FULL');
   });
 
-  it('does not grant customer access to a ticket assignee or extra owner', () => {
+  it('gives an L2 user who is not a handler and has no matching tag no customer access', () => {
     const assignee = user('L2', ['NCR']);
 
-    expect(
-      accessLevel(
-        assignee,
-        customer,
-        ownership({
-          assigneeEmailsByCustomerId: { [customer.id]: [assignee.email] },
-          extraOwnerEmailsByCustomerId: { [customer.id]: [assignee.email] }
-        })
-      )
-    ).toBe('NONE');
+    expect(accessLevel(assignee, customer, ownership())).toBe('NONE');
   });
 
   it('treats wildcard tags as matching customer tags', () => {
     expect(accessLevel(user('L2', ['*']), customer)).toBe('NAME');
     expect(accessLevel(user('L3', ['*']), customer)).toBe('FULL');
-  });
-});
-
-describe('caseOwners (materialised, P11)', () => {
-  it('reads the stored owner set and never consults the handlers table', () => {
-    const stored = { ...caseRecord, extraOwners: ['a@automationsystems.org', 'b@automationsystems.org'] };
-
-    // caseOwners takes no ownership argument at all - it structurally cannot read handlers.
-    expect(caseOwners).toHaveLength(1);
-    expect(caseOwners(stored)).toEqual(['a@automationsystems.org', 'b@automationsystems.org']);
-    expect(caseOwners({ ...stored, owner: 'someone-else@automationsystems.org' })).toEqual([
-      'a@automationsystems.org',
-      'b@automationsystems.org'
-    ]);
-  });
-
-  it('falls back to the creator so every case keeps at least one owner', () => {
-    expect(caseOwners({ ...caseRecord, extraOwners: [] })).toEqual(['creator@automationsystems.org']);
-    expect(caseOwners({ ...caseRecord, extraOwners: [], owner: 'direct' })).toEqual([]);
-    expect(caseOwners({ ...caseRecord, extraOwners: [], owner: '' })).toEqual([]);
-  });
-});
-
-describe('caseOwnerEntries (P10 owner sources)', () => {
-  const handlerOwn = ownership({
-    handlerEmailsByCustomerId: { [customer.id]: ['handler@automationsystems.org', 'direct'] }
-  });
-
-  it('labels a current account handler as source handler and refuses removal', () => {
-    const row = {
-      ...caseRecord,
-      extraOwners: ['handler@automationsystems.org', 'manual@automationsystems.org']
-    };
-
-    expect(caseOwnerEntries(row, handlerOwn)).toEqual([
-      { email: 'handler@automationsystems.org', source: 'handler', removable: false },
-      { email: 'manual@automationsystems.org', source: 'manual', removable: true }
-    ]);
-  });
-
-  it('labels the stored creator as source creator, not handler, and allows removal when others remain', () => {
-    const directOnly = ownership({ handlerEmailsByCustomerId: { [customer.id]: ['direct'] } });
-    const soleCreator = { ...caseRecord, extraOwners: ['creator@automationsystems.org'] };
-    const withPeer = {
-      ...caseRecord,
-      extraOwners: ['creator@automationsystems.org', 'peer@automationsystems.org']
-    };
-
-    expect(caseOwnerEntries(soleCreator, directOnly)).toEqual([
-      { email: 'creator@automationsystems.org', source: 'creator', removable: false }
-    ]);
-    expect(caseOwnerEntries(withPeer, directOnly)).toEqual([
-      { email: 'creator@automationsystems.org', source: 'creator', removable: true },
-      { email: 'peer@automationsystems.org', source: 'manual', removable: true }
-    ]);
-  });
-
-  it('treats a former handler as manual once the handler row is gone', () => {
-    const row = { ...caseRecord, extraOwners: ['handler@automationsystems.org', 'peer@automationsystems.org'] };
-
-    expect(caseOwnerEntries(row, ownership())).toEqual([
-      { email: 'handler@automationsystems.org', source: 'manual', removable: true },
-      { email: 'peer@automationsystems.org', source: 'manual', removable: true }
-    ]);
   });
 });
 
@@ -177,54 +102,67 @@ describe('customerRealHandlers', () => {
   });
 });
 
+describe('caseHandlers', () => {
+  const handlers = ownership({
+    handlerEmailsByCustomerId: { [customer.id]: ['anita@automationsystems.org', 'ravi@automationsystems.org'] }
+  });
+  const directOnly = ownership({ handlerEmailsByCustomerId: { [customer.id]: ['direct'] } });
+
+  it('returns the account real handlers and ignores the creator entirely', () => {
+    expect(caseHandlers(caseRecord, handlers)).toEqual(['anita@automationsystems.org', 'ravi@automationsystems.org']);
+  });
+  it('falls back to the creator on a customerless case', () => {
+    expect(caseHandlers({ ...caseRecord, customerId: '' }, handlers)).toEqual(['creator@automationsystems.org']);
+  });
+  it('falls back to the creator when the only handler is the virtual Direct account', () => {
+    expect(caseHandlers(caseRecord, directOnly)).toEqual(['creator@automationsystems.org']);
+  });
+  it('falls back to the creator when the account has no handler rows at all', () => {
+    expect(caseHandlers(caseRecord, ownership())).toEqual(['creator@automationsystems.org']);
+  });
+  it('returns nothing rather than inventing an owner when the creator is blank or Direct', () => {
+    expect(caseHandlers({ ...caseRecord, createdBy: '' }, ownership())).toEqual([]);
+    expect(caseHandlers({ ...caseRecord, createdBy: 'direct' }, ownership())).toEqual([]);
+  });
+  it('normalizes the creator email', () => {
+    expect(caseHandlers({ ...caseRecord, createdBy: ' Creator@AutomationSystems.org ' }, ownership())).toEqual([
+      'creator@automationsystems.org'
+    ]);
+  });
+});
+
 describe('caseVisible', () => {
-  it('lets account handlers, assignees, extra owners, full customer users, and L4+ see cases', () => {
-    const handler = user('L1', []);
-    const assignee = user('L2', ['NCR']);
-    const extraOwner = user('L2', ['NCR']);
-    const supervisor = user('L3', ['Punjab']);
-    const manager = user('L4', ['NCR']);
-    const own = ownership({ handlerEmailsByCustomerId: { [customer.id]: [handler.email] } });
+  const creator = user('L2');
+  const other = user('L1');
+  const handler = { ...user('L2'), email: 'anita@automationsystems.org' };
+  const created = { ...caseRecord, createdBy: creator.email };
+  const handled = ownership({ handlerEmailsByCustomerId: { [customer.id]: [handler.email] } });
 
-    expect(caseVisible(handler, 'FULL', caseRecord)).toBe(true);
-    expect(caseVisible(assignee, 'NONE', { ...caseRecord, assignee: assignee.email })).toBe(true);
-    expect(caseVisible(extraOwner, 'NONE', { ...caseRecord, extraOwners: [extraOwner.email] })).toBe(
-      true
-    );
-    expect(caseVisible(supervisor, 'FULL', caseRecord)).toBe(true);
-    expect(caseVisible(manager, 'FULL', caseRecord)).toBe(true);
+  it('L4+ sees every case, even with no customer access and no relationship', () => {
+    expect(caseVisible(user('L4'), 'NONE', created, handled)).toBe(true);
   });
-
-  it('hides cases from name-only customer users who are not owners or assignees', () => {
-    const sales = user('L2', ['Punjab']);
-
-    expect(caseVisible(sales, 'NAME', caseRecord)).toBe(false);
+  it('a real handler sees the case through FULL customer access', () => {
+    expect(caseVisible(handler, accessLevel(handler, customer, handled), created, handled)).toBe(true);
   });
-
-  it('uses the stored owner set, so adding a handler row alone no longer grants case ownership', () => {
-    const creator = user('L2', ['NCR']);
-    const other = user('L2', ['NCR']);
-    const otherIsHandler = ownership({
-      handlerEmailsByCustomerId: { [customer.id]: ['other@automationsystems.org'] }
-    });
-
-    // `otherIsHandler` is deliberately unused by caseVisible: handler rows no longer feed
-    // case ownership at all.
-    expect(otherIsHandler.handlerEmailsByCustomerId[customer.id]).toEqual(['other@automationsystems.org']);
-    // Creator fallback still applies while nothing is stored.
-    expect(caseVisible(creator, 'NONE', { ...caseRecord, owner: creator.email })).toBe(true);
-    // A handler row that was never materialised onto the case does not make the case visible.
-    expect(
-      caseVisible({ ...other, email: 'other@automationsystems.org' }, 'NONE', { ...caseRecord, owner: creator.email })
-    ).toBe(false);
-    // Materialised ownership does.
-    expect(
-      caseVisible({ ...other, email: 'other@automationsystems.org' }, 'NONE', {
-        ...caseRecord,
-        owner: creator.email,
-        extraOwners: ['other@automationsystems.org']
-      })
-    ).toBe(true);
+  it('an unrelated L1 or tag-mismatched L3 user is denied', () => {
+    expect(caseVisible(other, 'NONE', created, handled)).toBe(false);
+    const l3 = user('L3', ['Gujarat']);
+    expect(caseVisible(l3, accessLevel(l3, customer, handled), created, handled)).toBe(false);
+  });
+  it('the assignee sees the case whatever the handler state', () => {
+    expect(caseVisible(other, 'NONE', { ...created, assignee: other.email }, handled)).toBe(true);
+  });
+  it('the creator sees a case whose account has no real handler', () => {
+    expect(caseVisible(creator, 'NONE', created, ownership())).toBe(true);
+  });
+  it('the creator sees a customerless case', () => {
+    expect(caseVisible(creator, 'NONE', { ...created, customerId: '' }, handled)).toBe(true);
+  });
+  it('the creator loses the case the moment the account gains a real handler', () => {
+    expect(caseVisible(creator, 'NONE', created, handled)).toBe(false);
+  });
+  it('the creator keeps the case after a handler exists only by being the assignee', () => {
+    expect(caseVisible(creator, 'NONE', { ...created, assignee: creator.email }, handled)).toBe(true);
   });
 });
 
@@ -233,7 +171,7 @@ describe('authorization guards', () => {
     const admin = user('L6', []);
 
     expect(ensureFull(admin, customer)).toBe(customer);
-    expect(ensureCanSeeCase(admin, 'FULL', caseRecord)).toBe(caseRecord);
+    expect(ensureCanSeeCase(admin, 'FULL', caseRecord, ownership())).toBe(caseRecord);
     expect(ensureAdmin(admin)).toBe(admin);
   });
 
@@ -241,7 +179,7 @@ describe('authorization guards', () => {
     const sales = user('L2', ['Punjab']);
 
     expect(() => ensureFull(sales, customer, ownership())).toThrow('not an account handler');
-    expect(() => ensureCanSeeCase(sales, 'NAME', caseRecord)).toThrow('access to this case');
+    expect(() => ensureCanSeeCase(sales, 'NAME', caseRecord, ownership())).toThrow('access to this case');
     expect(() => ensureAdmin(user('L5'))).toThrow('Admin access requires L6');
   });
 });

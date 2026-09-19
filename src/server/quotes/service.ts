@@ -46,8 +46,6 @@ export type QuoteCaseRow = {
   orderValue: number | '';
   wonCategories: string[];
   outcomeNote: string;
-  owner: string;
-  extraOwners: string[];
   assignee: string;
   closedOn: string;
   createdBy: string;
@@ -277,7 +275,7 @@ async function validateCase(
   if (!row) throw new Error(`Case ${caseId} was not found.`);
   if (row.customerId && row.customerId !== customerId) throw new Error('That case belongs to a different customer.');
   const { customer, ownership } = await ensureFullCustomer(repo, user, customerId);
-  ensureCanSeeCase(user, row.customerId ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE', row);
+  ensureCanSeeCase(user, row.customerId ? accessLevel(user, customerForAccess(customer), ownership) : 'NONE', row, ownership);
   if (!row.customerId && mapCustomer) {
     await repo.updateCase(caseId, { customerId, updatedAt: nowIso() });
     await repo.logActivity({
@@ -413,8 +411,6 @@ async function createAutoCase(
     orderValue: '',
     wonCategories: [],
     outcomeNote: '',
-    owner: normalizeEmail(user.email),
-    extraOwners: [],
     assignee: stage === 'Quoted' ? '' : normalizeEmail(user.email),
     closedOn: '',
     createdBy: normalizeEmail(user.email),

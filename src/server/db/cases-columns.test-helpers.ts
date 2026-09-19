@@ -28,6 +28,23 @@ export function selectColumns(source: string, method: string, table: string): st
 }
 
 /**
+ * Apply one migration file's effect on the set of public.cases columns: `add column` adds,
+ * `drop column` removes. `alter column ... drop not null` and `drop constraint` are not column
+ * drops and are ignored - the regex requires the literal words `drop column`.
+ */
+export function applyCasesColumnMigration(names: Set<string>, migrationSql: string): void {
+  const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
+  for (const statement of statements) {
+    for (const add of statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi)) {
+      names.add(add[1].toLowerCase());
+    }
+    for (const drop of statement[1].matchAll(/drop\s+column\s+(?:if\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi)) {
+      names.delete(drop[1].toLowerCase());
+    }
+  }
+}
+
+/**
  * EVERY column of public.cases: the initial CREATE TABLE plus every later ALTER.
  *
  * Deliberately not limited to migration-added columns. A guard over only the new
@@ -75,12 +92,7 @@ export function allCasesColumns(migrationsDir: string): string[] {
   }
 
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
-    const migrationSql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const statements = migrationSql.matchAll(/alter\s+table\s+(?:only\s+)?public\.cases\b([\s\S]*?);/gi);
-    for (const statement of statements) {
-      const adds = statement[1].matchAll(/add\s+column\s+(?:if\s+not\s+exists\s+)?"?([a-z_][a-z0-9_]*)"?/gi);
-      for (const add of adds) names.add(add[1].toLowerCase());
-    }
+    applyCasesColumnMigration(names, fs.readFileSync(path.join(dir, file), 'utf8'));
   }
 
   return [...names].sort();

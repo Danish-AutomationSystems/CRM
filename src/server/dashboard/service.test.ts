@@ -112,7 +112,7 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
         outcome: row.outcome,
         orderValue: row.orderValue,
         quotedValue: '',
-        owners: [row.owner, ...row.extraOwners].filter(Boolean),
+        createdBy: row.createdBy,
         assignee: row.assignee,
         updatedAt: row.updatedAt
       }));
@@ -153,18 +153,6 @@ class FakeDashboardRepository implements DashboardRepository, CaseRepository, Cu
   }
 
   settingRows: Record<string, string> = {};
-
-  async listCaseOwnerRows(customerId: string): Promise<Array<{ id: string; customerId: string; outcome: string; extraOwners: string[] }>> {
-    return this.cases
-      .filter((row) => row.customerId === customerId)
-      .map((row) => ({ id: row.id, customerId: row.customerId, outcome: row.outcome, extraOwners: row.extraOwners }));
-  }
-
-  async setCaseExtraOwners(caseId: string, extraOwners: string[]): Promise<void> {
-    const row = this.cases.find((item) => item.id === caseId);
-    if (!row) throw new Error('missing test case');
-    row.extraOwners = extraOwners;
-  }
 
   async getSetting(key: string): Promise<string | null> {
     return this.settingRows[key] ?? null;
@@ -369,8 +357,6 @@ function caseRow(overrides: Partial<CaseRow> = {}): CaseRow {
     orderValue: '',
     wonCategories: [],
     outcomeNote: '',
-    owner: sales.email,
-    extraOwners: [sales.email, 'peer@automationsystems.org'],
     assignee: sales.email,
     closedOn: '',
     createdBy: sales.email,
@@ -406,8 +392,6 @@ function makeService() {
       id: 'CASE-2026-0004',
       customerId: 'CUST-0002',
       title: 'NCR case',
-      owner: 'ncr@automationsystems.org',
-      extraOwners: ['ncr@automationsystems.org'],
       assignee: 'ncr@automationsystems.org'
     })
   ];
@@ -440,7 +424,7 @@ describe('dashboard service', () => {
     expect(backend.self).toBeNull();
   });
 
-  it('caps dashboard case and ticket lists at 60 and credits won value in full to every handler owner', async () => {
+  it('caps dashboard case and ticket lists at 60 and credits won value in full to every account handler', async () => {
     const { repo, dashboard } = makeService();
     repo.cases = Array.from({ length: 65 }, (_, index) =>
       caseRow({
@@ -667,13 +651,13 @@ describe('customerless dashboard', () => {
 });
 
 // Finding 4: computeDash used to have no viewer filter at all - a subject's own
-// dashboard aggregated every case it owned/was assigned, regardless of whether
+// dashboard aggregated every case it handled/was assigned, regardless of whether
 // the *viewer* (an L3 tag-matched into the subject's dashboard) could see that
 // case's customer. Intended behavior, matching every other per-case visibility
 // check in this file: a mapped case the viewer cannot see (no FULL customer
-// access, and the viewer is neither the case's owner nor its assignee) is
+// access, and the viewer is neither one of the case's handlers nor its assignee) is
 // dropped from that viewer's copy of the subject's stats and lists, even though
-// it is the subject's own work. An L4+ (seesAll) or the case owner/assignee
+// it is the subject's own work. An L4+ (seesAll) or a case handler/assignee
 // themselves still sees it - see auth/access.ts's caseVisible.
 describe('mapped dashboard visibility filtering', () => {
   it("drops a mapped case the viewer cannot see from the subject's dashboard, but keeps it for L4+", async () => {
@@ -684,8 +668,6 @@ describe('mapped dashboard visibility filtering', () => {
         id: 'CASE-2026-0005',
         customerId: 'CUST-0003',
         title: 'NCR-tagged won case',
-        owner: sales.email,
-        extraOwners: [sales.email],
         assignee: sales.email,
         outcome: 'Won',
         orderValue: 4000,
@@ -693,13 +675,13 @@ describe('mapped dashboard visibility filtering', () => {
       })
     ];
 
-    // The subject (sales) always sees their own owned/assigned work.
+    // The subject (sales) always sees their own handled/assigned work.
     const own = await dashboard.dashboard(sales);
     expect(own.dash.stats.wonMonthValue).toBe(4000);
     expect(own.dash.stats.wonMonthCount).toBe(1);
 
     // supervisor (L3, allowedTags ['Punjab']) has no tag match on the NCR
-    // customer and is neither owner nor assignee of the case - it must be
+    // customer and is neither handler nor assignee of the case - it must be
     // invisible in supervisor's view of sales's dashboard.
     const supervisor = repo.users.find((row) => row.role === 'L3')!;
     const asSupervisor = await dashboard.dashboard(supervisor, sales.email);
@@ -712,5 +694,52 @@ describe('mapped dashboard visibility filtering', () => {
     const asManager = await dashboard.dashboard(manager, sales.email);
     expect(asManager.dash.stats.wonMonthValue).toBe(4000);
     expect(asManager.dash.stats.wonMonthCount).toBe(1);
+  });
+});
+
+// Every default fixture case is createdBy sales, who is also a CUST-0001 handler - so
+// nothing in the default fixtures distinguishes "handler" from "creator". These tests
+// deliberately separate the two.
+describe('handler vs creator dashboard attribution', () => {
+  it("excludes a case from its non-handler creator's dashboard, but includes it for the account's real handler", async () => {
+    const { repo, dashboard } = makeService();
+    // CUST-0001's real handlers are sales and peer (makeService fixture). ncr created
+    // this case but is not a handler of CUST-0001 - the account already has real
+    // handlers, so ncr gets no creator fallback either.
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0010', title: 'Created by a non-handler', createdBy: 'ncr@automationsystems.org', assignee: '' })
+    ];
+
+    const manager: CrmContext = { ...sales, email: 'manager@automationsystems.org', role: 'L4', allowedTags: ['*'] };
+    const asManagerViewingNcr = await dashboard.dashboard(manager, 'ncr');
+    expect(asManagerViewingNcr.dash.cases.map((row) => row.id)).not.toContain('CASE-2026-0010');
+
+    const peerContext: CrmContext = { ...sales, email: 'peer@automationsystems.org', name: 'Peer Sales', role: 'L2', allowedTags: ['Punjab'] };
+    const asPeer = await dashboard.dashboard(peerContext);
+    expect(asPeer.dash.cases.map((row) => row.id)).toContain('CASE-2026-0010');
+  });
+
+  it('gives an unrelated subject (no handler, creator or assignee relationship to anything) an empty case list', async () => {
+    const { dashboard } = makeService();
+    // Default fixtures only relate sales/peer/ncr to cases - an entirely unrelated
+    // user has no handler, creator or assignee claim on any of them.
+    const unrelated: CrmContext = { ...sales, email: 'unrelated@automationsystems.org', name: 'Unrelated User', role: 'L2', allowedTags: ['Punjab'] };
+
+    const result = await dashboard.dashboard(unrelated);
+
+    expect(result.dash.cases).toEqual([]);
+  });
+
+  it('lets the creator of an OPEN case on a handler-less mapped account see it on their dashboard', async () => {
+    const { repo, dashboard } = makeService();
+    repo.customers.push(customer({ id: 'CUST-0005', name: 'Delta Unmanaged', tags: ['Punjab'] }));
+    // No repo.handlers entry for CUST-0005 at all - the account has no real handler.
+    repo.cases = [
+      caseRow({ id: 'CASE-2026-0011', customerId: 'CUST-0005', title: 'Unhandled account enquiry', createdBy: sales.email, assignee: '' })
+    ];
+
+    const result = await dashboard.dashboard(sales);
+
+    expect(result.dash.cases.map((row) => row.id)).toContain('CASE-2026-0011');
   });
 });

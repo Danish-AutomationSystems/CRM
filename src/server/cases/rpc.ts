@@ -36,16 +36,6 @@ registerRpc(
   { read: false }
 );
 registerRpc(
-  'api_addCaseOwner',
-  ({ args, context }) => service.addCaseOwner(context, String(args[0] ?? ''), args[1]),
-  { read: false }
-);
-registerRpc(
-  'api_removeCaseOwner',
-  ({ args, context }) => service.removeCaseOwner(context, String(args[0] ?? ''), args[1]),
-  { read: false }
-);
-registerRpc(
   'api_assignTicket',
   ({ args, context }) => service.assignTicket(context, String(args[0] ?? ''), args[1], args[2], args[3], args[4] === true),
   { read: false }

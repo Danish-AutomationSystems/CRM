@@ -11,7 +11,7 @@ type DbExecutor = Sql | TransactionSql;
  */
 export const CASE_WRITE_FIELDS = [
   'customerId', 'title', 'details', 'source', 'priority', 'stage', 'outcome', 'orderValue',
-  'wonCategories', 'outcomeNote', 'owner', 'extraOwners', 'assignee', 'closedOn', 'updatedAt'
+  'wonCategories', 'outcomeNote', 'assignee', 'closedOn', 'updatedAt'
 ] as const;
 
 export type CaseWriteField = (typeof CASE_WRITE_FIELDS)[number];
@@ -27,8 +27,6 @@ const CASE_WRITE_COLUMNS: Record<CaseWriteField, string> = {
   orderValue: 'order_value',
   wonCategories: 'won_categories',
   outcomeNote: 'outcome_note',
-  owner: 'owner',
-  extraOwners: 'extra_owners',
   assignee: 'assignee',
   closedOn: 'closed_on',
   updatedAt: 'updated_at'
@@ -73,8 +71,6 @@ export type CaseWriteRow = {
   orderValue: number | '';
   wonCategories: string[];
   outcomeNote: string;
-  owner: string;
-  extraOwners: string[];
   assignee: string;
   closedOn: string;
   createdBy: string;
@@ -94,8 +90,6 @@ export type CaseWriteDbRow = {
   order_value: string | number | null;
   won_categories: string | null;
   outcome_note: string | null;
-  owner: string | null;
-  extra_owners: string | null;
   assignee: string | null;
   closed_on: string | Date | null;
   created_by: string | null;
@@ -144,8 +138,6 @@ export function toCaseWriteRow<T extends CaseWriteRow = CaseWriteRow>(row: CaseW
     orderValue: numberOrBlank(row.order_value),
     wonCategories: parsePipe(row.won_categories),
     outcomeNote: row.outcome_note ?? '',
-    owner: normalizeEmail(row.owner),
-    extraOwners: parsePipe(row.extra_owners).map(normalizeEmail),
     assignee: normalizeEmail(row.assignee),
     closedOn: dateString(row.closed_on),
     createdBy: normalizeEmail(row.created_by),
@@ -161,8 +153,6 @@ export function toCaseWriteValues<T extends object>(fields: Partial<T>): Partial
   if ('outcome' in patch) patch.outcome = dbOutcome((patch.outcome as CaseWriteRow['outcome']) ?? '');
   if ('orderValue' in patch) patch.orderValue = dbNumber((patch.orderValue as number | '') ?? '');
   if ('wonCategories' in patch) patch.wonCategories = joinPipe((patch.wonCategories as string[]) ?? []);
-  if ('owner' in patch) patch.owner = dbEmail((patch.owner as string) ?? '');
-  if ('extraOwners' in patch) patch.extraOwners = joinPipe((patch.extraOwners as string[]) ?? []);
   if ('assignee' in patch) patch.assignee = dbEmail((patch.assignee as string) ?? '');
   if ('closedOn' in patch) patch.closedOn = dbDate((patch.closedOn as string) ?? '');
   return patch as Partial<T>;
@@ -171,7 +161,7 @@ export function toCaseWriteValues<T extends object>(fields: Partial<T>): Partial
 export async function selectCaseRow(db: DbExecutor, id: string): Promise<CaseWriteDbRow | undefined> {
   const rows = (await db`
     select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-           won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
+           won_categories, outcome_note, assignee, closed_on,
            created_by, created_at, updated_at
     from public.cases
     where case_id = ${id}
@@ -183,7 +173,7 @@ export async function selectCaseRow(db: DbExecutor, id: string): Promise<CaseWri
 export async function selectCaseRowForUpdate(db: DbExecutor, id: string): Promise<CaseWriteDbRow | undefined> {
   const rows = (await db`
     select case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-           won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
+           won_categories, outcome_note, assignee, closed_on,
            created_by, created_at, updated_at
     from public.cases where case_id = ${id} for update
   `) as CaseWriteDbRow[];
@@ -194,13 +184,13 @@ export async function insertCaseRow(db: DbExecutor, row: CaseWriteRow): Promise<
   await db`
     insert into public.cases (
       case_id, customer_id, title, details, source, priority, stage, outcome, order_value,
-      won_categories, outcome_note, owner, extra_owners, assignee, closed_on,
+      won_categories, outcome_note, assignee, closed_on,
       created_by, created_at, updated_at
     )
     values (
       ${row.id}, ${row.customerId || null}, ${row.title}, ${row.details}, ${row.source}, ${row.priority}, ${row.stage},
       ${dbOutcome(row.outcome)}, ${dbNumber(row.orderValue)}, ${joinPipe(row.wonCategories)},
-      ${row.outcomeNote}, ${dbEmail(row.owner)}, ${joinPipe(row.extraOwners)}, ${dbEmail(row.assignee)},
+      ${row.outcomeNote}, ${dbEmail(row.assignee)},
       ${dbDate(row.closedOn)}, ${dbEmail(row.createdBy)}, ${row.createdAt}, ${row.updatedAt}
     )
   `;

@@ -23,8 +23,6 @@ const mappings = {
   orderValue: { column: 'order_value', input: 1234.5, stored: 1234.5 },
   wonCategories: { column: 'won_categories', input: ['PLC', 'VFD'], stored: 'PLC | VFD' },
   outcomeNote: { column: 'outcome_note', input: 'PO received', stored: 'PO received' },
-  owner: { column: 'owner', input: ' OWNER@EXAMPLE.COM ', stored: 'owner@example.com' },
-  extraOwners: { column: 'extra_owners', input: ['a@example.com', 'b@example.com'], stored: 'a@example.com | b@example.com' },
   assignee: { column: 'assignee', input: ' WORKER@EXAMPLE.COM ', stored: 'worker@example.com' },
   closedOn: { column: 'closed_on', input: '2026-09-07', stored: '2026-09-07' },
   updatedAt: { column: 'updated_at', input: '2026-09-07T12:00:00Z', stored: '2026-09-07T12:00:00Z' }
@@ -47,13 +45,13 @@ describe.each(factories)('%s case SQL boundary', (_name, Repository) => {
     const unsafe = vi.fn().mockResolvedValue([]);
     const repo = new Repository({ unsafe } as never);
     await repo.updateCase('CASE-1', {
-      outcome: '', orderValue: '', wonCategories: [], owner: '', extraOwners: [], assignee: '', closedOn: '',
+      outcome: '', orderValue: '', wonCategories: [], assignee: '', closedOn: '',
       title: undefined, id: 'OTHER', createdBy: 'other@example.com', createdAt: 'yesterday', version: 99,
       'title = null; drop table cases; --': 'ignored'
     } as Partial<CaseRow>);
     expect(unsafe.mock.calls).toEqual([[
-      'update public.cases set outcome = $1, order_value = $2, won_categories = $3, owner = $4, extra_owners = $5, assignee = $6, closed_on = $7, version = version + 1 where case_id = $8',
-      [null, null, '', null, '', null, null, 'CASE-1']
+      'update public.cases set outcome = $1, order_value = $2, won_categories = $3, assignee = $4, closed_on = $5, version = version + 1 where case_id = $6',
+      [null, null, '', null, null, 'CASE-1']
     ]]);
     unsafe.mockClear();
     await repo.updateCase('CASE-1', { orderValue: 0 });
@@ -66,11 +64,11 @@ describe.each(factories)('%s case SQL boundary', (_name, Repository) => {
     const db = vi.fn().mockResolvedValue([{
       case_id: 'CASE-1', customer_id: 'CUST-2', title: 'Latest', details: '', source: '', priority: 'High',
       stage: 'Revision', outcome: null, order_value: null, won_categories: 'PLC|VFD', outcome_note: '',
-      owner: 'owner@example.com', extra_owners: 'a@example.com|b@example.com', assignee: 'worker@example.com',
+      assignee: 'worker@example.com',
       closed_on: null, created_by: 'owner@example.com', created_at: '2026-09-01', updated_at: '2026-09-07'
     }]);
     const repo = new Repository(db as never);
-    expect(await repo.lockCase('CASE-1')).toMatchObject({ id: 'CASE-1', stage: 'Revision', assignee: 'worker@example.com', outcome: '', orderValue: '', wonCategories: ['PLC', 'VFD'], extraOwners: ['a@example.com', 'b@example.com'] });
+    expect(await repo.lockCase('CASE-1')).toMatchObject({ id: 'CASE-1', stage: 'Revision', assignee: 'worker@example.com', outcome: '', orderValue: '', wonCategories: ['PLC', 'VFD'] });
     const [parts, ...values] = db.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     expect(parts.join('?').replace(/\s+/g, ' ').trim()).toMatch(/from public\.cases where case_id = \? for update$/);
     expect(values).toEqual(['CASE-1']);
@@ -89,13 +87,13 @@ describe.each(factories)('%s nullable case SQL boundary', (_name, Repository) =>
   it('serializes empty customer IDs as NULL in inserts and updates, and reads NULL as empty', async () => {
     const db = Object.assign(vi.fn().mockResolvedValue([]), { unsafe: vi.fn().mockResolvedValue([]) });
     const repo = new Repository(db as never);
-    const row: CaseRow = { id: 'CASE-1', customerId: '', title: 'Unmapped', details: '', source: '', priority: '', stage: 'Lead', outcome: '', orderValue: '', wonCategories: [], outcomeNote: '', owner: '', extraOwners: [], assignee: '', closedOn: '', createdBy: '', createdAt: '2026-09-07', updatedAt: '2026-09-07' };
+    const row: CaseRow = { id: 'CASE-1', customerId: '', title: 'Unmapped', details: '', source: '', priority: '', stage: 'Lead', outcome: '', orderValue: '', wonCategories: [], outcomeNote: '', assignee: '', closedOn: '', createdBy: '', createdAt: '2026-09-07', updatedAt: '2026-09-07' };
     await repo.createCase(row);
     const [, ...values] = db.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     expect(values[1]).toBeNull();
     await repo.updateCase(row.id, { customerId: '' });
     expect(db.unsafe.mock.calls[0][1]).toEqual([null, row.id]);
-    db.mockResolvedValue([{ case_id: row.id, customer_id: null, stage: 'Lead', extra_owners: '', won_categories: '' }]);
+    db.mockResolvedValue([{ case_id: row.id, customer_id: null, stage: 'Lead', won_categories: '' }]);
     expect((await repo.getCase(row.id))?.customerId).toBe('');
     expect((await repo.lockCase(row.id))?.customerId).toBe('');
   });

@@ -130,7 +130,7 @@ function customerDetail(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function caseDetail(ownerList: Array<Record<string, unknown>>) {
+function caseDetail(handlerList: Array<{ name: string; email: string }>) {
   return {
     customer: { id: 'CUST-1', name: 'Acme Controls' },
     case: {
@@ -142,8 +142,8 @@ function caseDetail(ownerList: Array<Record<string, unknown>>) {
       details: '',
       orderValue: '',
       wonCategories: [],
-      owners: ownerList.map((owner) => owner.name),
-      ownerList
+      handlers: handlerList.map((handler) => handler.name),
+      handlerList
     },
     canEdit: true,
     canAssignTicket: true,
@@ -1009,60 +1009,96 @@ describe('legacy CRM full client', () => {
     });
   });
 
-  describe('P10 - case owners are labelled by why they own the case', () => {
-    test('a creator-sourced owner is not described as the account handler', async () => {
+  describe('case handlers replace case owners', () => {
+    const handlers = [
+      { name: 'Anita Rao', email: 'anita@automationsystems.org' },
+      { name: 'Ravi Kumar', email: 'ravi@automationsystems.org' }
+    ];
+
+    async function openCase(detail: ReturnType<typeof caseDetail>) {
       mockRpc((fn) => {
-        if (fn === 'api_workspace') return gridWorkspace('L6');
-        if (fn === 'api_listAssignableUsers') return [{ email: 'admin@automationsystems.org', name: 'Admin User' }];
-        if (fn === 'api_getCase') {
-          return caseDetail([
-            { email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }
-          ]);
-        }
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_getCase') return detail;
+        if (fn === 'api_listAssignableUsers') return handlers;
         throw new Error(`Unexpected RPC ${fn}`);
       });
-
       render(createElement(CrmApp));
       await screen.findByRole('heading', { name: 'Overview' });
       window.eval('nav("case", "CASE-1")');
       await screen.findByRole('heading', { name: 'Panel upgrade' });
-      window.eval('mOwners()');
+    }
 
-      await waitFor(() => expect(document.getElementById('mbody')?.textContent).toContain('Admin User'));
-      const body = document.getElementById('mbody')?.textContent ?? '';
-      expect(body).toMatch(/created this case/i);
-      expect(body).not.toMatch(/account handler — owner of every case/);
+    test('the case page lists the account handlers under "Handlers", never "Owners"', async () => {
+      await openCase(caseDetail(handlers));
+      const main = document.getElementById('main') as HTMLElement;
+      expect(main.textContent).toContain('Handlers: Anita Rao, Ravi Kumar');
+      expect(main.textContent).not.toContain('Owners');
     });
 
-    test('handler, creator and manual owners each get their own wording', async () => {
+    test('there is nothing to manage per case: no manage link, no case-owners modal', async () => {
+      await openCase(caseDetail(handlers));
+      expect(screen.queryByRole('button', { name: 'manage' })).not.toBeInTheDocument();
+      expect(window.eval('typeof mOwners')).toBe('undefined');
+      expect(window.eval('typeof addOwner')).toBe('undefined');
+      expect(window.eval('typeof removeOwner')).toBe('undefined');
+    });
+
+    test('a case with no handler shows a dash, not an empty label', async () => {
+      await openCase(caseDetail([]));
+      expect(document.getElementById('main')?.textContent).toContain('Handlers: —');
+    });
+
+    test('reassignment suggests the account handlers', async () => {
+      await openCase(caseDetail(handlers));
+      window.eval('mAssignCase()');
+      await screen.findByRole('textbox', { name: 'Search for a user' });
+      const modal = document.getElementById('mbody') as HTMLElement;
+      expect(within(modal).getByRole('button', { name: 'Anita Rao' })).toBeInTheDocument();
+      expect(within(modal).getByRole('button', { name: 'Ravi Kumar' })).toBeInTheDocument();
+      expect(modal.textContent).toContain("Suggested — this account's handlers");
+    });
+
+    test('the Cases tab and the customer-detail case list label the column "Handlers"', async () => {
       mockRpc((fn) => {
-        if (fn === 'api_workspace') return gridWorkspace('L6');
-        if (fn === 'api_listAssignableUsers') return [{ email: 'admin@automationsystems.org', name: 'Admin User' }];
-        if (fn === 'api_getCase') {
-          return caseDetail([
-            { email: 'handler@automationsystems.org', name: 'Handler User', source: 'handler', removable: false },
-            { email: 'creator@automationsystems.org', name: 'Creator User', source: 'creator', removable: true },
-            { email: 'added@automationsystems.org', name: 'Added User', source: 'manual', removable: true }
-          ]);
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_listCases') {
+          return [{ id: 'CASE-1', title: 'Panel upgrade', customerName: 'Acme Controls', stage: 'Lead', outcome: '',
+            orderValue: '', handlers: ['Anita Rao'], assignee: '', updatedOn: new Date().toISOString() }];
         }
         throw new Error(`Unexpected RPC ${fn}`);
       });
-
       render(createElement(CrmApp));
       await screen.findByRole('heading', { name: 'Overview' });
-      window.eval('nav("case", "CASE-1")');
-      await screen.findByRole('heading', { name: 'Panel upgrade' });
-      window.eval('mOwners()');
+      window.eval('nav("cases")');
+      await screen.findByRole('heading', { name: 'Cases' });
+      window.eval('document.getElementById("cf_outcome").value = ""; applyCaseF();');
+      await waitFor(() => expect(document.getElementById('caseRes')?.textContent).toContain('Anita Rao'));
+      const headers = Array.from(document.querySelectorAll('#caseRes th')).map((th) => th.textContent);
+      expect(headers).toContain('Handlers');
+      expect(headers).not.toContain('Owners');
+    });
 
-      await waitFor(() => expect(document.getElementById('mbody')?.textContent).toContain('Handler User'));
-      const rows = [...(document.getElementById('mbody')?.querySelectorAll('.qr') ?? [])].map((r) => r.textContent ?? '');
-      expect(rows[0]).toMatch(/account handler — owner of every case on the account/);
-      expect(rows[1]).toMatch(/created this case/i);
-      expect(rows[2]).toMatch(/added to this case/i);
-      // Only the non-removable handler loses its remove control.
-      expect(rows[0]).not.toMatch(/remove/i);
-      expect(rows[1]).toMatch(/remove/i);
-      expect(rows[2]).toMatch(/remove/i);
+    test('the customer-detail case list also labels the column "Handlers"', async () => {
+      mockRpc((fn) => {
+        if (fn === 'api_workspace') return gridWorkspace('L6');
+        if (fn === 'api_getCustomer') {
+          return customerDetail({
+            cases: [{ id: 'CASE-1', title: 'Panel upgrade', stage: 'Lead', outcome: '',
+              orderValue: '', handlers: ['Anita Rao'], assignee: '', quotes: 0, updatedOn: new Date().toISOString() }]
+          });
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('nav("customer", "CUST-1")');
+      await screen.findByRole('heading', { name: 'Acme Controls' });
+
+      const main = document.getElementById('main') as HTMLElement;
+      await waitFor(() => expect(main.textContent).toContain('Anita Rao'));
+      const headers = Array.from(main.querySelectorAll('th')).map((th) => th.textContent);
+      expect(headers).toContain('Handlers');
+      expect(headers).not.toContain('Owners');
     });
   });
 
@@ -1113,8 +1149,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1157,8 +1193,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1206,8 +1242,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1462,8 +1498,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1520,8 +1556,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1567,8 +1603,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1625,8 +1661,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1717,8 +1753,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -1775,8 +1811,8 @@ describe('legacy CRM full client', () => {
               details: '',
               orderValue: '',
               wonCategories: [],
-              owners: ['Admin User'],
-              ownerList: [{ email: 'admin@automationsystems.org', name: 'Admin User', source: 'creator', removable: false }]
+              handlers: ['Admin User'],
+              handlerList: [{ email: 'admin@automationsystems.org', name: 'Admin User' }]
             },
             canEdit: true,
             canAssignTicket: true,
@@ -2188,7 +2224,7 @@ describe('admin bulk-add repeatable rows', () => {
               stage: 'Lead',
               outcome: '',
               orderValue: '',
-              owners: [],
+              handlers: [],
               assignee: '',
               updatedOn: '2026-08-19T10:00:00.000Z'
             },
@@ -2199,7 +2235,7 @@ describe('admin bulk-add repeatable rows', () => {
               stage: 'Lead',
               outcome: 'Won',
               orderValue: 5000,
-              owners: [],
+              handlers: [],
               assignee: '',
               updatedOn: '2026-08-19T10:00:00.000Z'
             }
@@ -2279,7 +2315,7 @@ describe('case lifecycle UI', () => {
   let loseAccess: boolean;
   let outcome: string;
   function detail() {
-    const d = caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]);
+    const d = caseDetail([{ name: 'Original Handler', email: 'owner@automationsystems.org' }]);
     return { ...d, customer: mapped ? d.customer : null, canQuote, canMapCustomer: !mapped && canQuote,
       canAssignTicket: stage !== 'Quoted', canRequestRevision: stage === 'Quoted' && !outcome,
       case: { ...d.case, customerId: mapped ? 'CUST-1' : '', stage, outcome, assignee: stage === 'Quoted' ? '' : 'Other User' } };
@@ -2382,7 +2418,7 @@ describe('case lifecycle UI', () => {
       'CASE-1', 'other@automationsystems.org', 'Revise panel dimensions', [], true
     ]));
     await waitFor(() => expect(screen.getByRole('button', { name: 'reassign' })).toBeInTheDocument());
-    expect(document.getElementById('main')?.textContent).toContain('Original Owner');
+    expect(document.getElementById('main')?.textContent).toContain('Original Handler');
   });
 
   test('choosing Revision through the stage picker requests a holder instead of writing the stage', async () => {
@@ -2483,7 +2519,7 @@ describe('case lifecycle UI', () => {
     await waitFor(() => expect(calls.find(c => c.fn === (mode === 'builder' ? 'api_createQuotation' : 'api_uploadQuotation'))?.args).toEqual([expect.objectContaining({ customerId: 'CUST-1', caseId: 'CASE-1' })]));
     await waitFor(() => expect(document.getElementById('main')?.textContent).toContain('Acme Controls'));
     expect(document.getElementById('main')?.textContent).not.toContain('Customer not mapped');
-    expect(document.getElementById('main')?.textContent).toContain('Original Owner');
+    expect(document.getElementById('main')?.textContent).toContain('Original Handler');
   });
 
   test('readable cases without quotation permission expose no quotation mapping forms', async () => {
@@ -2711,7 +2747,7 @@ describe('case lifecycle UI', () => {
       }
       if (fn === 'api_getCase') {
         return {
-          ...caseDetail([{ name: 'Original Owner', email: 'owner@automationsystems.org', source: 'creator' }]),
+          ...caseDetail([{ name: 'Original Handler', email: 'owner@automationsystems.org' }]),
           canQuote: true,
           canRequestRevision: false,
           quotes: [

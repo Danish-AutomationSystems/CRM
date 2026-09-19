@@ -17,7 +17,7 @@ describe.each(['generated', 'uploaded'] as const)('%s first-quotation SQL transa
         calls.push({ query, values, transaction });
         if (/from public\.customers\b/.test(query)) return [{ customer_id: 'CUST-1', name: 'Target', tags: ['Punjab'], status: 'Active' }];
         if (/from public\.handlers\b/.test(query)) return [{ customer_id: 'CUST-1', user_email: actor.email }];
-        if (/from public\.cases\b/.test(query)) return [{ case_id: 'CASE-1', customer_id: null, title: 'Lead', stage: 'Lead', owner: actor.email, extra_owners: '', assignee: actor.email }];
+        if (/from public\.cases\b/.test(query)) return [{ case_id: 'CASE-1', customer_id: null, title: 'Lead', stage: 'Lead', assignee: actor.email }];
         if (/insert into counters/.test(query)) return [{ last: 1 }];
         if (failInsert && /insert into public\.quotations\b/.test(query)) throw new Error('SQL quote failure');
         return [];

@@ -57,11 +57,18 @@ describe('Apps Script API parity', () => {
     const sourceApis = appScriptApis(codeGs);
     const registeredApis = listRegisteredRpcs();
 
-    const intentionallyUnmigrated: string[] = [];
+    // Retired 2026-09-18: case-level ownership was eliminated; a case's owners are its account's
+    // handlers. See docs/superpowers/specs/2026-09-18-eliminate-case-owner-layer-design.md.
+    const intentionallyUnmigrated: string[] = ['api_addCaseOwner', 'api_removeCaseOwner'];
     const unaccounted = sourceApis.filter(
       (api) => !registeredApis.includes(api) && !intentionallyUnmigrated.includes(api)
     );
 
     expect(unaccounted).toEqual([]);
+  });
+
+  it('no longer registers the retired case-owner RPCs', () => {
+    expect(hasRpc('api_addCaseOwner')).toBe(false);
+    expect(hasRpc('api_removeCaseOwner')).toBe(false);
   });
 });

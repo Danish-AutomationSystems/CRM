@@ -1,5 +1,5 @@
 import type { CrmContext } from '../auth/context';
-import { accessLevel, caseOwners, caseVisible } from '../auth/access';
+import { accessLevel, caseHandlers, caseVisible } from '../auth/access';
 import type { CaseCustomerRow, CaseRepository, CaseService } from '../cases/service';
 import type { CustomerService } from '../customers/service';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
@@ -68,8 +68,7 @@ function caseRecord(row: Awaited<ReturnType<DashboardRepository['listCases']>>[n
     id: row.id,
     customerId: row.customerId,
     title: row.title,
-    owner: row.owner,
-    extraOwners: row.extraOwners,
+    createdBy: row.createdBy,
     assignee: row.assignee
   };
 }
@@ -130,17 +129,17 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
     let won2wCount = 0;
     const ym = yearMonthNow();
 
-    // P9: Direct is a virtual account. It never appears in a case's owner set, so its
+    // P9: Direct is a virtual account. It never appears in a case handler set, so its
     // dashboard is attributed by the customer's `handlers.user_email = 'direct'` rows.
     const directSubject = isDirect(subjectEmail);
 
     for (const row of cases) {
       const customer = customersById[row.customerId];
       if (row.customerId && !customer) continue;
-      if (!caseVisible(viewer, customer ? accessLevel(viewer, customerRecord(customer), ownership) : 'NONE', caseRecord(row))) continue;
+      if (!caseVisible(viewer, customer ? accessLevel(viewer, customerRecord(customer), ownership) : 'NONE', caseRecord(row), ownership)) continue;
       const customerName = customer?.name ?? 'Customer not mapped';
-      const owners = caseOwners(caseRecord(row));
-      const mine = directSubject ? subjectHandles.has(row.customerId) : owners.includes(subjectEmail);
+      const handlers = caseHandlers(caseRecord(row), ownership);
+      const mine = directSubject ? subjectHandles.has(row.customerId) : handlers.includes(subjectEmail);
       if (mine && !row.outcome) {
         openMine.push({ id: row.id, title: row.title, customerId: row.customerId, customerName, stage: row.stage, priority: row.priority, updatedOn: row.updatedAt });
       }

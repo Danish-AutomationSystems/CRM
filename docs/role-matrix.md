@@ -24,8 +24,8 @@ Legend: **Yes** = unconditionally allowed at that level. **No** = never allowed 
 | Create case (on an existing customer) | No | Yes | Yes | Yes | Cond. | Cond. | `requireLevel(user, 2)` — `cases/service.ts:354-355` — **plus** FULL access to the customer (`ensureFull`, `cases/service.ts:360`). At L5+, if no `assignee` was supplied and it's not an order, the call is **rejected**: "Choose who this case is assigned to." — `cases/service.ts:373-376`. Below L5, an omitted assignee silently defaults to the creator — `cases/service.ts:376-378`. |
 | Change case stage | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | Gated purely by case visibility (`ensureCanSeeCase` inside `loadVisibleCase`, `cases/service.ts:417-418,434-436` calling `cases/service.ts:277-290`), not by role level — see §3 "who can see a case" for the condition. Blocked while `outcome` is `Won`/`Lost` — `cases/service.ts:438-440`. |
 | Set case outcome (Won/Lost/Hold/reopen) | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | Same visibility gate, no extra level check — `cases/service.ts:456-458`. Won requires order value > 0 and ≥1 category — `cases/service.ts:485-489`. |
-| Add case owner | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | Caller must (a) already be visible to the case AND (b) either already be a case owner OR `roleLevel(user) >= 4` — `cases/service.ts:513-518`. Target must be an active, non-Direct user (`resolveUser`, `cases/service.ts:239-245`) — so L5/L6 CAN be added as case owners. |
-| Remove case owner | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | Same "owner OR L4+" gate — `cases/service.ts:534-539`. Blocked if it would leave the case with 0 owners — `cases/service.ts:544-548`. Blocked outright if the target is a real account handler of the customer ("Remove them as a handler on the customer instead") — `cases/service.ts:549-551`. |
+| Add case owner (removed 2026-09-18) | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | **Superseded 2026-09-18: removed, no replacement.** Caller must (a) already be visible to the case AND (b) either already be a case owner OR `roleLevel(user) >= 4` — `cases/service.ts:513-518`. Target must be an active, non-Direct user (`resolveUser`, `cases/service.ts:239-245`) — so L5/L6 CAN be added as case owners. |
+| Remove case owner (removed 2026-09-18) | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | **Superseded 2026-09-18: removed, no replacement.** Same "owner OR L4+" gate — `cases/service.ts:534-539`. Blocked if it would leave the case with 0 owners — `cases/service.ts:544-548`. Blocked outright if the target is a real account handler of the customer ("Remove them as a handler on the customer instead") — `cases/service.ts:549-551`. |
 | Assign / reassign ticket | Cond. | Cond. | Cond. | Cond. | Cond. | Cond. | Requires case visibility only, no role gate (`assignTicket`, `cases/service.ts:565-566`). Blocked whenever `row.outcome` is truthy, i.e. the case is closed — `cases/service.ts:567`. `getCase().canAssign = roleLevel>=2` is a **separate UI-only flag** returned alongside `canAssignTicket:!row.outcome` (`cases/service.ts:591-592`) — the two are not the same gate; `canAssign` does not actually gate `assignTicket` server-side. Target must be an active, non-Direct user — `cases/service.ts:239-245,349` (Direct can never hold a ticket). |
 | Create/generate quotation (from template) | No | Cond. | Cond. | Cond. | Cond. | Cond. | `requireLevel(user, 2)` — `quotes/service.ts:456-457` — plus FULL customer access — `quotes/service.ts:255-264,459`. |
 | Upload external quotation | No | Cond. | Cond. | Cond. | Cond. | Cond. | Same: `requireLevel(user, 2)` — `quotes/service.ts:538-539` — plus FULL customer access — `quotes/service.ts:541`. |
@@ -75,6 +75,8 @@ NAME access exposes only `{id, name, tags, type, priority}` and the handler list
 
 ## 3. Case visibility — `caseVisible()` / `ensureCanSeeCase()`
 
+> **Superseded 2026-09-18** (case-owner layer eliminated; see `docs/reports/2026-09-18-case-owner-layer-removal.md`). `caseOwners()` no longer exists. Rule 2 is now: the user is in `caseHandlers(caseRecord, ownership)` - the account's real handlers, or the case's creator (`cases.created_by`) when the account has none - derived live in `src/server/auth/access.ts`. `caseVisible()`/`ensureCanSeeCase()` take a required `ownership` argument. The history below is kept as written.
+
 Source: `access.ts:115-153`. A case is visible to a user if **any** of:
 
 1. `seesAll(user)` (L4+) — always visible. (`access.ts:120`)
@@ -87,6 +89,8 @@ This is role-independent below L4 — an L1 who happens to be a case owner, the 
 ---
 
 ## 4. Case ownership — `caseOwners()` / `caseOwnerEntries()` (rewritten today, P10/P11)
+
+> **Superseded 2026-09-18** (case-owner layer eliminated; see `docs/reports/2026-09-18-case-owner-layer-removal.md`). Nothing in this section is current: `cases.extra_owners`/`cases.owner` are dropped by migration `0014` (committed, not yet applied), `caseOwners()`/`caseOwnerEntries()`/`caseOwnerSource()`/`seedOwners` and `addCaseOwner`/`removeCaseOwner` are removed, and handler add/remove touch no case. Case ownership is `caseHandlers()`: the account's real handlers, live, else the creator. Scenarios C and D, the case-owner half of Scenario G, and sharp edges 3-4 below describe the old model; sharp edge 2 still holds with "every current account handler" in place of "every owner". The history below is kept as written.
 
 Source: `access.ts:52-113`, seeding logic in `cases/service.ts:331-338,396-398,752-753`.
 
