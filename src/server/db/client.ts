@@ -16,7 +16,7 @@ export const sql = postgres(process.env.DATABASE_URL!, {
   // time is reused on thaw against a socket nobody drains: Postgres blocks in
   // ClientWrite for minutes of TCP retransmits and the request dies at the
   // function limit. Closing promptly means each thaw dials a fresh connection.
-  idle_timeout: 2,
+  idle_timeout: 30,
   max_lifetime: 60 * 5
 });
 
