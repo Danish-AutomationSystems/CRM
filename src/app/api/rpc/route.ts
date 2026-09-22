@@ -29,6 +29,30 @@ function parseRpcRequestBody(body: RpcRequestBody): { fn: string; args: unknown[
   };
 }
 
+// Fails a stalled stage fast, and names it, instead of letting the whole
+// request sit until the platform's function limit with nothing to show for it.
+async function withStageTimeout<T>(
+  stage: string,
+  fn: string,
+  ms: number,
+  run: () => Promise<T>
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`DIAG: ${stage} stage stalled >${ms}ms (fn=${fn})`)),
+          ms
+        );
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const t0 = Date.now();
   let fnName = '(unparsed)';
@@ -38,11 +62,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     const t1 = Date.now();
     console.log(`RPC-STAGE fn=${fnName} stage=auth-start parse=${t1 - t0}ms`);
 
-    const context = await getRequestContext(request);
+    const context = await withStageTimeout('auth', fnName, 15000, () => getRequestContext(request));
     const t2 = Date.now();
     console.log(`RPC-STAGE fn=${fnName} stage=handler-start auth=${t2 - t1}ms`);
 
-    const result = await callRpc(body.fn, body.args, request, context);
+    const result = await withStageTimeout('handler', fnName, 25000, () =>
+      callRpc(body.fn, body.args, request, context)
+    );
     const t3 = Date.now();
     console.log(`RPC-STAGE fn=${fnName} stage=done handler=${t3 - t2}ms total=${t3 - t0}ms`);
 
