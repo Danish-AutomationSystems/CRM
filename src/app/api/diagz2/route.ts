@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import postgres from 'postgres';
+
+import { caseRepository } from '../../../server/cases/repository';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -17,39 +18,28 @@ async function timed<T>(label: string, ms: number, run: () => Promise<T>) {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Isolates idle_timeout as the variable: same load, same pooler, one client
-// that retires idle connections aggressively and one that keeps them.
-async function trial(label: string, idleTimeout: number | undefined, steps: unknown[]) {
-  const client = postgres(process.env.DATABASE_URL!, {
-    prepare: false,
-    connect_timeout: 8,
-    ...(idleTimeout === undefined ? {} : { idle_timeout: idleTimeout })
-  });
-
-  const burst = () =>
-    Promise.all(Array.from({ length: 6 }, () => client`select count(*)::int as n from public.customers`));
-
-  steps.push(await timed(`${label}-burst1`, 8000, burst));
-  await sleep(3500);
-  steps.push(await timed(`${label}-burst2-after-3.5s-idle`, 8000, burst));
-  await sleep(3500);
-  steps.push(await timed(`${label}-burst3-after-3.5s-idle`, 8000, burst));
-
-  try {
-    await client.end({ timeout: 3 });
-  } catch {
-    // ignore
-  }
-}
-
+// bootstrap's three parallel reads, run twice, to name the repository call
+// that stalls on repeat.
 export async function GET(): Promise<NextResponse> {
   const started = Date.now();
   const steps: unknown[] = [];
 
-  await trial('idle2', 2, steps);
-  await trial('idle-default', undefined, steps);
+  for (const round of ['r1', 'r2', 'r3']) {
+    steps.push(await timed(`${round}-listUsers`, 5000, () => caseRepository.listUsers()));
+    steps.push(await timed(`${round}-listHandlers`, 5000, () => caseRepository.listHandlers()));
+    steps.push(await timed(`${round}-listActivity250`, 5000, () => caseRepository.listActivity(250)));
+    steps.push(await timed(`${round}-listSettings`, 5000, () => caseRepository.listSettings()));
+    steps.push(
+      await timed(`${round}-parallel-all4`, 8000, () =>
+        Promise.all([
+          caseRepository.listUsers(),
+          caseRepository.listHandlers(),
+          caseRepository.listActivity(250),
+          caseRepository.listSettings()
+        ])
+      )
+    );
+  }
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
