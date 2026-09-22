@@ -23,15 +23,18 @@ async function timed<T>(label: string, ms: number, run: () => Promise<T>) {
   }
 }
 
-// L4 short-circuits recentActivity's batched customer lookup (every row counts
-// as a self row), so only a lower-privileged context exercises that path.
-const L2: CrmContext = {
-  email: 'ajayneb@automationsystems.org',
-  name: 'Ajay Neb',
-  role: 'L2',
-  allowedTags: ['Chandigarh', 'Geo', 'Punjab'],
-  active: true
-};
+// Same nested fan-out bootstrap performs: an outer Promise.all whose middle
+// branch fans out again, with listUsers running on both levels at once.
+const bootstrapShape = () =>
+  Promise.all([
+    caseRepository.listUsers(),
+    Promise.all([
+      caseRepository.listActivity(250),
+      caseRepository.listHandlers(),
+      caseRepository.listUsers()
+    ]),
+    caseRepository.listSettings()
+  ]);
 
 const L4: CrmContext = {
   email: 'danish@automationsystems.org',
@@ -45,23 +48,16 @@ export async function GET(): Promise<NextResponse> {
   const started = Date.now();
   const steps: unknown[] = [];
 
+  steps.push(await timed('shape-1', 8000, bootstrapShape));
+  steps.push(await timed('shape-2', 8000, bootstrapShape));
+  steps.push(await timed('shape-3', 8000, bootstrapShape));
+
   const customerService = createCustomerService(customerRepository);
   const caseService = createCaseService(caseRepository);
   const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
-  steps.push(await timed('getCustomersByIds-empty', 5000, () => caseRepository.getCustomersByIds([])));
-  steps.push(
-    await timed('getCustomersByIds-real', 8000, async () => {
-      const all = await customerRepository.listCustomers();
-      const ids = all.map((c) => c.id);
-      return caseRepository.getCustomersByIds(ids);
-    })
-  );
-
-  steps.push(await timed('L2-bootstrap-1', 10000, () => dashboard.bootstrap(L2)));
-  steps.push(await timed('L2-bootstrap-2', 10000, () => dashboard.bootstrap(L2)));
-  steps.push(await timed('L2-workspace', 12000, () => dashboard.workspace(L2, {})));
-  steps.push(await timed('L4-bootstrap', 8000, () => dashboard.bootstrap(L4)));
+  steps.push(await timed('real-bootstrap-1', 8000, () => dashboard.bootstrap(L4)));
+  steps.push(await timed('real-bootstrap-2', 8000, () => dashboard.bootstrap(L4)));
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
