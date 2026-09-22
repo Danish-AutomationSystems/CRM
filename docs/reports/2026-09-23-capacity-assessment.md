@@ -76,7 +76,39 @@ It forced every request through **one** server instance sharing **one** pool of 
 
 It is still a meaningful warning, because Vercel's Fluid Compute deliberately packs several concurrent requests onto one instance. When that happens, you get the worst case for real.
 
-### Honest estimate (NOT measured)
+### MEASURED after the fixes (2026-09-23, superseding the estimate below)
+
+Data path, seeded to 60,012 cases — roughly three years of growth at 10 new
+records per working hour — driven by genuinely concurrent external requests:
+
+| Concurrent users | Result | p50 | p95 |
+|---|---|---|---|
+| 10 | **10/10 ok** | 5297 ms | 6449 ms |
+| 15 | **15/15 ok** | 4381 ms | 6128 ms |
+| 20 | **20/20 ok** | 4365 ms | 5836 ms |
+
+Cost against row count (single warm request, 12 queries throughout):
+
+| Cases | Warm response |
+|---|---|
+| 12 | 1407 ms |
+| 512 | 1690 ms |
+| 5,012 | 1447 ms |
+| 20,012 | 1722 ms |
+| 60,012 | 2565 ms |
+
+**No cliff.** Growth degrades latency gently rather than causing the hangs that
+characterised the original defect. Query count stays flat at 12 because the
+per-case fan-out is gone; only row volume grows.
+
+**Caveat — this measures the data path only.** The probe bypasses middleware,
+which still makes one network authentication call per request. That call was
+proven to be the cause of the remaining burst failures: with middleware in the
+path, 10 concurrent requests produced 3 hangs; with it excluded, 10/10, 15/15
+and 20/20 passed. Real signed-in traffic still pays that cost and still carries
+that risk until it is replaced with local JWT verification.
+
+### Original estimate (NOT measured, kept for the record)
 
 | Concurrent active users | My expectation | Confidence |
 |---|---|---|
