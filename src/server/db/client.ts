@@ -5,9 +5,14 @@ import postgres, { type TransactionSql } from 'postgres';
 // settings/no-live-settings-in-transaction.test.ts), so a small pool
 // deadlocks instead of merely queueing. connect_timeout keeps an exhausted
 // pool failing fast rather than stalling to the function limit.
+// idle_timeout/max_lifetime matter on Vercel: a frozen lambda's idle sockets
+// die silently, and reusing one stalls until the function limit. Retiring
+// connections proactively keeps a thawed instance from picking up a dead one.
 export const sql = postgres(process.env.DATABASE_URL!, {
   prepare: false,
-  connect_timeout: 10
+  connect_timeout: 10,
+  idle_timeout: 20,
+  max_lifetime: 60 * 10
 });
 
 export async function withTransaction<T>(fn: (tx: TransactionSql) => T | Promise<T>): Promise<T> {
