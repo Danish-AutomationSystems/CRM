@@ -1,12 +1,5 @@
 import { NextResponse } from 'next/server';
-
-import { caseRepository } from '../../../server/cases/repository';
-import { createCaseService } from '../../../server/cases/service';
-import { customerRepository } from '../../../server/customers/repository';
-import { createCustomerService } from '../../../server/customers/service';
-import { createDashboardService } from '../../../server/dashboard/service';
-import type { CrmContext } from '../../../server/auth/context';
-import { sql } from '../../../server/db/client';
+import postgres from 'postgres';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -24,36 +17,39 @@ async function timed<T>(label: string, ms: number, run: () => Promise<T>) {
   }
 }
 
-const probe = () => sql`select 1 as ok`;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// A single pass over the workspace components is healthy, so the failure needs
-// a second round: run one full workspace, then repeat the components
-// individually to see which one stalls the second time around.
+// Isolates idle_timeout as the variable: same load, same pooler, one client
+// that retires idle connections aggressively and one that keeps them.
+async function trial(label: string, idleTimeout: number | undefined, steps: unknown[]) {
+  const client = postgres(process.env.DATABASE_URL!, {
+    prepare: false,
+    connect_timeout: 8,
+    ...(idleTimeout === undefined ? {} : { idle_timeout: idleTimeout })
+  });
+
+  const burst = () =>
+    Promise.all(Array.from({ length: 6 }, () => client`select count(*)::int as n from public.customers`));
+
+  steps.push(await timed(`${label}-burst1`, 8000, burst));
+  await sleep(3500);
+  steps.push(await timed(`${label}-burst2-after-3.5s-idle`, 8000, burst));
+  await sleep(3500);
+  steps.push(await timed(`${label}-burst3-after-3.5s-idle`, 8000, burst));
+
+  try {
+    await client.end({ timeout: 3 });
+  } catch {
+    // ignore
+  }
+}
+
 export async function GET(): Promise<NextResponse> {
   const started = Date.now();
   const steps: unknown[] = [];
 
-  const context: CrmContext = {
-    email: 'danish@automationsystems.org',
-    name: 'Danish',
-    role: 'L4',
-    allowedTags: ['*'],
-    active: true
-  };
-
-  const customerService = createCustomerService(customerRepository);
-  const caseService = createCaseService(caseRepository);
-  const dashboard = createDashboardService(caseRepository, { customerService, caseService });
-
-  steps.push(await timed('workspace-round1', 8000, () => dashboard.workspace(context, {})));
-  steps.push(await timed('probe-after-round1', 5000, probe));
-
-  steps.push(await timed('bootstrap-round2', 6000, () => dashboard.bootstrap(context)));
-  steps.push(await timed('probe-after-bootstrap2', 5000, probe));
-
-  steps.push(await timed('myCustomers-round2', 6000, () => customerService.myCustomers(context)));
-  steps.push(await timed('listCases-round2', 6000, () => caseService.listCases(context, {} as never)));
-  steps.push(await timed('probe-final', 5000, probe));
+  await trial('idle2', 2, steps);
+  await trial('idle-default', undefined, steps);
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
