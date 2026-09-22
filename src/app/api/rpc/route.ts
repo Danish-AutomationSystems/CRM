@@ -36,13 +36,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     const body = parseRpcRequestBody((await request.json()) as RpcRequestBody);
     fnName = body.fn;
     const t1 = Date.now();
+    console.log(`RPC-STAGE fn=${fnName} stage=auth-start parse=${t1 - t0}ms`);
+
     const context = await getRequestContext(request);
     const t2 = Date.now();
+    console.log(`RPC-STAGE fn=${fnName} stage=handler-start auth=${t2 - t1}ms`);
+
     const result = await callRpc(body.fn, body.args, request, context);
     const t3 = Date.now();
-    console.log(
-      `RPC-TIMING fn=${fnName} parse=${t1 - t0}ms auth=${t2 - t1}ms handler=${t3 - t2}ms total=${t3 - t0}ms`
-    );
+    console.log(`RPC-STAGE fn=${fnName} stage=done handler=${t3 - t2}ms total=${t3 - t0}ms`);
 
     return NextResponse.json(
       {
