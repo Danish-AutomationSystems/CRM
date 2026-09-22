@@ -33,13 +33,29 @@ export async function GET(request: Request): Promise<NextResponse> {
   const caseService = createCaseService(caseRepository);
   const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
+  const mode = url.searchParams.get('mode') ?? 'workspace';
+  const run = (context: CrmContext) => {
+    switch (mode) {
+      case 'raw':
+        return caseRepository.listUsers();
+      case 'listCases':
+        return caseService.listCases(context, {} as never);
+      case 'myCustomers':
+        return customerService.myCustomers(context);
+      case 'bootstrap':
+        return dashboard.bootstrap(context);
+      default:
+        return dashboard.workspace(context, {});
+    }
+  };
+
   const results = await Promise.all(
     Array.from({ length: concurrency }, async (_, i) => {
       const context = CONTEXTS[i % CONTEXTS.length];
       const t = Date.now();
       try {
         await Promise.race([
-          dashboard.workspace(context, {}),
+          run(context),
           new Promise<never>((_r, reject) => setTimeout(() => reject(new Error('timeout>25s')), 25000))
         ]);
         return { ok: true, ms: Date.now() - t };
@@ -55,6 +71,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   return NextResponse.json(
     {
       concurrency,
+      mode,
       totalMs: Date.now() - started,
       uptimeS: Math.round(process.uptime()),
       ok: oks.length,
