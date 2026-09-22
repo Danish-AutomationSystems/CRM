@@ -11,8 +11,13 @@ import postgres, { type TransactionSql } from 'postgres';
 export const sql = postgres(process.env.DATABASE_URL!, {
   prepare: false,
   connect_timeout: 10,
-  idle_timeout: 20,
-  max_lifetime: 60 * 10
+  // Must be short enough to close before Vercel freezes an idle instance. A
+  // frozen instance's timers never fire, so a connection still open at freeze
+  // time is reused on thaw against a socket nobody drains: Postgres blocks in
+  // ClientWrite for minutes of TCP retransmits and the request dies at the
+  // function limit. Closing promptly means each thaw dials a fresh connection.
+  idle_timeout: 2,
+  max_lifetime: 60 * 5
 });
 
 export async function withTransaction<T>(fn: (tx: TransactionSql) => T | Promise<T>): Promise<T> {
