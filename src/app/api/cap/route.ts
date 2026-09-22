@@ -23,14 +23,7 @@ const CONTEXTS: CrmContext[] = [
 
 export async function GET(request: Request): Promise<NextResponse> {
   const started = Date.now();
-  const mwProbe = request.headers.get('x-mw-probe');
   const who = Number(new URL(request.url).searchParams.get('u') ?? 0);
-  if (new URL(request.url).searchParams.get('probe') === '1') {
-    return NextResponse.json(
-      { mwProbe, spoofSeen: request.headers.get('x-spoof-test') },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
-  }
   const context = CONTEXTS[who % CONTEXTS.length];
 
   const customerService = createCustomerService(customerRepository);

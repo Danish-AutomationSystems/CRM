@@ -9,12 +9,7 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
-  // SPIKE: proving middleware can hand a header to the route handler before any
-  // design depends on it. Reverted once the result is recorded.
-  const forwarded = new Headers(request.headers);
-  forwarded.set('x-mw-probe', 'middleware-ran');
-
-  const response = NextResponse.next({ request: { headers: forwarded } });
+  const response = NextResponse.next({ request });
   const supabase = createSupabaseMiddlewareClient(request, response);
   const {
     data: { user }
