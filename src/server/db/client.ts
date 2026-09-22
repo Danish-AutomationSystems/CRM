@@ -11,11 +11,10 @@ import postgres, { type TransactionSql } from 'postgres';
 export const sql = postgres(process.env.DATABASE_URL!, {
   prepare: false,
   connect_timeout: 10,
-  // Must be short enough to close before Vercel freezes an idle instance. A
-  // frozen instance's timers never fire, so a connection still open at freeze
-  // time is reused on thaw against a socket nobody drains: Postgres blocks in
-  // ClientWrite for minutes of TCP retransmits and the request dies at the
-  // function limit. Closing promptly means each thaw dials a fresh connection.
+  // Retires idle connections so a frozen instance is less likely to thaw and
+  // reuse a socket nobody drains, which strands the query in ClientWrite for
+  // minutes of TCP retransmits. Dropping this to 2s was measured against 30s
+  // under load and made no difference, so it stays at the less churny value.
   idle_timeout: 30,
   max_lifetime: 60 * 5
 });
