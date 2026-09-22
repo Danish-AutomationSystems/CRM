@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
-import postgres from 'postgres';
 
+import { caseRepository } from '../../../server/cases/repository';
+import { createCaseService } from '../../../server/cases/service';
+import { customerRepository } from '../../../server/customers/repository';
+import { createCustomerService } from '../../../server/customers/service';
+import { createDashboardService } from '../../../server/dashboard/service';
+import type { CrmContext } from '../../../server/auth/context';
 import { sql } from '../../../server/db/client';
 
 export const dynamic = 'force-dynamic';
@@ -19,41 +24,36 @@ async function timed<T>(label: string, ms: number, run: () => Promise<T>) {
   }
 }
 
-function burst(client: ReturnType<typeof postgres>, n: number) {
-  return Promise.all(
-    Array.from({ length: n }, () => client`select count(*)::int as n from public.customers`)
-  );
-}
+const probe = () => sql`select 1 as ok`;
 
-// Compares the shared pool against fresh clients on the transaction pooler
-// (6543) and the session pooler (5432) under identical parallel load, to
-// establish whether the pooler mode is what stalls.
+// Runs each workspace component once, probing the shared pool immediately
+// after each, so the first failing probe names the call that exhausts it.
 export async function GET(): Promise<NextResponse> {
   const started = Date.now();
   const steps: unknown[] = [];
-  const raw = process.env.DATABASE_URL!;
-  const on6543 = raw.replace(':5432/', ':6543/');
-  const on5432 = raw.replace(':6543/', ':5432/');
 
-  steps.push(await timed('shared-pool-burst20', 9000, () => burst(sql, 20)));
+  const context: CrmContext = {
+    email: 'danish@automationsystems.org',
+    name: 'Danish',
+    role: 'L4',
+    allowedTags: ['*'],
+    active: true
+  };
 
-  const c6543 = postgres(on6543, { prepare: false, connect_timeout: 8, idle_timeout: 2 });
-  steps.push(await timed('fresh-6543-burst20', 9000, () => burst(c6543, 20)));
-  try {
-    await c6543.end({ timeout: 3 });
-  } catch {
-    // ignore
-  }
+  const customerService = createCustomerService(customerRepository);
+  const caseService = createCaseService(caseRepository);
+  const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
-  const c5432 = postgres(on5432, { prepare: false, connect_timeout: 8, idle_timeout: 2 });
-  steps.push(await timed('fresh-5432-burst20', 9000, () => burst(c5432, 20)));
-  try {
-    await c5432.end({ timeout: 3 });
-  } catch {
-    // ignore
-  }
+  steps.push(await timed('probe-baseline', 6000, probe));
 
-  steps.push(await timed('shared-pool-single', 9000, () => burst(sql, 1)));
+  steps.push(await timed('bootstrap', 6000, () => dashboard.bootstrap(context)));
+  steps.push(await timed('probe-after-bootstrap', 6000, probe));
+
+  steps.push(await timed('myCustomers', 6000, () => customerService.myCustomers(context)));
+  steps.push(await timed('probe-after-myCustomers', 6000, probe));
+
+  steps.push(await timed('listCases', 6000, () => caseService.listCases(context, {} as never)));
+  steps.push(await timed('probe-after-listCases', 6000, probe));
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
