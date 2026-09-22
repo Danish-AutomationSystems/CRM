@@ -9,8 +9,8 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
-  const response = NextResponse.next({ request });
-  const supabase = createSupabaseMiddlewareClient(request, response);
+  const cookieCarrier = NextResponse.next({ request });
+  const supabase = createSupabaseMiddlewareClient(request, cookieCarrier);
   const {
     data: { user }
   } = await supabase.auth.getUser();
@@ -21,6 +21,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  // Always overwrite: a client may send this header, and it must never be trusted.
+  const forwarded = new Headers(request.headers);
+  forwarded.delete('x-crm-user-email');
+  if (user?.email) forwarded.set('x-crm-user-email', user.email);
+
+  const response = NextResponse.next({ request: { headers: forwarded } });
+  // Carry over any refreshed auth cookies Supabase wrote while validating.
+  cookieCarrier.cookies.getAll().forEach((cookie) => response.cookies.set(cookie));
   return response;
 }
 

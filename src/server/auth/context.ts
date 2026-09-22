@@ -144,7 +144,12 @@ export async function getRequestContext(
   options: RequestContextOptions = {}
 ): Promise<CrmContext> {
   const getAuthenticatedEmail = options.getAuthenticatedEmail ?? getAuthenticatedEmailFromRequest;
-  const email = await getAuthenticatedEmail(request);
+
+  // Middleware has already validated the session and overwrites this header on
+  // every request, so a client cannot supply it. Trusting it here removes a
+  // second network round-trip to the auth service per request.
+  const forwarded = request.headers.get('x-crm-user-email')?.trim();
+  const email = forwarded || (await getAuthenticatedEmail(request));
 
   if (!email) {
     throw new Error('Sign in to AS CRM.');
