@@ -26,8 +26,9 @@ async function timed<T>(label: string, ms: number, run: () => Promise<T>) {
 
 const probe = () => sql`select 1 as ok`;
 
-// Runs each workspace component once, probing the shared pool immediately
-// after each, so the first failing probe names the call that exhausts it.
+// A single pass over the workspace components is healthy, so the failure needs
+// a second round: run one full workspace, then repeat the components
+// individually to see which one stalls the second time around.
 export async function GET(): Promise<NextResponse> {
   const started = Date.now();
   const steps: unknown[] = [];
@@ -44,16 +45,15 @@ export async function GET(): Promise<NextResponse> {
   const caseService = createCaseService(caseRepository);
   const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
-  steps.push(await timed('probe-baseline', 6000, probe));
+  steps.push(await timed('workspace-round1', 8000, () => dashboard.workspace(context, {})));
+  steps.push(await timed('probe-after-round1', 5000, probe));
 
-  steps.push(await timed('bootstrap', 6000, () => dashboard.bootstrap(context)));
-  steps.push(await timed('probe-after-bootstrap', 6000, probe));
+  steps.push(await timed('bootstrap-round2', 6000, () => dashboard.bootstrap(context)));
+  steps.push(await timed('probe-after-bootstrap2', 5000, probe));
 
-  steps.push(await timed('myCustomers', 6000, () => customerService.myCustomers(context)));
-  steps.push(await timed('probe-after-myCustomers', 6000, probe));
-
-  steps.push(await timed('listCases', 6000, () => caseService.listCases(context, {} as never)));
-  steps.push(await timed('probe-after-listCases', 6000, probe));
+  steps.push(await timed('myCustomers-round2', 6000, () => customerService.myCustomers(context)));
+  steps.push(await timed('listCases-round2', 6000, () => caseService.listCases(context, {} as never)));
+  steps.push(await timed('probe-final', 5000, probe));
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
