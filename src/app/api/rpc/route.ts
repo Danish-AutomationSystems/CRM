@@ -30,10 +30,19 @@ function parseRpcRequestBody(body: RpcRequestBody): { fn: string; args: unknown[
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const t0 = Date.now();
+  let fnName = '(unparsed)';
   try {
     const body = parseRpcRequestBody((await request.json()) as RpcRequestBody);
+    fnName = body.fn;
+    const t1 = Date.now();
     const context = await getRequestContext(request);
+    const t2 = Date.now();
     const result = await callRpc(body.fn, body.args, request, context);
+    const t3 = Date.now();
+    console.log(
+      `RPC-TIMING fn=${fnName} parse=${t1 - t0}ms auth=${t2 - t1}ms handler=${t3 - t2}ms total=${t3 - t0}ms`
+    );
 
     return NextResponse.json(
       {
@@ -49,6 +58,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       }
     );
   } catch (error) {
+    console.log(`RPC-TIMING fn=${fnName} FAILED after ${Date.now() - t0}ms`);
     const rpcError = normalizeRpcError(error);
 
     return NextResponse.json(
