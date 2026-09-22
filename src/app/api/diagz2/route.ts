@@ -49,15 +49,15 @@ export async function GET(): Promise<NextResponse> {
   const steps: unknown[] = [];
 
   steps.push(await timed('shape-1', 8000, bootstrapShape));
-  steps.push(await timed('shape-2', 8000, bootstrapShape));
-  steps.push(await timed('shape-3', 8000, bootstrapShape));
 
   const customerService = createCustomerService(customerRepository);
   const caseService = createCaseService(caseRepository);
   const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
-  steps.push(await timed('real-bootstrap-1', 8000, () => dashboard.bootstrap(L4)));
-  steps.push(await timed('real-bootstrap-2', 8000, () => dashboard.bootstrap(L4)));
+  steps.push(await timed('workspace-1', 10000, () => dashboard.workspace(L4, {})));
+  steps.push(await timed('workspace-2', 10000, () => dashboard.workspace(L4, {})));
+  steps.push(await timed('workspace-3', 10000, () => dashboard.workspace(L4, {})));
+  steps.push(await timed('workspace-4', 10000, () => dashboard.workspace(L4, {})));
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
