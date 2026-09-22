@@ -42,16 +42,16 @@ export async function GET(): Promise<NextResponse> {
   const caseService = createCaseService(caseRepository);
   const dashboard = createDashboardService(caseRepository, { customerService, caseService });
 
-  steps.push(await timed('workspace-1', 20000, () => dashboard.workspace(context, {})));
-  steps.push(await timed('workspace-2', 20000, () => dashboard.workspace(context, {})));
+  steps.push(await timed('workspace-1', 9000, () => dashboard.workspace(context, {})));
+  steps.push(await timed('workspace-2', 9000, () => dashboard.workspace(context, {})));
   steps.push(
-    await timed('parallel-burst-20', 20000, async () =>
+    await timed("parallel-burst-20", 9000, async () =>
       Promise.all(
         Array.from({ length: 20 }, () => sql`select count(*)::int as n from public.customers`)
       )
     )
   );
-  steps.push(await timed('workspace-3', 20000, () => dashboard.workspace(context, {})));
+  steps.push(await timed('workspace-3', 9000, () => dashboard.workspace(context, {})));
 
   return NextResponse.json(
     { totalMs: Date.now() - started, uptimeS: Math.round(process.uptime()), steps },
