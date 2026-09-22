@@ -107,12 +107,31 @@ These matter more than performance for a system a business depends on.
 
 Four pieces, each independently shippable and verifiable, in this order.
 
+> **Revised 2026-09-23 after review with the owner.** The database holds only
+> test data, nobody depends on the system yet, and there is no deadline to go
+> live. A separate staging environment was therefore dropped: the existing
+> deployment *is* the test environment, and a parallel Supabase project plus
+> deployment would be maintenance with no benefit today. The backup restore
+> drill moves to the go-live checklist below, where it belongs — it is
+> unnecessary while no data is real, and mandatory the moment any is.
+
 | # | Sub-project | Purpose |
 |---|---|---|
-| **1** | **Staging environment** — second Supabase project + Vercel preview, seeded with realistic data | Nothing can be verified without it. Also ends load testing against production. |
+| **1** | **Feature work** — location selection, handler/assignee rules, and the approved case-creation redesign | Reshapes the ownership code the performance work would otherwise restructure twice. The visibility rules also get harder to unpick the more users exist. |
 | **2** | **Request-scoped deduplication** — each table fetched at most once per request | ~20 queries → ~8. Biggest win, lowest risk, no behaviour change. |
 | **3** | **Authentication cost** — stop calling Supabase Auth twice per request | Removes the largest latency chunk (2.2–2.9 s). Touches security, so it gets its own spec and careful review. |
-| **4** | **Load verification + regression guard** — prove 30 concurrent in staging, then keep it proven | Converts "we think it's fast" into "we know, and CI tells us when it stops being true." |
+| **4** | **Load verification + regression guard** — prove 30 concurrent, then keep it proven | Converts "we think it's fast" into "we know, and CI tells us when it stops being true." Safe to run directly against the deployment while the data is test-only. |
+
+### Go-live checklist (before any real customer data enters)
+
+None of these matter today. All of them are mandatory before the first real
+record exists, and they are easy to forget precisely because the system will
+appear to work fine without them.
+
+- [ ] Confirm what the Supabase plan retains, and **perform one restore drill**.
+- [ ] Decide the Vercel Hobby commercial-use licensing question knowingly.
+- [ ] Add error/latency monitoring, so an outage is not discovered by a user.
+- [ ] Re-run the load verification against production-shaped data volumes.
 
 **Deliberately excluded: Redis and any caching layer.**
 
@@ -126,9 +145,9 @@ Caching also trades correctness for speed, and invalidating a cache across indep
 
 ## 7. What I would do if launching mattered this week
 
-1. Verify backups and perform one restore drill. *(Non-negotiable.)*
+1. Work the go-live checklist above, starting with the backup restore drill. *(Non-negotiable once data is real.)*
 2. Ship #1 and #2. Together they are low-risk and remove most of the waste.
-3. Measure honestly in staging at 30 concurrent.
+3. Measure honestly at 30 concurrent.
 4. Launch to a **subset** — 8–10 users — and watch before widening.
 5. Ship #3, re-measure, then open to everyone.
 
