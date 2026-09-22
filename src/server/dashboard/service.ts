@@ -98,9 +98,13 @@ export function createDashboardService(repo: DashboardRepository, dependencies: 
   async function computeDash(subjectEmailInput: string, viewer: CrmContext) {
     const subjectEmail = normalizeEmail(subjectEmailInput);
     const caseRows = await repo.listCases();
-    const [cases, customers, handlers, users] = await Promise.all([
-      Promise.resolve(caseRows),
-      Promise.all(caseRows.map((row) => row.customerId ? repo.getCustomer(row.customerId) : null)),
+    // One batched lookup, not one query per case: the per-case fan-out issued a
+    // duplicate query for every case sharing a customer and, on a pool of ten,
+    // put more queries in flight than there were connections to serve them.
+    const customerIds = [...new Set(caseRows.map((row) => row.customerId).filter((id): id is string => Boolean(id)))];
+    const cases = caseRows;
+    const [customers, handlers, users] = await Promise.all([
+      customerIds.length ? repo.getCustomersByIds(customerIds) : Promise.resolve([]),
       repo.listHandlers(),
       repo.listUsers()
     ]);

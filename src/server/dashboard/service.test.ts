@@ -605,8 +605,9 @@ describe('dashboard service', () => {
 
   it('batches customer lookups for recent activity into one call instead of per-row sequential awaits', async () => {
     const { repo, dashboard } = makeService();
-    // computeDash() (invoked by bootstrap() for self stats) also calls getCustomer per case -
-    // that's a separate code path from recentActivity, so clear cases to isolate the assertion.
+    // computeDash() (invoked by bootstrap() for self stats) batches its own
+    // customer lookup - a separate code path from recentActivity, so clear
+    // cases to isolate the assertion.
     repo.cases = [];
     // Distinct customer ids, repeated, none owned by `sales` and not otherwise visible -
     // this is the worst case: `ok` is false for every row, so the old code never breaks early
@@ -626,6 +627,10 @@ describe('dashboard service', () => {
 
   it('does not call getCustomersByIds when no activity rows need an access lookup', async () => {
     const { repo, dashboard } = makeService();
+    // computeDash() (invoked by bootstrap() for self stats) batches its own
+    // customer lookup - a separate code path from recentActivity, so clear
+    // cases to isolate the assertion.
+    repo.cases = [];
     repo.logs = [
       { who: sales.email, action: 'CASE_EDIT', entity: 'CASE-1', customerId: 'CUST-0002', details: 'own row', when: '2026-07-28T00:00:00.000Z' }
     ];
