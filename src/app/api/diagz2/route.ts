@@ -20,7 +20,8 @@ export async function GET(): Promise<NextResponse> {
           setTimeout(() => reject(new Error('STALLED >12s')), 12000)
         )
       ]);
-      steps.push({ label, ok: true, ms: Date.now() - t, n: (rows as Array<{ n: number }>)[0]?.n });
+      const first = (rows as unknown as Array<{ n: number }>)[0];
+      steps.push({ label, ok: true, ms: Date.now() - t, n: first?.n });
     } catch (error) {
       steps.push({ label, ok: false, ms: Date.now() - t, error: (error as Error).message });
     }
