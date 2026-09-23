@@ -19,6 +19,11 @@ function makeRepo() {
       calls.push(`addUser:${name}`);
       users = [...users, name];
     },
+    async addUserSlow(name: string) {
+      calls.push(`addUserSlow:${name}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      users = [...users, name];
+    },
     async boom() {
       calls.push('boom');
       throw new Error('nope');
@@ -108,6 +113,23 @@ describe('memoizeRepository', () => {
     await memo.listUsers();
 
     expect(repo.calls.filter((c) => c === 'withTransaction')).toHaveLength(2);
+    expect(repo.calls.filter((c) => c === 'listUsers')).toHaveLength(2);
+  });
+
+  it('evicts a read that was cached while a write was still in flight', async () => {
+    const repo = makeRepo();
+    const memo = memoizeRepository(repo, READS);
+
+    // Read lands after the write started but before it finished, so it caches
+    // pre-write data. Clearing only at write START would leave that stale entry
+    // to be served after the write completes.
+    const write = memo.addUserSlow('b');
+    const during = await memo.listUsers();
+    await write;
+    const after = await memo.listUsers();
+
+    expect(during).toEqual(['a']);
+    expect(after).toEqual(['a', 'b']);
     expect(repo.calls.filter((c) => c === 'listUsers')).toHaveLength(2);
   });
 
