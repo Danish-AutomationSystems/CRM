@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>How Case Ownership Works Now</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            max-width: 8.5in;
+            margin: 0 auto;
+            padding: 0.75in;
+            background: white;
+        }
+        h1 {
+            font-size: 32px;
+            margin-bottom: 5px;
+            text-align: center;
+            color: #1a1a1a;
+        }
+        .subtitle {
+            text-align: center;
+            font-size: 16px;
+            margin-bottom: 25px;
+            color: #666;
+        }
+        .metadata {
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #ddd;
+            font-size: 14px;
+        }
+        h2 {
+            font-size: 20px;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            color: #1a1a1a;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 8px;
+        }
+        p {
+            margin-bottom: 14px;
+            font-size: 15px;
+        }
+        ul, ol {
+            margin: 15px 0;
+            padding-left: 30px;
+        }
+        li {
+            margin-bottom: 10px;
+            font-size: 15px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 14px;
+        }
+        th {
+            background-color: #4CAF50;
+            color: white;
+            padding: 14px;
+            text-align: left;
+            font-weight: bold;
+            border: 1px solid #45a049;
+        }
+        td {
+            border: 1px solid #ddd;
+            padding: 12px 14px;
+            vertical-align: top;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        tr:nth-child(odd) {
+            background-color: #ffffff;
+        }
+        .important {
+            background-color: #fff3cd;
+            border-left: 5px solid #ffc107;
+            padding: 15px;
+            margin: 18px 0;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #d4edda;
+            border-left: 5px solid #28a745;
+            padding: 15px;
+            margin: 18px 0;
+            border-radius: 4px;
+        }
+        .info {
+            background-color: #e7f3ff;
+            border-left: 5px solid #2196F3;
+            padding: 15px;
+            margin: 18px 0;
+            border-radius: 4px;
+        }
+        strong {
+            color: #222;
+        }
+        @media print {
+            body {
+                margin: 0;
+                padding: 0.5in;
+            }
+            h1, h2 {
+                page-break-after: avoid;
+            }
+            table {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>How Case Ownership Works Now</h1>
+    <div class="subtitle">September 2026 Update</div>
+
+    <div class="metadata">
+        <p><strong>Date:</strong> September 18, 2026 (Updated September 19)</p>
+        <p><strong>Status:</strong> ✓ Completed and Live in Production</p>
+    </div>
+
+    <h2>What's This About?</h2>
+    <p>We simplified how the CRM handles case ownership. Previously, there were multiple complicated ways a person could "own" or be responsible for a case. Now it's simpler: the person or team who manages the customer account is automatically responsible for all their cases.</p>
+
+    <h2>The Simple Change</h2>
+    <p>Instead of manually assigning case owners (which was complicated and often inconsistent), the system now automatically uses the account manager(s) as the case owner(s). This means:</p>
+    <ul>
+        <li><strong>Faster:</strong> No need to manually add or remove case owners</li>
+        <li><strong>Accurate:</strong> Changes to account managers are instantly reflected on all their cases</li>
+        <li><strong>Simpler:</strong> One rule instead of multiple overlapping ones</li>
+    </ul>
+
+    <h2>What Changed in the System</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 25%;">Area</th>
+                <th style="width: 37.5%;">How It Used To Work</th>
+                <th style="width: 37.5%;">How It Works Now</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Who Can See a Case</strong></td>
+                <td>Person manually assigned as owner could see it</td>
+                <td>Account manager automatically sees all their account's cases</td>
+            </tr>
+            <tr>
+                <td><strong>Adding a Manager</strong></td>
+                <td>Had to manually update each open case's ownership</td>
+                <td>Automatic — new manager sees all cases immediately</td>
+            </tr>
+            <tr>
+                <td><strong>Closed Cases</strong></td>
+                <td>Ownership was frozen when case closed</td>
+                <td>Ownership updates live, even on closed cases</td>
+            </tr>
+            <tr>
+                <td><strong>Case Without a Manager</strong></td>
+                <td>Only the person who created it could see it</td>
+                <td>Only the creator can see it (until a manager is assigned)</td>
+            </tr>
+            <tr>
+                <td><strong>Manually Adding Owners</strong></td>
+                <td>Could add someone who wasn't a manager as owner</td>
+                <td>Not possible anymore — only managers own cases</td>
+            </tr>
+            <tr>
+                <td><strong>Case Page Display</strong></td>
+                <td>Showed "Owners" with a manage button</td>
+                <td>Shows "Handlers" as read-only list</td>
+            </tr>
+            <tr>
+                <td><strong>"My Cases" Dashboard</strong></td>
+                <td>Showed cases you were assigned to</td>
+                <td>Shows accounts you manage and their cases</td>
+            </tr>
+            <tr>
+                <td><strong>Behind the Scenes</strong></td>
+                <td>Two separate systems tracked ownership</td>
+                <td>One unified system for all ownership</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>Who Loses Access to What?</h2>
+    <p>These changes mean two groups will lose access to certain cases:</p>
+
+    <div class="important">
+        <p><strong>1. People Who Created Cases on Unmanaged Accounts</strong></p>
+        <p>If you created a case for an account that didn't have a manager yet, and then a manager was assigned to that account, you'll no longer see that case (unless you're also the ticket holder). Before the change, you would keep seeing it.</p>
+    </div>
+
+    <div class="important">
+        <p><strong>2. People Who Were Manually Added as Owners</strong></p>
+        <p>If someone manually added you as an owner of a case (without making you a manager), you'll no longer have access to that case after this change. There's no way to do this anymore — only managers can own cases now.</p>
+    </div>
+
+    <h2>Something to Know About Sales Reports</h2>
+    <p><strong>Won case credit will update retroactively:</strong> When a case is marked as won, credit goes to the current manager of that account. If you later change who manages an account, past won cases will now show credit for the new manager instead. This is automatic.</p>
+
+    <h2>Testing & Verification</h2>
+    <div class="success">
+        <ul>
+            <li>✓ All automated tests pass (760 tests)</li>
+            <li>✓ All manual browser tests pass (33 tests)</li>
+            <li>✓ Code quality checks pass</li>
+            <li>✓ System deployed to production</li>
+        </ul>
+    </div>
+
+    <h2>Data Safety</h2>
+    <div class="info">
+        <p><strong>Database cleanup completed:</strong> Old ownership data has been permanently removed from the database. This was safe because all the data was test data.</p>
+        <p><strong>Important for backups:</strong> If you restore a backup taken before September 19, 2026, you'll need to remove the old ownership information before using it with the new system.</p>
+    </div>
+
+</body>
+</html>

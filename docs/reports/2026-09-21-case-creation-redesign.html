@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Case Creation Redesign - Manager Approval</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            max-width: 8.5in;
+            margin: 0 auto;
+            padding: 0.75in;
+            background: white;
+        }
+        h1 {
+            font-size: 32px;
+            margin-bottom: 5px;
+            text-align: center;
+            color: #1a1a1a;
+        }
+        .subtitle {
+            text-align: center;
+            font-size: 16px;
+            margin-bottom: 25px;
+            color: #666;
+        }
+        .metadata {
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #ddd;
+            font-size: 14px;
+        }
+        h2 {
+            font-size: 20px;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            color: #1a1a1a;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 8px;
+        }
+        h3 {
+            font-size: 16px;
+            margin-top: 18px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        p {
+            margin-bottom: 14px;
+            font-size: 15px;
+        }
+        ul, ol {
+            margin: 15px 0;
+            padding-left: 30px;
+        }
+        li {
+            margin-bottom: 10px;
+            font-size: 15px;
+        }
+        .qa-box {
+            background-color: #f0f7ff;
+            border-left: 4px solid #2196F3;
+            padding: 12px;
+            margin: 12px 0;
+            border-radius: 4px;
+        }
+        .qa-question {
+            font-weight: bold;
+            color: #1976D2;
+            margin-bottom: 6px;
+        }
+        .qa-answer {
+            color: #333;
+            margin-left: 12px;
+            margin-bottom: 8px;
+        }
+        .qa-alternatives {
+            font-size: 13px;
+            color: #666;
+            margin-left: 12px;
+            font-style: italic;
+        }
+        .approach {
+            background-color: #fafafa;
+            border: 1px solid #ddd;
+            padding: 14px;
+            margin: 14px 0;
+            border-radius: 4px;
+        }
+        .approach-title {
+            font-weight: bold;
+            font-size: 15px;
+            color: #222;
+            margin-bottom: 8px;
+        }
+        .pros, .cons {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+        .pros li, .cons li {
+            margin-bottom: 6px;
+        }
+        .recommended {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+        }
+        .success {
+            background-color: #d4edda;
+            border-left: 5px solid #28a745;
+            padding: 15px;
+            margin: 18px 0;
+            border-radius: 4px;
+        }
+        .info {
+            background-color: #e7f3ff;
+            border-left: 5px solid #2196F3;
+            padding: 15px;
+            margin: 18px 0;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .section-header {
+            background-color: #f5f5f5;
+            padding: 8px 12px;
+            margin: 15px 0 10px 0;
+            border-left: 4px solid #666;
+            font-weight: bold;
+        }
+        @media print {
+            body {
+                margin: 0;
+                padding: 0.5in;
+            }
+            h1, h2 {
+                page-break-after: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Case Creation Redesign</h1>
+    <div class="subtitle">Block Customerless Cases</div>
+
+    <div class="metadata">
+        <p><strong>Date:</strong> September 21, 2026</p>
+        <p><strong>Status:</strong> Ready for Manager Approval</p>
+        <p><strong>Context:</strong> Follow-up to case-owner layer elimination (Sept 18-19). Addresses "ghost visibility" on cases created without a company.</p>
+    </div>
+
+    <h2>Executive Summary</h2>
+    <p>This redesign prevents cases from being created without a company, eliminating the "ghost visibility" where creators can see cases via a fallback rule. Instead, when someone creates a company, they explicitly choose their role (handler/assignee/neither), and that choice carries forward to any cases they create on that company.</p>
+
+    <div class="success">
+        <strong>Goals:</strong>
+        <ul>
+            <li>✓ Every case always has clear, official ownership (audit/data integrity)</li>
+            <li>✓ No creator-only "ghost visibility" loophole (access control)</li>
+            <li>✓ Clear workflow: company → opt-in role → case (simplification)</li>
+        </ul>
+    </div>
+
+    <h2>Brainstorming Q&A (With Manager Verification)</h2>
+    <p>This section documents the questions asked, your answers, and alternative options. Manager: please review and confirm these align with your intent.</p>
+
+    <div class="qa-box">
+        <div class="qa-question">Q1: What bothers you about customerless cases?</div>
+        <div class="qa-answer"><strong>Answer:</strong> Both cases with NO company attached, AND cases created BEFORE a company is assigned.</div>
+        <div class="qa-alternatives">Alternatives: (A) Only cases with no company; (B) Only cases created before company assignment; (D) Something else.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q2: What's the core problem you want to prevent?</div>
+        <div class="qa-answer"><strong>Answer:</strong> Prevent cases from being created without a company in the first place (block at creation time).</div>
+        <div class="qa-alternatives">Alternatives: (A) Creator shouldn't have any access; (B) Track/audit/control when cases end up customerless; (D) Other.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q3: Who can create companies, and in what order?</div>
+        <div class="qa-answer"><strong>Answer:</strong> L2 can create companies, but must create company FIRST, then create case FOR that company.</div>
+        <div class="qa-alternatives">Alternatives: (A) Only L3+ create companies; (B) L2 can create both in any order; (C) L2 asks others to create companies first.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q4: When L2 creates a company, what role should they have?</div>
+        <div class="qa-answer"><strong>Answer:</strong> L2 can opt in: be a handler (manager), assignee (ticket holder), or neither (just creator).</div>
+        <div class="qa-alternatives">Alternatives: (A) Auto-become handler; (B) Auto-become neither; (D) Other.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q5: What should happen if someone tries to create a case without a company?</div>
+        <div class="qa-answer"><strong>Answer:</strong> Redirect to create company page with floating timed message (5-4-3-2-1 countdown). User can cancel or go immediately.</div>
+        <div class="qa-alternatives">Alternatives: (A) Hard block with error; (B) Modal to create company right there; (D) Other.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q6: What about existing cases without a company?</div>
+        <div class="qa-answer"><strong>Answer:</strong> Force all existing customerless cases to be assigned a company before view/edit.</div>
+        <div class="qa-alternatives">Alternatives: (A) Leave them as-is; (C) Archive them as orphaned; (D) None exist.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q7: Should all access levels follow the same company-first rule?</div>
+        <div class="qa-answer"><strong>Answer:</strong> Yes — everyone (L2-L6) must create company first. Same rule for all, no exceptions.</div>
+        <div class="qa-alternatives">Alternatives: (B) L4+ can bypass; (C) L3+ can bypass; (D) Other.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q8: Should creating a case auto-assign the creator as handler?</div>
+        <div class="qa-answer"><strong>Answer:</strong> It depends on their opt-in choice from company creation. If they chose "handler", yes; if "assignee" or "neither", no.</div>
+        <div class="qa-alternatives">Alternatives: (A) Auto-assign everyone; (B) Never auto-assign; (D) Other.</div>
+    </div>
+
+    <div class="qa-box">
+        <div class="qa-question">Q9: What's the main win for this change?</div>
+        <div class="qa-answer"><strong>Answer:</strong> All three: (A) audit/data integrity, (B) access control, (C) workflow simplification.</div>
+        <div class="qa-alternatives">Alternatives: Pick 1-2 instead of all three.</div>
+    </div>
+
+    <h2>Approaches Considered</h2>
+
+    <div class="approach recommended">
+        <div class="approach-title">✓ RECOMMENDED: Approach 1 — Strict Enforcement</div>
+        <p><strong>How it works:</strong> Block case creation without company. When creating company, user opts in (handler/assignee/neither). That opt-in auto-applies to cases they create. Existing customerless cases must be assigned a company before use.</p>
+        <div class="pros">
+            <strong>Pros:</strong>
+            <ul>
+                <li>Cleanest data integrity — every case always has official ownership</li>
+                <li>Eliminates "ghost visibility" loophole completely</li>
+                <li>Crystal-clear workflow: company → opt-in → case</li>
+                <li>Solves all three goals: audit, access control, simplification</li>
+            </ul>
+        </div>
+        <div class="cons">
+            <strong>Cons:</strong>
+            <ul>
+                <li>More restrictive UX — users can't create ad-hoc cases</li>
+                <li>Requires cleanup of existing customerless cases</li>
+                <li>If opt-in choice is wrong, must redo it</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="approach">
+        <div class="approach-title">Approach 2 — Soft Enforcement with Wizard</div>
+        <p><strong>How it works:</strong> Same blocking as Approach 1, but with a guided company-creation wizard explaining each role choice. Existing customerless cases get a soft nudge (banner), not forced migration.</p>
+        <div class="pros">
+            <strong>Pros:</strong>
+            <ul>
+                <li>Same end state, but gentler UX</li>
+                <li>Educates users on role choices</li>
+                <li>Allows time for edge cases</li>
+            </ul>
+        </div>
+        <div class="cons">
+            <strong>Cons:</strong>
+            <ul>
+                <li>More UX complexity (wizard vs. simple form)</li>
+                <li>Deferred cleanup means ghost visibility persists temporarily</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="approach">
+        <div class="approach-title">Approach 3 — Opt-Out Creator Fallback (Not Recommended)</div>
+        <p><strong>How it works:</strong> Allow case creation without company. At company creation, default is "neither" (no fallback). Creator only sees case if they explicitly chose a role or are assigned ticket holder.</p>
+        <div class="pros">
+            <strong>Pros:</strong>
+            <ul>
+                <li>Minimal UX friction</li>
+                <li>Backward compatible</li>
+            </ul>
+        </div>
+        <div class="cons">
+            <strong>Cons:</strong>
+            <ul>
+                <li>Doesn't solve ghost visibility — fallback still exists if users forget opt-in</li>
+                <li>Weaker audit trail</li>
+                <li>Doesn't achieve goal of "no orphaned cases"</li>
+            </ul>
+        </div>
+    </div>
+
+    <h2>Chosen Design: Approach 1 (Strict Enforcement)</h2>
+
+    <div class="section-header">Core Rules</div>
+
+    <h3>Rule 1: Case Creation Gate</h3>
+    <p>When someone tries to create a case, check if the target company exists.</p>
+    <ul>
+        <li><strong>If NO:</strong> Show floating timer message "Company needs to be created first" (5-4-3-2-1 countdown). User can click "Go now" to skip timer or "Cancel" to close.</li>
+        <li><strong>If YES:</strong> Allow case creation normally.</li>
+    </ul>
+
+    <h3>Rule 2: Company Creation + Opt-In</h3>
+    <p>When creating a company, prompt the creator to choose their role:</p>
+    <ul>
+        <li>"<strong>Handler</strong> (Manager of this company's cases)" — you manage and own all cases</li>
+        <li>"<strong>Assignee</strong> (Ticket holder)" — you work on cases assigned to you, but don't manage them</li>
+        <li>"<strong>Neither</strong> (Just creating it for someone else)" — you're only involved if assigned a ticket</li>
+    </ul>
+    <p>Store this choice. When the creator makes their first case, auto-apply their role choice.</p>
+
+    <h3>Rule 3: Existing Customerless Cases</h3>
+    <p>Query for any cases where <code>customer_id is null</code>. Before allowing view/edit, require company assignment:</p>
+    <ul>
+        <li>Show modal: "This case has no company. Assign one before continuing."</li>
+        <li>User picks a company → case is re-linked → ownership recalculates</li>
+    </ul>
+
+    <h3>Rule 4: Handler Auto-Assignment</h3>
+    <ul>
+        <li>If user opted "handler" at company creation → auto-become handler of that company → own all its cases</li>
+        <li>If user opted "assignee" → NOT a handler; only see cases assigned to you</li>
+        <li>If user opted "neither" → only creator-fallback (see cases you created, if unmanaged account)</li>
+    </ul>
+
+    <div class="section-header">User Experience</div>
+
+    <h3>Company Creation Flow</h3>
+    <ol>
+        <li>User clicks "Create Company"</li>
+        <li>Form appears: name, location, tags, etc.</li>
+        <li>New section: "What's your role in this company?" (radio buttons for Handler/Assignee/Neither, with hints)</li>
+        <li>User submits → company created + opt-in choice recorded</li>
+        <li>Success screen: "View company" or "Create first case"</li>
+    </ol>
+
+    <h3>Case Creation Redirect Flow</h3>
+    <ol>
+        <li>User clicks "Create Case" (no company selected)</li>
+        <li>Floating message appears: "Company needs to be created first" (5-4-3-2-1 timer)</li>
+        <li>Buttons: "Go to Create Company" | "Cancel"</li>
+        <li>If timer reaches 0 and user does nothing → auto-redirect</li>
+    </ol>
+
+    <h3>Orphaned Case Assignment Flow</h3>
+    <ol>
+        <li>User tries to view/edit case with no company</li>
+        <li>Modal blocks: "This case has no company assigned"</li>
+        <li>Dropdown: "Select a company..."</li>
+        <li>User picks company → case re-links → case reloads with new ownership derived</li>
+    </ol>
+
+    <div class="section-header">Data & Database</div>
+
+    <h3>Schema Changes</h3>
+    <table>
+        <tr>
+            <th>Table</th>
+            <th>Change</th>
+            <th>Why</th>
+        </tr>
+        <tr>
+            <td><code>companies</code></td>
+            <td>Add <code>creator_role_choice</code> (enum: handler | assignee | neither)</td>
+            <td>Store the creator's opt-in choice at company creation</td>
+        </tr>
+        <tr>
+            <td><code>cases</code></td>
+            <td><code>customer_id</code> becomes required non-null</td>
+            <td>Every case must belong to a company; no orphaned cases</td>
+        </tr>
+        <tr>
+            <td><code>handlers</code></td>
+            <td>None (auto-create handler row when user opts in)</td>
+            <td>Handler assignments work as-is</td>
+        </tr>
+    </table>
+
+    <h3>Migration Plan</h3>
+    <ol>
+        <li>Add <code>creator_role_choice</code> column to companies (nullable, default 'neither')</li>
+        <li>Find all cases where <code>customer_id is null</code> (orphaned)</li>
+        <li>For each orphaned case: create a data task for manual company assignment</li>
+        <li>Add validation: prevent case creation if company doesn't exist</li>
+        <li>Add UI gate: block view/edit of orphaned cases until assigned</li>
+    </ol>
+
+    <div class="section-header">Testing & Edge Cases</div>
+
+    <h3>Test Scenarios</h3>
+    <ol>
+        <li><strong>L2 creates company as handler:</strong> L2 → handler → owns all cases ✓</li>
+        <li><strong>L2 creates company as assignee only:</strong> L2 → NOT handler, only visible via ticket assignment ✓</li>
+        <li><strong>L2 creates company as neither:</strong> L2 → creator-fallback only ✓</li>
+        <li><strong>Case creation blocked:</strong> Timer redirect works, user can cancel or go immediately ✓</li>
+        <li><strong>Orphaned case assignment:</strong> Modal forces company → ownership recalculates ✓</li>
+        <li><strong>All levels follow same rule:</strong> L3, L4, L5, L6 all need company first ✓</li>
+        <li><strong>Handler removal doesn't orphan:</strong> Case still belongs to company; ownership recalculates ✓</li>
+    </ol>
+
+    <h3>Edge Cases Handled</h3>
+    <ul>
+        <li><strong>Editing customer_id to null:</strong> Blocked by validation — required non-null</li>
+        <li><strong>Company deletion:</strong> Prevent if company has cases (or soft-delete only)</li>
+        <li><strong>Change opt-in choice:</strong> Allow re-editing company to change role (handler ↔ assignee)</li>
+        <li><strong>Multi-handler company, creator opted neither:</strong> Creator only sees via assignee; can't see if unassigned</li>
+        <li><strong>Old companies without role choice:</strong> Treat as 'neither' (safest); allow admin update if needed</li>
+    </ul>
+
+    <h2>Next Steps for Approval</h2>
+    <div class="info">
+        <p><strong>Manager:</strong> Please review the brainstorming Q&A and confirm the answers align with your intent. If any question needs adjustment, we can revise before implementation planning.</p>
+        <p>Once approved, this design moves to the implementation-planning phase, where we'll create detailed task steps and commit this spec to the repository.</p>
+    </div>
+
+</body>
+</html>
