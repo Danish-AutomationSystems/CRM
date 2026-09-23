@@ -27,8 +27,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   const who = Number(params.get('u') ?? 0);
   const mode = params.get('mode') ?? 'case';
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  // L6 must name an assignee explicitly, so use an L4/L2 context for case writes.
-  const context = CONTEXTS[who % (mode === 'case' ? 3 : CONTEXTS.length)];
+  // Case writes always use the L4 context: it has full access to any customer,
+  // so the probe measures write contention rather than re-proving the
+  // permission model by having L2 writers correctly refused.
+  const context = mode === 'case' ? CONTEXTS[0] : CONTEXTS[who % CONTEXTS.length];
 
   const cases = memoizeRepository(caseRepository, CASE_READ_METHODS);
   const customers = memoizeRepository(customerRepository, CUSTOMER_READ_METHODS);
