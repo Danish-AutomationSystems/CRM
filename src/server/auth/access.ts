@@ -1,5 +1,5 @@
 import type { CrmUser } from './context';
-import { isDirect } from '../domain/direct';
+import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, uniqueEmails } from '../domain/lists';
 import type {
   AccessOwnership,
@@ -61,19 +61,14 @@ export function customerRealHandlers(customerId: string, ownership: AccessOwners
 }
 
 /**
- * Who owns a case: its account's real handlers, derived live - ownership is never stored on
- * the case. When the account has no real handler (a customerless case, or one handled only by
- * the virtual Direct account) the case's creator stands in so the case is never orphaned. The
- * moment the account gains a real handler, the creator's claim ends.
- *
- * `ownership` has no default on purpose: "no handlers" would trigger the creator fallback on
- * accounts that do have handlers.
+ * Who owns a case: its account's handlers, derived live - ownership is never stored on the case.
+ * An account with no real handler is held by the virtual `direct` account, which is a real row in
+ * public.handlers. Direct is an owner for display and reporting only: no human holds that email,
+ * so it grants access to nobody. The creator has no claim on a case merely for having created it.
  */
 export function caseHandlers(caseRecord: CaseRecord, ownership: AccessOwnership): string[] {
-  const handlers = customerRealHandlers(caseRecord.customerId, ownership);
-  if (handlers.length > 0) return handlers;
-  const creator = normalizeEmail(caseRecord.createdBy);
-  return creator && !isDirect(creator) ? [creator] : [];
+  const handlers = customerHandlers(caseRecord.customerId, ownership);
+  return handlers.length > 0 ? handlers : [DIRECT_EMAIL];
 }
 
 export function caseVisible(

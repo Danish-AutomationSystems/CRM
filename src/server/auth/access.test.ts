@@ -111,23 +111,14 @@ describe('caseHandlers', () => {
   it('returns the account real handlers and ignores the creator entirely', () => {
     expect(caseHandlers(caseRecord, handlers)).toEqual(['anita@automationsystems.org', 'ravi@automationsystems.org']);
   });
-  it('falls back to the creator on a customerless case', () => {
-    expect(caseHandlers({ ...caseRecord, customerId: '' }, handlers)).toEqual(['creator@automationsystems.org']);
+  it('falls back to Direct on a customerless case', () => {
+    expect(caseHandlers({ ...caseRecord, customerId: '' }, handlers)).toEqual(['direct']);
   });
-  it('falls back to the creator when the only handler is the virtual Direct account', () => {
-    expect(caseHandlers(caseRecord, directOnly)).toEqual(['creator@automationsystems.org']);
+  it('returns Direct when the only handler is the virtual Direct account', () => {
+    expect(caseHandlers(caseRecord, directOnly)).toEqual(['direct']);
   });
-  it('falls back to the creator when the account has no handler rows at all', () => {
-    expect(caseHandlers(caseRecord, ownership())).toEqual(['creator@automationsystems.org']);
-  });
-  it('returns nothing rather than inventing an owner when the creator is blank or Direct', () => {
-    expect(caseHandlers({ ...caseRecord, createdBy: '' }, ownership())).toEqual([]);
-    expect(caseHandlers({ ...caseRecord, createdBy: 'direct' }, ownership())).toEqual([]);
-  });
-  it('normalizes the creator email', () => {
-    expect(caseHandlers({ ...caseRecord, createdBy: ' Creator@AutomationSystems.org ' }, ownership())).toEqual([
-      'creator@automationsystems.org'
-    ]);
+  it('falls back to Direct when the account has no handler rows at all', () => {
+    expect(caseHandlers(caseRecord, ownership())).toEqual(['direct']);
   });
 });
 
@@ -152,11 +143,11 @@ describe('caseVisible', () => {
   it('the assignee sees the case whatever the handler state', () => {
     expect(caseVisible(other, 'NONE', { ...created, assignee: other.email }, handled)).toBe(true);
   });
-  it('the creator sees a case whose account has no real handler', () => {
-    expect(caseVisible(creator, 'NONE', created, ownership())).toBe(true);
+  it('denies the creator a case whose account has no real handler (Direct owns it instead)', () => {
+    expect(caseVisible(creator, 'NONE', created, ownership())).toBe(false);
   });
-  it('the creator sees a customerless case', () => {
-    expect(caseVisible(creator, 'NONE', { ...created, customerId: '' }, handled)).toBe(true);
+  it('denies the creator a customerless case (Direct owns it instead)', () => {
+    expect(caseVisible(creator, 'NONE', { ...created, customerId: '' }, handled)).toBe(false);
   });
   it('the creator loses the case the moment the account gains a real handler', () => {
     expect(caseVisible(creator, 'NONE', created, handled)).toBe(false);
@@ -181,5 +172,112 @@ describe('authorization guards', () => {
     expect(() => ensureFull(sales, customer, ownership())).toThrow('not an account handler');
     expect(() => ensureCanSeeCase(sales, 'NAME', caseRecord, ownership())).toThrow('access to this case');
     expect(() => ensureAdmin(user('L5'))).toThrow('Admin access requires L6');
+  });
+});
+
+describe('caseHandlers — Direct replaces the creator fallback', () => {
+  it('returns Direct, not the creator, when the account has no real handler', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: { 'CUST-1': ['direct'] } };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'l2@automationsystems.org',
+      assignee: ''
+    };
+
+    expect(caseHandlers(caseRec, ownershipRecord)).toEqual(['direct']);
+  });
+
+  it('returns Direct even when the account has no handler row at all', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: {} };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'l2@automationsystems.org',
+      assignee: ''
+    };
+
+    expect(caseHandlers(caseRec, ownershipRecord)).toEqual(['direct']);
+  });
+
+  it('returns the real handlers when they exist, never the creator', () => {
+    const ownershipRecord: AccessOwnership = {
+      handlerEmailsByCustomerId: { 'CUST-1': ['handler@automationsystems.org'] }
+    };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'creator@automationsystems.org',
+      assignee: ''
+    };
+
+    expect(caseHandlers(caseRec, ownershipRecord)).toEqual(['handler@automationsystems.org']);
+  });
+});
+
+describe('caseVisible — the ghost-visibility fix', () => {
+  const l2: CrmUser = { email: 'creator@automationsystems.org', name: 'L2', role: 'L2', allowedTags: [], active: true };
+
+  it('denies the creator a Direct-held case they are not assigned', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: { 'CUST-1': ['direct'] } };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'creator@automationsystems.org',
+      assignee: ''
+    };
+
+    expect(caseVisible(l2, 'NONE', caseRec, ownershipRecord)).toBe(false);
+  });
+
+  it('still allows the creator when they are the assignee', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: { 'CUST-1': ['direct'] } };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'creator@automationsystems.org',
+      assignee: 'creator@automationsystems.org'
+    };
+
+    expect(caseVisible(l2, 'NONE', caseRec, ownershipRecord)).toBe(true);
+  });
+
+  it('grants nobody access merely because Direct holds the account', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: { 'CUST-1': ['direct'] } };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'someone@automationsystems.org',
+      assignee: ''
+    };
+    const unrelated: CrmUser = {
+      email: 'other@automationsystems.org',
+      name: 'L3',
+      role: 'L3',
+      allowedTags: [],
+      active: true
+    };
+
+    expect(caseVisible(unrelated, 'NONE', caseRec, ownershipRecord)).toBe(false);
+  });
+
+  it('still lets L4+ see everything', () => {
+    const ownershipRecord: AccessOwnership = { handlerEmailsByCustomerId: { 'CUST-1': ['direct'] } };
+    const caseRec: CaseRecord = {
+      id: 'CASE-1',
+      customerId: 'CUST-1',
+      title: 'Panel enquiry',
+      createdBy: 'someone@automationsystems.org',
+      assignee: ''
+    };
+    const l4: CrmUser = { email: 'boss@automationsystems.org', name: 'L4', role: 'L4', allowedTags: [], active: true };
+
+    expect(caseVisible(l4, 'FULL', caseRec, ownershipRecord)).toBe(true);
   });
 });
