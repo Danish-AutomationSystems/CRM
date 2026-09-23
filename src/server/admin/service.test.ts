@@ -301,8 +301,8 @@ function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
 
 function makeService(repo = new FakeAdminRepository()) {
   repo.users = [
-    user({ email: 'admin@automationsystems.org', name: 'Admin User', role: 'L6', allowedTags: ['*'] }),
-    user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L5', allowedTags: ['*'] }),
+    user({ email: 'admin@automationsystems.org', name: 'Admin User', role: 'L6', allowedTags: [] }),
+    user({ email: 'manager@automationsystems.org', name: 'Manager User', role: 'L5', allowedTags: [] }),
     user()
   ];
 
@@ -331,7 +331,7 @@ describe('admin service access and users', () => {
     const users = await service.listUsers(admin);
 
     expect(users).toEqual([
-      expect.objectContaining({ email: 'admin@automationsystems.org', allowedTags: ['*'], active: true }),
+      expect.objectContaining({ email: 'admin@automationsystems.org', allowedTags: [], active: true }),
       expect.objectContaining({ email: 'inactive@automationsystems.org', allowedTags: ['NCR'], active: false }),
       expect.objectContaining({ email: 'manager@automationsystems.org', active: true }),
       expect.objectContaining({ email: 'sales@automationsystems.org', active: true }),
@@ -355,7 +355,7 @@ describe('admin service access and users', () => {
       email: ' NEW.USER@AutomationSystems.Org ',
       name: '  New User  ',
       role: 'Bad',
-      allowedTags: ['Punjab', '*', 'NCR'],
+      allowedTags: ['Punjab', 'NCR'],
       active: false
     });
     await service.saveUser(admin, {
@@ -369,7 +369,7 @@ describe('admin service access and users', () => {
     expect(await repo.getUser('new.user@automationsystems.org')).toMatchObject({
       name: 'New User',
       role: 'L2',
-      allowedTags: ['*'],
+      allowedTags: ['Punjab', 'NCR'],
       active: false,
       addedBy: 'admin@automationsystems.org'
     });
@@ -387,6 +387,19 @@ describe('admin service access and users', () => {
 
     await expect(service.saveUser(admin, { email: admin.email, active: false })).rejects.toThrow('deactivate your own');
     await expect(service.saveUser(admin, { email: admin.email, role: 'L5' })).rejects.toThrow('lower your own level');
+  });
+
+  it('rejects the "*" wildcard as an allowed tag: location grants must now be explicit', async () => {
+    const { repo, service } = makeService();
+
+    await expect(
+      service.saveUser(admin, {
+        email: 'wildcard@automationsystems.org',
+        role: 'L2',
+        allowedTags: ['Punjab', '*']
+      })
+    ).rejects.toThrow(/no longer a valid location/);
+    expect(await repo.getUser('wildcard@automationsystems.org')).toBeNull();
   });
 });
 

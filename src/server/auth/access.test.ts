@@ -87,9 +87,37 @@ describe('accessLevel', () => {
     expect(accessLevel(assignee, customer, ownership())).toBe('NONE');
   });
 
-  it('treats wildcard tags as matching customer tags', () => {
-    expect(accessLevel(user('L2', ['*']), customer)).toBe('NAME');
-    expect(accessLevel(user('L3', ['*']), customer)).toBe('FULL');
+  it('no longer treats wildcard tags as matching customer tags', () => {
+    expect(accessLevel(user('L2', ['*']), customer)).toBe('NONE');
+    expect(accessLevel(user('L3', ['*']), customer)).toBe('NAME');
+  });
+});
+
+describe('the * wildcard no longer grants access', () => {
+  const wildcardCustomer: CustomerRecord = { id: 'CUST-1', name: 'Wildcard Co', tags: ['Punjab'], type: 'OEM' };
+
+  it('grants an L2 holding "*" nothing, because * is just an unmatched string now', () => {
+    const l2 = user('L2', ['*']);
+
+    expect(accessLevel(l2, wildcardCustomer, ownership())).toBe('NONE');
+  });
+
+  it('grants an L2 the customers in their listed locations', () => {
+    const l2 = user('L2', ['Punjab']);
+
+    expect(accessLevel(l2, wildcardCustomer, ownership())).toBe('NAME');
+  });
+
+  it('grants an L2 nothing outside their listed locations', () => {
+    const l2 = user('L2', ['NCR']);
+
+    expect(accessLevel(l2, wildcardCustomer, ownership())).toBe('NONE');
+  });
+
+  it('still grants L4 full access with no tags at all', () => {
+    const l4 = user('L4', []);
+
+    expect(accessLevel(l4, wildcardCustomer, ownership())).toBe('FULL');
   });
 });
 

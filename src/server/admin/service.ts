@@ -295,7 +295,10 @@ function normalizeImportList(value: unknown): string[] {
 
 function normalizeAllowedTags(value: unknown): string[] {
   const tags = normalizeImportList(value);
-  return tags.includes('*') ? ['*'] : tags;
+  if (tags.includes(ALLOWED_TAGS_WILDCARD)) {
+    throw new Error(`"${ALLOWED_TAGS_WILDCARD}" is no longer a valid location. Assign explicit locations instead.`);
+  }
+  return tags;
 }
 
 function normalizeRole(value: unknown): CrmRole {
@@ -362,10 +365,11 @@ const ALLOWED_TAGS_WILDCARD = '*';
  *
  * TAG_TO_BE_FILLED is the location-backfill placeholder (0007_backfill_customer_locations.sql):
  * it is written into customers that predate locations and must stay recognisable.
- * '*' is the allowed_tags wildcard meaning "every location"; a list entry named '*'
- * would grant every user every customer the moment it was assigned, and renaming
- * '*' would rewrite users.allowed_tags rows into a state that
- * users_star_tag_check (0001_initial_schema.sql:15) forbids.
+ * '*' used to be the allowed_tags wildcard meaning "every location"; that meaning was
+ * removed (normalizeAllowedTags now rejects '*' outright, and
+ * users_no_wildcard_tag_check (0017_remove_allowed_tags_wildcard.sql) forbids it in the
+ * database) but '*' stays reserved here so it can never become a real location name -
+ * a list entry named '*' would be confusable with the retired wildcard.
  *
  * Add-, delete- and rename-from all route through here rather than repeating the
  * check, so a third reserved value is one edit, not three.

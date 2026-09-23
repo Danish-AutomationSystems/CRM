@@ -25,8 +25,6 @@ function customerHandlers(customerId: string, ownership: AccessOwnership = EMPTY
 }
 
 function tagMatches(user: Pick<CrmUser, 'allowedTags'>, customer: CustomerRecord): boolean {
-  if (user.allowedTags.includes('*')) return true;
-
   const allowed = new Set(user.allowedTags);
   return parseList(customer.tags).some((tag) => allowed.has(tag));
 }
