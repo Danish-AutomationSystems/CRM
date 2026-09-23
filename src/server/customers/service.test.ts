@@ -177,6 +177,13 @@ class FakeCustomerRepository implements CustomerRepository {
   handlersFor(customerId: string): string[] {
     return this.handlers.filter((handler) => handler.customerId === customerId).map((handler) => handler.email);
   }
+
+  setHandlers(customerId: string, emails: string[]): void {
+    this.handlers = this.handlers.filter((handler) => handler.customerId !== customerId);
+    for (const email of emails) {
+      this.handlers.push({ customerId, email, assignedBy: baseUser.email, assignedAt: 'now' });
+    }
+  }
 }
 
 function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
@@ -1096,5 +1103,29 @@ describe('contact and handler service APIs', () => {
     await expect(service.removeHandler(baseUser, 'CUST-0001', 'target@automationsystems.org')).rejects.toThrow(
       'not a handler'
     );
+  });
+});
+
+describe('removeHandler keeps ownership non-empty', () => {
+  const admin: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
+
+  it('leaves the remaining handlers when one of several is removed', async () => {
+    const { service, repo } = makeService();
+    repo.customers = [customer()];
+    repo.setHandlers('CUST-0001', ['a@automationsystems.org', 'b@automationsystems.org']);
+
+    await service.removeHandler(admin, 'CUST-0001', 'a@automationsystems.org');
+
+    expect(repo.handlersFor('CUST-0001')).toEqual(['b@automationsystems.org']);
+  });
+
+  it('falls back to Direct when the last real handler is removed', async () => {
+    const { service, repo } = makeService();
+    repo.customers = [customer()];
+    repo.setHandlers('CUST-0001', ['only@automationsystems.org']);
+
+    await service.removeHandler(admin, 'CUST-0001', 'only@automationsystems.org');
+
+    expect(repo.handlersFor('CUST-0001')).toEqual(['direct']);
   });
 });

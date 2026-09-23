@@ -937,13 +937,26 @@ export function createCustomerService(repo: CustomerRepository) {
         throw new Error('That user is not a handler for this customer.');
       }
 
-      await repo.removeHandler(customerId, email);
-      await repo.logActivity({
-        action: 'HANDLER_REMOVE',
-        entity: customerId,
-        customerId,
-        details: email,
-        who: normalizeEmail(user.email)
+      await repo.withTransaction(async (tx) => {
+        const trx = tx ?? repo;
+        await trx.removeHandler(customerId, email);
+        const remaining = ownershipFor(await trx.listHandlers()).handlersByCustomerId[customerId] ?? [];
+        if (!remaining.some((handlerEmail) => !isDirect(handlerEmail))) {
+          await trx.addHandler({
+            customerId,
+            email: DIRECT_EMAIL,
+            assignedBy: normalizeEmail(user.email),
+            assignedAt: nowIso()
+          });
+        }
+        await trx.logActivity({
+          action: 'HANDLER_REMOVE',
+          entity: customerId,
+          customerId,
+          details: email,
+          who: normalizeEmail(user.email)
+        });
+        return undefined;
       });
       return { ok: true };
     },
