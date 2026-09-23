@@ -73,7 +73,18 @@ the quotation auto-case path all reject an empty customer. Delete `CASE-2026-001
 - **Note:** this replaces the approved design's 5-4-3-2-1 timed redirect. With no way to start a
   case without a customer, there is nothing to redirect away from.
 
-### P3 — The creator owns what they create
+### P3 — The creator owns what they create — ALREADY IMPLEMENTED
+
+**Correction (2026-09-23).** This package was specified on a false premise. I wrote that
+`createCustomer` assigned no handler; it does. `createCustomer` already calls
+`trx.addHandler({ email: creatorHandlerEmail(user) })` inside the same transaction as the customer
+insert (`src/server/customers/service.ts:645`), and `creatorHandlerEmail` (line 203) already routes
+L5/L6 to `DIRECT_EMAIL` and everyone else to the creator — shipped in `5a181d7`, well before this
+work. A test covering it already existed too.
+
+No production change was needed. The task added four explicit tests naming the rule per role, which
+were confirmed meaningful by mutation (making L5/L6 become handlers fails them). The rule below
+describes what the code already does, and is kept as the statement of intended behaviour.
 
 On customer creation: an L2–L4 creator becomes the account handler; an L5/L6 creator yields `direct`.
 The handler / assignee / neither opt-in from the approved design is **removed** — there is no opt-out
