@@ -73,6 +73,25 @@ function sourceOf(relative: string): string {
 }
 
 describe('per-request service wiring (dashboard / cases / customers rpc)', () => {
+  // Hoisting a memoized repository to module scope type-checks, keeps the
+  // per-request factory intact, and still satisfies every other assertion here
+  // - while being WORSE than the original outage: one cache would then be
+  // shared by every request on that instance, so one user could be served
+  // another user's stale rows. A module-scope binding starts at column zero;
+  // one built inside the factory is indented.
+  it.each(WIRED_MODULES)('%s never memoizes a repository at module scope', (relative) => {
+    const hoisted = sourceOf(relative)
+      .split(/\r?\n/)
+      .filter((line) => /^(?:const|let|var)\s+\w+\s*=\s*memoizeRepository\(/.test(line));
+
+    expect(
+      hoisted,
+      `${relative} builds a memoized repository at module scope:\n  ${hoisted.join('\n  ')}\n` +
+        'That cache would outlive the request and be shared across every request on the instance, ' +
+        'serving one user another user\'s stale data. Build it inside the per-request factory instead.'
+    ).toEqual([]);
+  });
+
   it.each(WIRED_MODULES)('%s memoizes its repository/repositories', (relative) => {
     const source = sourceOf(relative);
     const memoizeCalls = source.match(/memoizeRepository\(/g) ?? [];
