@@ -1715,7 +1715,25 @@ describe('case reads, lists, and quick log', () => {
   });
 
   it.each([
-    ['tag', { tag: 'Punjab' }, { TAGS: 'NCR | Chandigarh' }, 'tags', []],
+    ['no location', {}, 'Pick at least one location for this customer.'],
+    ['a retired location', { tag: 'Retired Place' }, 'Pick at least one location for this customer.'],
+    ['two locations', { tags: ['Punjab', 'NCR'] }, 'A customer can have only one location.']
+  ] as const)('refuses to quick-log a new customer with %s, creating nothing', async (_label, locationField, message) => {
+    // public.customers carries customers_single_location_check (cardinality(tags) = 1,
+    // migration 0016), so anything but exactly one location must be refused here with a
+    // legible message rather than reaching the database as a constraint violation.
+    const { repo, service } = makeService();
+    const customersBefore = repo.customers.length;
+
+    await expect(
+      service.quickLog(sales, { newCustomer: { name: 'Fresh Co', ...locationField }, title: 'Site visit' })
+    ).rejects.toThrow(message);
+
+    expect(repo.customers).toHaveLength(customersBefore);
+    expect(repo.cases).toHaveLength(0);
+  });
+
+  it.each([
     ['type', { type: 'OEM' }, { TYPES: 'Alpha | Beta' }, 'type', ''],
     ['priority', { priority: 'High' }, { PRIORITIES: 'Urgent | Routine' }, 'priority', '']
   ] as const)(
@@ -1725,7 +1743,7 @@ describe('case reads, lists, and quick log', () => {
       repo.settingRows = settingRows;
 
       const logged = await service.quickLog(sales, {
-        newCustomer: { name: 'Fresh Co', ...newCustomerField },
+        newCustomer: { name: 'Fresh Co', tag: 'Punjab', ...newCustomerField },
         title: 'Site visit'
       });
 

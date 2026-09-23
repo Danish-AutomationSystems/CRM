@@ -1817,7 +1817,7 @@ function renderQLCust(){
   }
   if(QL.newMode){
     el('ql_cust').innerHTML = '<label class="req">New customer name</label><input id="ql_cname">'+
-      '<div class="frow" style="margin-top:8px"><div><label>Location</label><select id="ql_tag"><option value="">—</option>'+selOptions(S.settings.tags,'')+'</select></div>'+
+      '<div class="frow" style="margin-top:8px"><div><label class="req">Location</label><select id="ql_tag"><option value="">—</option>'+selOptions(S.settings.tags,'')+'</select></div>'+
       '<div><label>Type</label><select id="ql_type"><option value="">—</option>'+selOptions(S.settings.types,'')+'</select></div>'+
       '<div><label>Priority</label><select id="ql_pri"><option value="">—</option>'+selOptions(S.settings.priorities,'')+'</select></div></div>'+
       '<button class="btn lk" onclick="qlToSearch()">← search existing instead</button>';
@@ -1855,6 +1855,7 @@ function saveQuickLog(){
   else if(QL.newMode){
     var nm = v('ql_cname');
     if(!nm){ toast('Enter the new customer name.', true); return; }
+    if(!v('ql_tag')){ toast('Pick a location for the new customer.', true); return; }
     p.newCustomer = { name:nm, tag:v('ql_tag'), type:v('ql_type'), priority:v('ql_pri') };
   }else{ toast('Pick a customer or add a new one.', true); return; }
   el('ql_save').disabled = true;
@@ -2193,7 +2194,7 @@ function bcRowHTML(row, i){
   return '<div class="card" style="background:#FAFBFA;padding:12px;margin-bottom:8px">'+
     '<div class="frow"><div style="flex:2"><label class="req">Name</label><input id="bc_name_'+i+'" value="'+esc(row.name||'')+'"></div>'+
     '<div style="flex:0;display:flex;align-items:flex-end">'+removeBtn+'</div></div>'+
-    '<div class="frow"><div style="flex:1"><label>Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], true)+'</div></div>'+
+    '<div class="frow"><div style="flex:1"><label class="req">Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], true)+'</div></div>'+
     '<div class="frow">'+
     '<div><label>Type</label><select id="bc_type_'+i+'"><option value="">—</option>'+selOptions(S.settings.types, row.type)+'</select></div>'+
     '<div><label>Priority</label><select id="bc_priority_'+i+'"><option value="">—</option>'+selOptions(S.settings.priorities, row.priority)+'</select></div>'+
@@ -2242,6 +2243,8 @@ function bcSubmit(){
       return { name: (r.name||'').trim(), tags: r.tags||[], type: r.type||'', priority: r.priority||'', area: r.area||'' };
     });
   if(!rows.length){ toast('No valid rows (every row needs a name).', true); return; }
+  var noLoc = rows.filter(function(r){ return !r.tags.length; })[0];
+  if(noLoc){ toast(noLoc.name+' needs a location.', true); return; }
   el('bcSaveBtn').disabled = true;
   gs('api_bulkCustomers', rows).then(function(r){
     el('bcSaveBtn').disabled = false;

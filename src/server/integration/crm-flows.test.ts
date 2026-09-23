@@ -257,13 +257,20 @@ class CrmFlowRepository implements AdminRepository, CustomerRepository, CaseRepo
     this.handlers = this.handlers.filter((row) => !(row.customerId === customerId && row.email === email));
   }
 
-  async customersHandledBy(email: string): Promise<Array<{ customerId: string; name: string; tags: string[] }>> {
+  async customersHandledBy(email: string): Promise<Array<{ customerId: string; name: string; tags: string[]; otherRealHandlers: number }>> {
     const customerIds = new Set(
       this.handlers.filter((row) => row.email === email).map((row) => row.customerId)
     );
     return this.customers
       .filter((row) => customerIds.has(row.id))
-      .map((row) => ({ customerId: row.id, name: row.name, tags: row.tags }));
+      .map((row) => ({
+        customerId: row.id,
+        name: row.name,
+        tags: row.tags,
+        otherRealHandlers: this.handlers.filter(
+          (h) => h.customerId === row.id && h.email !== email && h.email !== 'direct'
+        ).length
+      }));
   }
 
   async removeDirectHandlers(customerId: string): Promise<void> {

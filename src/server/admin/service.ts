@@ -7,6 +7,7 @@ import { RENAME_TARGETS, type RenameTarget } from '../settings/config-targets';
 import { nextCrmId } from '../db/ids';
 import { CRM_ID_FORMATS, CRM_ROLES, CRM_TABLES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, directVirtualUser, isDirect } from '../domain/direct';
+import { requireSingleLocation } from '../domain/locations';
 import { isBackendRole } from '../customers/service';
 import { joinPipe, normalizeEmail, parseList, parsePipe } from '../domain/lists';
 import { DEFAULT_SETTINGS, TAG_TO_BE_FILLED, type DefaultSettingKey } from '../settings/defaults';
@@ -68,6 +69,8 @@ export type AdminHandledCustomerRow = {
   customerId: string;
   name: string;
   tags: string[];
+  /** Real (non-Direct) handlers on the account besides the queried user. */
+  otherRealHandlers: number;
 };
 
 export type AdminLocationConflict = {
@@ -736,12 +739,16 @@ export function createAdminService(repo: AdminRepository) {
             for (const row of blocking) {
               const newHandlerEmail = reassign[row.customerId];
               await trx.removeHandler(row.customerId, email);
-              await trx.addHandler({
-                customerId: row.customerId,
-                email: newHandlerEmail,
-                assignedBy: actor,
-                assignedAt: nowIso()
-              });
+              // Direct is only the floor: skip it when a real handler remains.
+              const addsHandler = !(isDirect(newHandlerEmail) && row.otherRealHandlers > 0);
+              if (addsHandler) {
+                await trx.addHandler({
+                  customerId: row.customerId,
+                  email: newHandlerEmail,
+                  assignedBy: actor,
+                  assignedAt: nowIso()
+                });
+              }
               await trx.logActivity({
                 action: 'HANDLER_REMOVE',
                 entity: row.customerId,
@@ -749,13 +756,15 @@ export function createAdminService(repo: AdminRepository) {
                 details: email,
                 who: actor
               });
-              await trx.logActivity({
-                action: 'HANDLER_ADD',
-                entity: row.customerId,
-                customerId: row.customerId,
-                details: newHandlerEmail,
-                who: actor
-              });
+              if (addsHandler) {
+                await trx.logActivity({
+                  action: 'HANDLER_ADD',
+                  entity: row.customerId,
+                  customerId: row.customerId,
+                  details: newHandlerEmail,
+                  who: actor
+                });
+              }
             }
           }
         }
@@ -1020,6 +1029,17 @@ export function createAdminService(repo: AdminRepository) {
         const now = nowIso();
         const actor = normalizeEmail(user.email);
 
+        const tagsByRow = new Map<(typeof rows)[number], string[]>();
+        for (const row of rows) {
+          const name = asText(row.name);
+          if (!name) continue;
+          try {
+            tagsByRow.set(row, requireSingleLocation(validTags(row.tag, allowed.tags)));
+          } catch (error) {
+            throw new Error(`${(error as Error).message} (row ${row.rowNo} "${name}")`);
+          }
+        }
+
         for (const row of rows) {
           const name = asText(row.name);
           if (!name) continue;
@@ -1035,7 +1055,7 @@ export function createAdminService(repo: AdminRepository) {
           await trx.createCustomer({
             id: customerId,
             name,
-            tags: validTags(row.tag, allowed.tags),
+            tags: tagsByRow.get(row)!,
             type: validOne(row.type, allowed.types),
             priority: validOne(row.priority, allowed.priorities),
             area: asText(row.area),
@@ -1486,12 +1506,21 @@ export class PostgresAdminRepository implements AdminRepository {
    */
   async customersHandledBy(email: string): Promise<AdminHandledCustomerRow[]> {
     const rows = (await this.db`
-      select c.customer_id, c.name, c.tags
+      select c.customer_id, c.name, c.tags,
+        (select count(*)::int from public.handlers o
+          where o.customer_id = c.customer_id
+            and o.user_email <> h.user_email
+            and o.user_email <> ${DIRECT_EMAIL}) as other_real_handlers
       from public.customers c
       join public.handlers h on h.customer_id = c.customer_id
       where h.user_email = ${normalizeEmail(email)}
-    `) as Array<{ customer_id: string; name: string; tags: string[] | null }>;
-    return rows.map((row) => ({ customerId: row.customer_id, name: row.name, tags: row.tags ?? [] }));
+    `) as Array<{ customer_id: string; name: string; tags: string[] | null; other_real_handlers: number }>;
+    return rows.map((row) => ({
+      customerId: row.customer_id,
+      name: row.name,
+      tags: row.tags ?? [],
+      otherRealHandlers: row.other_real_handlers
+    }));
   }
 
   async listImportCustomers(): Promise<AdminImportCustomerRow[]> {

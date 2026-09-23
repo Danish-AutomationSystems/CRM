@@ -234,13 +234,20 @@ class FakeAdminRepository implements AdminRepository {
     this.handlers = this.handlers.filter((row) => !(row.customerId === customerId && row.email === email));
   }
 
-  async customersHandledBy(email: string): Promise<Array<{ customerId: string; name: string; tags: string[] }>> {
+  async customersHandledBy(email: string): Promise<Array<{ customerId: string; name: string; tags: string[]; otherRealHandlers: number }>> {
     const customerIds = new Set(
       this.handlers.filter((row) => row.email === email).map((row) => row.customerId)
     );
     return this.customers
       .filter((row) => customerIds.has(row.id))
-      .map((row) => ({ customerId: row.id, name: row.name, tags: row.tags }));
+      .map((row) => ({
+        customerId: row.id,
+        name: row.name,
+        tags: row.tags,
+        otherRealHandlers: this.handlers.filter(
+          (h) => h.customerId === row.id && h.email !== email && h.email !== 'direct'
+        ).length
+      }));
   }
 
   /** Test convenience: upsert a user row by email, defaulting the rest via user(). */
@@ -593,7 +600,7 @@ describe('admin service imports', () => {
         id: 'imp-3',
         rowNo: 3,
         name: 'Fallback Co',
-        tag: 'Bad',
+        tag: 'Punjab',
         type: 'Bad',
         priority: 'Bad',
         area: '',
@@ -613,7 +620,7 @@ describe('admin service imports', () => {
     expect(repo.customers).toEqual([
       expect.objectContaining({ id: 'CUST-0001', name: 'Existing Co' }),
       expect.objectContaining({ id: 'CUST-0002', name: 'New Co', tags: ['Punjab'], type: 'OEM', priority: 'High' }),
-      expect.objectContaining({ id: 'CUST-0003', name: 'Fallback Co', tags: [], type: '', priority: '' })
+      expect.objectContaining({ id: 'CUST-0003', name: 'Fallback Co', tags: ['Punjab'], type: '', priority: '' })
     ]);
     expect(repo.contacts).toEqual([expect.objectContaining({ customerId: 'CUST-0002', name: 'Buyer' })]);
     expect(repo.handlers).toEqual([
@@ -625,6 +632,30 @@ describe('admin service imports', () => {
     expect(repo.importCustomers).toEqual([]);
     expect(repo.logs).toEqual([expect.objectContaining({ action: 'IMPORT', details: '2 customers imported, 1 skipped' })]);
     expect(repo.lockedNames).toEqual(['existing co', 'new co', 'fallback co']);
+  });
+
+  it.each([
+    ['no location', '', 'Pick at least one location for this customer.'],
+    ['an unknown location', 'Atlantis', 'Pick at least one location for this customer.'],
+    ['two locations', 'Punjab, NCR', 'A customer can have only one location.']
+  ])('refuses an import where a row has %s, naming the row and changing nothing', async (_label, tag, message) => {
+    // public.customers enforces exactly one location (migration 0016); the import must
+    // refuse legibly before writing, and leave the pending rows in place to be fixed.
+    const { repo, service } = makeService();
+    const row = (id: string, rowNo: number, name: string, rowTag: string) => ({
+      id, rowNo, name, tag: rowTag, type: '', priority: '', area: '', address: '', gstin: '',
+      contactName: '', contactDesignation: '', contactPhone: '', contactEmail: '', handlers: ''
+    });
+    repo.importCustomers = [row('imp-1', 1, 'Good Co', 'Punjab'), row('imp-2', 2, 'Bad Co', tag)];
+    const customersBefore = repo.customers.length;
+
+    const attempt = service.runImport(admin);
+
+    await expect(attempt).rejects.toThrow(message);
+    await expect(attempt).rejects.toThrow('Bad Co');
+    expect(repo.customers).toHaveLength(customersBefore);
+    expect(repo.handlers).toHaveLength(0);
+    expect(repo.importCustomers).toHaveLength(2);
   });
 
   it('imports contacts, skips unmatched and blank contacts, caps runs at 500, clears rows, and logs', async () => {
@@ -1381,6 +1412,27 @@ describe('removing a location a user still handles customers in', () => {
     });
 
     expect(repo.handlersFor('CUST-1')).toEqual(['direct']);
+  });
+
+  it('does not add Direct beside a real handler who remains on the account', async () => {
+    // Direct is the "no real owner" floor. Adding it next to a real handler would show
+    // Direct as a co-owner, a state no other path produces.
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setUser({ email: 'keeper@automationsystems.org', name: 'Keeper', role: 'L3', allowedTags: [], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org', 'keeper@automationsystems.org']);
+
+    await service.saveUser(admin, {
+      email: 'l2@automationsystems.org',
+      name: 'L2',
+      role: 'L2',
+      active: true,
+      allowedTags: [],
+      reassign: { 'CUST-1': 'direct' }
+    });
+
+    expect(repo.handlersFor('CUST-1')).toEqual(['keeper@automationsystems.org']);
   });
 
   it('rejects an L6 as a replacement handler', async () => {

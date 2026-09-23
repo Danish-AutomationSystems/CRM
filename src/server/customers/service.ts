@@ -3,6 +3,7 @@ import { accessLevel, caseHandlers, ensureFull } from '../auth/access';
 import type { CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
 import { normalizeEmail, parseList, parsePipe } from '../domain/lists';
+import { requireSingleLocation } from '../domain/locations';
 import { SEI_NAMES_SETTING_KEY } from '../settings/defaults';
 import { loadSettings, selectableTags, type LiveSettings } from '../settings/live';
 import { validSei } from './sei';
@@ -258,14 +259,7 @@ async function allowedSeiNames(repo: CustomerRepository): Promise<string[]> {
  * bypassed on either the create or the update path.
  */
 function requiredTags(value: unknown, allowed: readonly string[], stored: readonly string[] = []): string[] {
-  const tags = validTags(value, allowed, stored);
-  if (!tags.length) {
-    throw new Error('Pick at least one location for this customer.');
-  }
-  if (tags.length > 1) {
-    throw new Error('A customer can have only one location.');
-  }
-  return tags;
+  return requireSingleLocation(validTags(value, allowed, stored));
 }
 
 function activeRows(customers: readonly CustomerRow[]): CustomerRow[] {
@@ -725,6 +719,17 @@ export function createCustomerService(repo: CustomerRepository) {
       // `stored` argument anywhere below: an import cannot introduce a retired value.
       const live = await loadSettings(repo);
 
+      const tagsByRow = new Map<(typeof rows)[number], string[]>();
+      for (const row of rows) {
+        const name = asText(row.name);
+        if (!name) continue;
+        try {
+          tagsByRow.set(row, requireSingleLocation(validTags(row.tags ?? row.tag, live.tags)));
+        } catch (error) {
+          throw new Error(`${(error as Error).message} (row "${name}")`);
+        }
+      }
+
       return repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
         let created = 0;
@@ -745,7 +750,7 @@ export function createCustomerService(repo: CustomerRepository) {
           await trx.createCustomer({
             id,
             name,
-            tags: validTags(row.tags ?? row.tag, live.tags),
+            tags: tagsByRow.get(row)!,
             type: validOne(row.type, live.types),
             priority: validOne(row.priority, live.priorities),
             area: asText(row.area),

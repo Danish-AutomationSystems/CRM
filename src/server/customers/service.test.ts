@@ -684,19 +684,41 @@ describe('customer service mutations', () => {
     expect(await repo.getCustomer(created.id)).toMatchObject({ [field]: '' });
   });
 
-  it('does not let a bulk-imported customer use a retired tag, type or priority', async () => {
+  it('does not let a bulk-imported customer use a retired type or priority', async () => {
     // bulkCustomers reads settings once for the whole batch and passes no `stored`
-    // to validTags/validOne anywhere below - creation path, so a retired value must
-    // not survive the import.
+    // to validOne anywhere below - creation path, so a retired value must not
+    // survive the import.
     const { repo, service } = makeService();
     repo.settings = { TAGS: 'NCR | Chandigarh', TYPES: 'Alpha', PRIORITIES: 'Urgent' };
 
     const result = await service.bulkCustomers(baseUser, [
-      { name: 'Bulk Co', tag: 'Punjab', type: 'OEM', priority: 'High', area: 'Delhi' }
+      { name: 'Bulk Co', tag: 'NCR', type: 'OEM', priority: 'High', area: 'Delhi' }
     ]);
 
     expect(result).toEqual({ created: 1, skipped: [] });
-    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: [], type: '', priority: '' });
+    expect(await repo.getCustomer('CUST-0001')).toMatchObject({ tags: ['NCR'], type: '', priority: '' });
+  });
+
+  it.each([
+    ['no location', {}, 'Pick at least one location for this customer.'],
+    ['a retired location', { tag: 'Punjab' }, 'Pick at least one location for this customer.'],
+    ['two locations', { tags: ['NCR', 'Chandigarh'] }, 'A customer can have only one location.']
+  ] as const)('refuses a bulk import where a row has %s, naming the row and creating nothing', async (_label, locationField, message) => {
+    // public.customers enforces exactly one location (migration 0016). The batch is one
+    // transaction, so a bad row must be refused legibly up front, not surface as a
+    // constraint violation that discards the whole batch with "Something went wrong."
+    const { repo, service } = makeService();
+    repo.settings = { TAGS: 'NCR | Chandigarh' };
+
+    const attempt = service.bulkCustomers(baseUser, [
+      { name: 'Good Co', tag: 'NCR' },
+      { name: 'Bad Co', ...locationField }
+    ]);
+
+    await expect(attempt).rejects.toThrow(message);
+    await expect(attempt).rejects.toThrow('Bad Co');
+    expect(repo.customers).toHaveLength(0);
+    expect(repo.handlers).toHaveLength(0);
   });
 
   it('P7: TO BE FILLED survives a save round-trip but is never offered as a choice', async () => {
@@ -941,7 +963,7 @@ describe('contact and handler service APIs', () => {
     ).rejects.toThrow('at most 500');
 
     const result = await service.bulkCustomers(baseUser, [
-      { name: 'existing co' },
+      { name: 'existing co', tag: 'Punjab' },
       { name: 'New Co', tag: 'Punjab', type: 'OEM', priority: 'High', area: 'Delhi' },
       { name: ' ' }
     ]);

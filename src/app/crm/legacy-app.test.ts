@@ -2021,9 +2021,31 @@ describe('admin bulk-add repeatable rows', () => {
     expect(document.querySelectorAll('#bc_rows [data-bc-remove]').length).toBe(2);
   });
 
+  function pickLocation(pickerId: string, tag: string) {
+    document.querySelector(`#${pickerId} [data-t="${tag}"]`)!.classList.add('on');
+  }
+
+  test('marks Location as required on every bulk row', () => {
+    const label = document.querySelector('#bc_tags_0')!.parentElement!.querySelector('label')!;
+    expect(label.textContent).toBe('Location');
+    expect(label).toHaveClass('req');
+  });
+
+  test('bcSubmit refuses a named row with no location and calls no RPC', async () => {
+    (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+
+    (window as any).bcSubmit();
+
+    await waitFor(() => {
+      expect(document.getElementById('toast')?.textContent).toContain('Alpha Panels needs a location');
+    });
+    expect(bulkCustomersCalls).toHaveLength(0);
+  });
+
   test('bcSubmit drops blank rows and calls the RPC with only the named ones', async () => {
     bulkCustomersResult = { created: 1, skipped: [] };
     (document.getElementById('bc_name_0') as HTMLInputElement).value = 'Alpha Panels';
+    pickLocation('bc_tags_0', 'Punjab');
     (window as any).bcAddRow();
     // row 1 left blank
 
@@ -2046,6 +2068,43 @@ describe('admin bulk-add repeatable rows', () => {
     });
 
     expect(bulkCustomersCalls).toHaveLength(0);
+  });
+
+  describe('quick log new customer location', () => {
+    let quickLogCalls: unknown[][] = [];
+
+    beforeEach(async () => {
+      quickLogCalls = [];
+      mockRpc((fn, args) => {
+        if (fn === 'api_workspace') return workspace('L6');
+        if (fn === 'api_quickLog') {
+          quickLogCalls.push(args);
+          return { caseId: 'CASE-1', customerId: 'CUST-9' };
+        }
+        throw new Error(`Unexpected RPC ${fn}`);
+      });
+      render(createElement(CrmApp));
+      await screen.findByRole('heading', { name: 'Overview' });
+      window.eval('mQuickLog(); qlNew();');
+      await waitFor(() => expect(document.getElementById('ql_cname')).toBeTruthy());
+      (document.getElementById('ql_title') as HTMLInputElement).value = 'Site visit';
+      (document.getElementById('ql_cname') as HTMLInputElement).value = 'Fresh Co';
+    });
+
+    test('marks the new customer Location as required', () => {
+      const label = document.getElementById('ql_tag')!.parentElement!.querySelector('label')!;
+      expect(label.textContent).toBe('Location');
+      expect(label).toHaveClass('req');
+    });
+
+    test('refuses to save a new customer with no location and calls no RPC', async () => {
+      window.eval('saveQuickLog()');
+
+      await waitFor(() => {
+        expect(document.getElementById('toast')?.textContent).toContain('Pick a location for the new customer');
+      });
+      expect(quickLogCalls).toHaveLength(0);
+    });
   });
 
   describe('IST timestamp formatting', () => {

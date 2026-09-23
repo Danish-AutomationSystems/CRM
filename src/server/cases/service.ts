@@ -7,6 +7,7 @@ import {
 } from '../auth/access';
 import { CASE_STAGES, type CrmRole } from '../db/schema';
 import { DIRECT_EMAIL, isDirect } from '../domain/direct';
+import { requireSingleLocation } from '../domain/locations';
 import { DEFAULT_SETTINGS } from '../settings/defaults';
 import { loadSettings } from '../settings/live';
 import { normalizeEmail, parseList, parsePipe } from '../domain/lists';
@@ -1170,12 +1171,13 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           if (duplicate) {
             customerId = duplicate.id;
           } else {
+            const tags = requireSingleLocation(validTags(newCustomer.tags ?? newCustomer.tag, live.tags));
             customerId = await trx.nextCustomerId();
             const now = nowIso();
             await trx.createCustomer({
               id: customerId,
               name,
-              tags: validTags(newCustomer.tags ?? newCustomer.tag, live.tags),
+              tags,
               type: validOne(newCustomer.type, live.types),
               priority: validOne(newCustomer.priority, live.priorities),
               area: asText(newCustomer.area),
