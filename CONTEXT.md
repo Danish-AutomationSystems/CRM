@@ -615,7 +615,7 @@ Migrations:
 - `supabase/migrations/0015_backfill_direct_handlers.sql` - gives every customer with no handler row a `direct` row (ownership rule P1). Applied 2026-09-23.
 - `supabase/migrations/0016_customer_single_location.sql` - `customers_single_location_check` (`cardinality(tags) = 1`). Applied 2026-09-23.
 - `supabase/migrations/0017_remove_allowed_tags_wildcard.sql` - removes the `*` wildcard from `users.allowed_tags`. Applied 2026-09-23.
-- `supabase/migrations/0018_require_case_customer.sql` - deletes the one customerless case (`CASE-2026-0012`, test row, audit-logged) and restores `cases.customer_id NOT NULL`. **Committed 2026-09-23, NOT yet applied** (a verified backup `backups/pre-0018.json` was taken first). The app works with or without it.
+- `supabase/migrations/0018_require_case_customer.sql` - deletes the one customerless case (`CASE-2026-0012`, test row, audit-logged) and restores `cases.customer_id NOT NULL`. Applied to production 2026-09-23 after a verified backup (`backups/pre-0018.json`) and dry-run; verified after: 0 customerless cases, `customer_id` NOT NULL, one audit row, `schema_migrations` = 18 rows.
 - Historical note: **all 14 migrations were applied in production** (`0001`-`0014`) as of 2026-09-19; `0015`-`0017` followed on 2026-09-23. `0014` applied 2026-09-19 after a read-only pre-flight (7 cases, 0 with null `created_by` + `owner`) and dry-run; verified after: both columns and `cases_owner_outcome_idx` gone, `public.schema_migrations` = 14 rows. Verify with `scripts/apply-migrations.mjs --dry-run` before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
@@ -1042,8 +1042,8 @@ Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-c
   rejected as an opaque 500 (`79631c3`, shared `src/server/domain/locations.ts`). Also: P7 no longer adds
   `direct` beside a remaining real handler; migration `0018` written; staff guide
   `role-guide-l1-l6.docx` rewritten against current code (`0d8daf4`). 846/846 tests, typecheck and build
-  clean. **Pending: push to `main` and apply `0018`** - both were blocked by the agent's permission
-  classifier and need the owner to run them.
+  clean. Owner pushed (`90068a9`, Vercel deploy Ready, aliased to
+  `crm.automationsystems.info`) and applied `0018` the same evening.
 
 ## If A New Agent Takes Over
 
