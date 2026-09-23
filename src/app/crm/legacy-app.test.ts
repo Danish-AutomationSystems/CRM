@@ -2821,4 +2821,142 @@ describe('location rules in the client', () => {
     expect(selected.length).toBe(1);
     expect(selected[0].getAttribute('data-t')).toBe(buttons[1].getAttribute('data-t'));
   });
+
+  test('removing a location the user still handles opens the conflict card', async () => {
+    let saveCalls = 0;
+    mockRpc((fn, args) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['Punjab'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_admin_listRecycle') return { customers: [] };
+      if (fn === 'api_admin_userLocationConflicts') {
+        expect(args[0]).toEqual({ email: 'admin@automationsystems.org', removing: ['Punjab'] });
+        return {
+          conflicts: [{ customerId: 'CUST-0001', customerName: 'Acme Ltd', location: 'Punjab' }],
+          eligibleHandlers: [{ email: 'other@automationsystems.org', name: 'Other User', role: 'L2' }]
+        };
+      }
+      if (fn === 'api_admin_saveUser') {
+        saveCalls += 1;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    window.eval(edit.getAttribute('onclick') ?? '');
+
+    // Deselect the only location (Punjab) - this is what removing.length picks up.
+    const picker = document.getElementById('au_tags') as HTMLElement;
+    const punjabBtn = picker.querySelector('[data-t="Punjab"]') as HTMLElement;
+    window.eval(
+      `(function(){ ${punjabBtn.getAttribute('onclick')} }).call(document.querySelector('#au_tags [data-t="Punjab"]'))`
+    );
+
+    const save = screen.getByRole('button', { name: 'Save user' });
+    window.eval(save.getAttribute('onclick') ?? '');
+
+    await waitFor(() => expect(document.body.textContent).toContain('Reassign these customers first'));
+    expect(document.body.textContent).toContain('Acme Ltd');
+    expect(document.querySelector('select[data-customer="CUST-0001"]')).not.toBeNull();
+    // Must not have saved yet - the conflict is unresolved.
+    expect(saveCalls).toBe(0);
+  });
+
+  test('choosing a handler for every conflict saves with the reassignments', async () => {
+    let savedPayload: unknown = null;
+    mockRpc((fn, args) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['Punjab'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_admin_listRecycle') return { customers: [] };
+      if (fn === 'api_admin_userLocationConflicts') {
+        return {
+          conflicts: [{ customerId: 'CUST-0001', customerName: 'Acme Ltd', location: 'Punjab' }],
+          eligibleHandlers: [{ email: 'other@automationsystems.org', name: 'Other User', role: 'L2' }]
+        };
+      }
+      if (fn === 'api_admin_saveUser') {
+        savedPayload = args[0];
+        return { ok: true };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    window.eval(edit.getAttribute('onclick') ?? '');
+
+    const punjabBtn = document.querySelector('#au_tags [data-t="Punjab"]') as HTMLElement;
+    window.eval(
+      `(function(){ ${punjabBtn.getAttribute('onclick')} }).call(document.querySelector('#au_tags [data-t="Punjab"]'))`
+    );
+    window.eval((screen.getByRole('button', { name: 'Save user' }).getAttribute('onclick') ?? ''));
+
+    await waitFor(() => expect(document.body.textContent).toContain('Reassign these customers first'));
+
+    const select = document.querySelector('select[data-customer="CUST-0001"]') as HTMLSelectElement;
+    select.value = 'other@automationsystems.org';
+
+    const confirm = screen.getByRole('button', { name: 'Reassign and save' });
+    window.eval(confirm.getAttribute('onclick') ?? '');
+
+    await waitFor(() =>
+      expect(savedPayload).toEqual(
+        expect.objectContaining({ reassign: { 'CUST-0001': 'other@automationsystems.org' } })
+      )
+    );
+  });
+
+  test('leaving a conflict unresolved refuses to save', async () => {
+    let saveCalls = 0;
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['Punjab'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_admin_listRecycle') return { customers: [] };
+      if (fn === 'api_admin_userLocationConflicts') {
+        return {
+          conflicts: [{ customerId: 'CUST-0001', customerName: 'Acme Ltd', location: 'Punjab' }],
+          eligibleHandlers: [{ email: 'other@automationsystems.org', name: 'Other User', role: 'L2' }]
+        };
+      }
+      if (fn === 'api_admin_saveUser') {
+        saveCalls += 1;
+        return { ok: true };
+      }
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    window.eval(edit.getAttribute('onclick') ?? '');
+
+    const punjabBtn = document.querySelector('#au_tags [data-t="Punjab"]') as HTMLElement;
+    window.eval(
+      `(function(){ ${punjabBtn.getAttribute('onclick')} }).call(document.querySelector('#au_tags [data-t="Punjab"]'))`
+    );
+    window.eval((screen.getByRole('button', { name: 'Save user' }).getAttribute('onclick') ?? ''));
+    await waitFor(() => expect(document.body.textContent).toContain('Reassign these customers first'));
+
+    // Leave the dropdown at its default (blank) and try to confirm.
+    const confirm = screen.getByRole('button', { name: 'Reassign and save' });
+    window.eval(confirm.getAttribute('onclick') ?? '');
+
+    expect(saveCalls).toBe(0);
+    expect(document.body.textContent).toContain('Reassign these customers first');
+  });
 });

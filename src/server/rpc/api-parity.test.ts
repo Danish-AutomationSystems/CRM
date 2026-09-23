@@ -43,6 +43,7 @@ describe('Apps Script API parity', () => {
       'api_admin_addConfigItem',
       'api_admin_deleteConfigItem',
       'api_admin_renameConfigItem',
+      'api_admin_userLocationConflicts',
     ];
     const legacyUiApis = uiApis.filter((api) => !intentionallyNew.includes(api));
 

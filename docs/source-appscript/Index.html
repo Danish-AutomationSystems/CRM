@@ -2397,8 +2397,10 @@ function runImportContacts(){
     el('impcRes').textContent = msg; toast('Contacts imported — '+r.created+' added.');
   }).catch(function(e){ el('impcBtn').disabled=false; el('impcRes').textContent=''; oops(e); });
 }
+var editUserOrigTags = [];
 function mUser(u){
   u = u||{};
+  editUserOrigTags = u.allowedTags||[];
   openModal(u.email?'Edit user':'Add user',
     '<div class="frow"><div style="flex:1.5"><label class="req">Email</label><input id="au_email" value="'+esc(u.email||'')+'"'+(u.email?' disabled':'')+'></div>'+
     '<div><label>Name</label><input id="au_name" value="'+esc(u.name||'')+'"></div></div>'+
@@ -2417,7 +2419,52 @@ function mUser(u){
 function userLvlHint(){ var r = v('au_role'); if(el('au_hint')) el('au_hint').textContent = LEVEL_DESC[r]||''; }
 function saveUser(origEmail){
   var d = { email: origEmail || v('au_email'), name: v('au_name'), role: v('au_role'), active: v('au_active')==='1', allowedTags: pickerVal('au_tags') };
+  var removing = editUserOrigTags.filter(function(t){ return d.allowedTags.indexOf(t)===-1; });
+  if(!removing.length) return doSaveUser(d);
+  gs('api_admin_userLocationConflicts', { email: d.email, removing: removing }).then(function(r){
+    if(!r.conflicts || !r.conflicts.length) return doSaveUser(d);
+    mLocationConflicts(d, r.conflicts, r.eligibleHandlers||[]);
+  }).catch(oops);
+}
+function doSaveUser(d){
   gs('api_admin_saveUser', d).then(function(){ closeModal(); toast('User saved.'); vAdmin(); }).catch(oops);
+}
+/* The card the owner asked for: a location being removed from a user who still
+   handles customers in it must not save until every one of those customers has
+   a new handler. The server re-validates and re-computes this from scratch -
+   this card exists so the admin sees the conflict and can resolve it in one
+   place, not to be the thing that actually enforces the rule. */
+function mLocationConflicts(d, conflicts, eligibleHandlers){
+  var optsFor = function(){
+    var out = '<option value="">Choose a handler…</option>';
+    eligibleHandlers.forEach(function(h){
+      out += '<option value="'+esc(h.email)+'">'+esc(h.name)+' ('+esc(h.role)+')</option>';
+    });
+    out += '<option value="direct">Direct</option>';
+    return out;
+  };
+  var rows = conflicts.map(function(c){
+    return '<div class="frow"><div style="flex:1.5">'+esc(c.customerName)+' <span class="sub">('+esc(c.location)+')</span></div>'+
+      '<div style="flex:1"><select data-customer="'+esc(c.customerId)+'">'+optsFor()+'</select></div></div>';
+  }).join('');
+  openModal('Reassign these customers first',
+    '<p>'+esc(d.name||d.email)+' holds these customers in a location being removed. '+
+    'Reassign each to a new handler before the location can be removed.</p>'+rows,
+    '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
+    '<button class="btn" onclick="confirmLocationConflicts(\''+esc(d.email)+'\')">Reassign and save</button>', true);
+  mLocationConflictsUser = d;
+}
+var mLocationConflictsUser = null;
+function confirmLocationConflicts(){
+  var reassign = {}; var missing = [];
+  document.querySelectorAll('#mbody select[data-customer]').forEach(function(sel){
+    var email = sel.value;
+    if(!email){ missing.push(sel); return; }
+    reassign[sel.getAttribute('data-customer')] = email;
+  });
+  if(missing.length){ toast('Choose a handler for every listed customer.', true); return; }
+  var d = Object.assign({}, mLocationConflictsUser, { reassign: reassign });
+  doSaveUser(d);
 }
 
 /* level descriptions mirrored client-side for the Admin UI */
