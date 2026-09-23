@@ -1,4 +1,5 @@
 import { CRM_ROLES, type CrmRole } from '../db/schema';
+import { verifyIdentity } from './identity-signature';
 import { getAuthenticatedEmailFromRequest } from './supabase';
 
 export type CrmContext = {
@@ -145,11 +146,17 @@ export async function getRequestContext(
 ): Promise<CrmContext> {
   const getAuthenticatedEmail = options.getAuthenticatedEmail ?? getAuthenticatedEmailFromRequest;
 
-  // Middleware has already validated the session and overwrites this header on
-  // every request, so a client cannot supply it. Trusting it here removes a
-  // second network round-trip to the auth service per request.
-  const forwarded = request.headers.get('x-crm-user-email')?.trim();
-  const email = forwarded || (await getAuthenticatedEmail(request));
+  // Middleware signs this header with CRM_IDENTITY_SECRET after validating the
+  // session, so it removes a network round-trip to the auth service per
+  // request without trusting client-supplied input. If the secret is not
+  // configured, or the signature does not verify, we fall back to the
+  // network call rather than ever trusting an unverified header value — a
+  // missing/removed secret must degrade to the old, slower, secure
+  // behaviour, never to an authentication bypass.
+  const secret = process.env.CRM_IDENTITY_SECRET;
+  const forwardedHeader = request.headers.get('x-crm-user-email');
+  const verifiedEmail = secret ? await verifyIdentity(forwardedHeader, secret) : null;
+  const email = verifiedEmail || (await getAuthenticatedEmail(request));
 
   if (!email) {
     throw new Error('Sign in to AS CRM.');

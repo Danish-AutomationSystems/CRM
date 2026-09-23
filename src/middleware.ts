@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { signIdentity } from './server/auth/identity-signature';
 import { createSupabaseMiddlewareClient } from './server/auth/supabase';
 
 const PROTECTED_PREFIXES = ['/crm', '/api/rpc', '/api/admin'];
@@ -24,7 +25,10 @@ export async function middleware(request: NextRequest) {
   // Always overwrite: a client may send this header, and it must never be trusted.
   const forwarded = new Headers(request.headers);
   forwarded.delete('x-crm-user-email');
-  if (user?.email) forwarded.set('x-crm-user-email', user.email);
+  const secret = process.env.CRM_IDENTITY_SECRET;
+  if (user?.email && secret) {
+    forwarded.set('x-crm-user-email', await signIdentity(user.email, secret));
+  }
 
   const response = NextResponse.next({ request: { headers: forwarded } });
   // Carry over any refreshed auth cookies Supabase wrote while validating.
