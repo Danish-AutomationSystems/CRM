@@ -230,6 +230,56 @@ class FakeAdminRepository implements AdminRepository {
     this.handlers.push(handler);
   }
 
+  async removeHandler(customerId: string, email: string): Promise<void> {
+    this.handlers = this.handlers.filter((row) => !(row.customerId === customerId && row.email === email));
+  }
+
+  async customersHandledBy(email: string): Promise<Array<{ customerId: string; name: string; tags: string[] }>> {
+    const customerIds = new Set(
+      this.handlers.filter((row) => row.email === email).map((row) => row.customerId)
+    );
+    return this.customers
+      .filter((row) => customerIds.has(row.id))
+      .map((row) => ({ customerId: row.id, name: row.name, tags: row.tags }));
+  }
+
+  /** Test convenience: upsert a user row by email, defaulting the rest via user(). */
+  setUser(overrides: Partial<UserRow> & { email: string }): UserRow {
+    const existing = this.users.find((row) => row.email === overrides.email);
+    if (existing) {
+      Object.assign(existing, overrides);
+      return existing;
+    }
+    const row = user(overrides);
+    this.users.push(row);
+    return row;
+  }
+
+  /** Test convenience: upsert a customer row by id, defaulting the rest via customer(). */
+  setCustomer(id: string, overrides: Partial<CustomerRow> = {}): CustomerRow {
+    const existing = this.customers.find((row) => row.id === id);
+    if (existing) {
+      Object.assign(existing, overrides);
+      return existing;
+    }
+    const row = customer({ id, ...overrides });
+    this.customers.push(row);
+    return row;
+  }
+
+  /** Test convenience: replace every handler row for a customer with the given emails. */
+  setHandlers(customerId: string, emails: string[]): void {
+    this.handlers = this.handlers.filter((row) => row.customerId !== customerId);
+    for (const email of emails) {
+      this.handlers.push({ customerId, email, assignedBy: 'admin@automationsystems.org', assignedAt: '2026-09-23T00:00:00.000Z' });
+    }
+  }
+
+  /** Test convenience: the handler emails currently on a customer. */
+  handlersFor(customerId: string): string[] {
+    return this.handlers.filter((row) => row.customerId === customerId).map((row) => row.email);
+  }
+
   async listImportCustomers(): Promise<ImportCustomerRow[]> {
     return this.importCustomers;
   }
@@ -1262,5 +1312,110 @@ describe('admin RPC registration', () => {
 
     expect(result.metadata).toEqual({ bustClientCache: true });
     expect(repo.settings).toContainEqual({ key: 'TAGS', value: 'PUN | NCR' });
+  });
+});
+
+describe('removing a location a user still handles customers in', () => {
+  it('lists the blocking customers', async () => {
+    const { repo, service } = makeService();
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    const result = await service.userLocationConflicts(admin, {
+      email: 'l2@automationsystems.org',
+      removing: ['Punjab']
+    });
+
+    expect(result.conflicts.map((c) => c.customerId)).toEqual(['CUST-1']);
+  });
+
+  it('refuses the removal while a conflict is unresolved', async () => {
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    await expect(
+      service.saveUser(admin, {
+        email: 'l2@automationsystems.org',
+        name: 'L2',
+        role: 'L2',
+        active: true,
+        allowedTags: []
+      })
+    ).rejects.toThrow(/reassign/i);
+  });
+
+  it('allows the removal once every conflict is reassigned, and moves the handler', async () => {
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setUser({ email: 'other@automationsystems.org', name: 'Other', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    await service.saveUser(admin, {
+      email: 'l2@automationsystems.org',
+      name: 'L2',
+      role: 'L2',
+      active: true,
+      allowedTags: [],
+      reassign: { 'CUST-1': 'other@automationsystems.org' }
+    });
+
+    expect(repo.handlersFor('CUST-1')).toEqual(['other@automationsystems.org']);
+  });
+
+  it('accepts Direct as a replacement handler', async () => {
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    await service.saveUser(admin, {
+      email: 'l2@automationsystems.org',
+      name: 'L2',
+      role: 'L2',
+      active: true,
+      allowedTags: [],
+      reassign: { 'CUST-1': 'direct' }
+    });
+
+    expect(repo.handlersFor('CUST-1')).toEqual(['direct']);
+  });
+
+  it('rejects an L6 as a replacement handler', async () => {
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setUser({ email: 'l6@automationsystems.org', name: 'L6', role: 'L6', allowedTags: [], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    await expect(
+      service.saveUser(admin, {
+        email: 'l2@automationsystems.org',
+        name: 'L2',
+        role: 'L2',
+        active: true,
+        allowedTags: [],
+        reassign: { 'CUST-1': 'l6@automationsystems.org' }
+      })
+    ).rejects.toThrow(/L2|L4|eligible/i);
+  });
+
+  it('does not block on a location the user is keeping', async () => {
+    const { repo, service } = makeService();
+    repo.setUser({ email: 'l2@automationsystems.org', name: 'L2', role: 'L2', allowedTags: ['Punjab'], active: true });
+    repo.setCustomer('CUST-1', { name: 'Acme', tags: ['Punjab'] });
+    repo.setHandlers('CUST-1', ['l2@automationsystems.org']);
+
+    await service.saveUser(admin, {
+      email: 'l2@automationsystems.org',
+      name: 'L2',
+      role: 'L2',
+      active: true,
+      allowedTags: ['Punjab', 'NCR']
+    });
+
+    expect(repo.handlersFor('CUST-1')).toEqual(['l2@automationsystems.org']);
   });
 });

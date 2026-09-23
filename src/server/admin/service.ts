@@ -63,6 +63,25 @@ export type AdminHandlerRow = {
   assignedAt: string;
 };
 
+/** One customer a given user currently handles, with just enough shape to check location conflicts. */
+export type AdminHandledCustomerRow = {
+  customerId: string;
+  name: string;
+  tags: string[];
+};
+
+export type AdminLocationConflict = {
+  customerId: string;
+  customerName: string;
+  location: string;
+};
+
+export type AdminEligibleHandler = {
+  email: string;
+  name: string;
+  role: CrmRole;
+};
+
 export type AdminSettingRow = {
   key: DefaultSettingKey;
   value: string;
@@ -146,6 +165,14 @@ export type AdminRepository = {
   createContact(contact: AdminContactRow): Promise<void>;
   listHandlers(): Promise<AdminHandlerRow[]>;
   addHandler(handler: AdminHandlerRow): Promise<void>;
+  removeHandler(customerId: string, email: string): Promise<void>;
+  /**
+   * Every customer the given user currently handles, in one batched query (a join,
+   * not a per-customer lookup). Used to find customers that block removing a
+   * location from that user - see userLocationConflicts below. A per-row fan-out
+   * here would repeat the exact defect that caused the 2026-09-22 outage.
+   */
+  customersHandledBy(email: string): Promise<AdminHandledCustomerRow[]>;
   listImportCustomers(): Promise<AdminImportCustomerRow[]>;
   deleteImportCustomers(ids: string[]): Promise<void>;
   listImportContacts(): Promise<AdminImportContactRow[]>;
@@ -162,6 +189,13 @@ export type SaveUserInput = Partial<{
   role: unknown;
   allowedTags: unknown;
   active: unknown;
+  /** customerId -> replacement handler email (or 'direct'), for customers blocked on a removed location. */
+  reassign: unknown;
+}>;
+
+export type UserLocationConflictsInput = Partial<{
+  email: unknown;
+  removing: unknown;
 }>;
 
 export type SaveSettingsInput = Partial<{
@@ -304,6 +338,67 @@ function normalizeAllowedTags(value: unknown): string[] {
 function normalizeRole(value: unknown): CrmRole {
   const role = asText(value);
   return (CRM_ROLES as readonly string[]).includes(role) ? (role as CrmRole) : 'L2';
+}
+
+/**
+ * Roles that may hold an account handler row. L1 has no such capacity, L5/L6 are
+ * backend/admin and are deliberately excluded (see isBackendRole in
+ * customers/service.ts) - a replacement handler must be one of these, or the
+ * literal 'direct' placeholder.
+ */
+const ELIGIBLE_HANDLER_ROLES: readonly CrmRole[] = ['L2', 'L3', 'L4'];
+
+function eligibleHandlerRows(users: readonly AdminUserRow[]): AdminEligibleHandler[] {
+  const direct = directVirtualUser();
+  return [
+    { email: direct.email, name: direct.name, role: direct.role },
+    ...users
+      .filter((row) => row.active && ELIGIBLE_HANDLER_ROLES.includes(row.role))
+      .map((row) => ({ email: row.email, name: row.name, role: row.role }))
+  ];
+}
+
+/**
+ * Validated server-side, never trusting the client's dropdown selection: an active
+ * L2-L4 user, or the 'direct' placeholder. Anything else - L1, L5, L6, inactive,
+ * or an unknown email - is refused.
+ */
+function assertValidReplacementHandler(email: string, users: readonly AdminUserRow[]): void {
+  if (isDirect(email)) return;
+  const candidate = users.find((row) => row.email === email);
+  if (!candidate || !candidate.active || !ELIGIBLE_HANDLER_ROLES.includes(candidate.role)) {
+    throw new Error(
+      `"${email || '(blank)'}" is not an eligible replacement handler. Choose an active L2-L4 user, or Direct.`
+    );
+  }
+}
+
+function normalizeReassignInput(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  const result: Record<string, string> = {};
+  for (const [customerId, email] of Object.entries(value as Record<string, unknown>)) {
+    const key = asText(customerId);
+    if (!key) continue;
+    result[key] = normalizeEmail(asText(email));
+  }
+  return result;
+}
+
+/**
+ * The customers a location removal would strand: those the user currently
+ * handles whose (single) location is one of the tags being removed. Always
+ * called with the transaction handle (`trx`) inside saveUser, so this never
+ * checks out a second pooled connection while the transaction holds the first.
+ */
+async function conflictingCustomers(
+  trx: AdminRepository,
+  email: string,
+  removing: readonly string[]
+): Promise<AdminHandledCustomerRow[]> {
+  if (!removing.length) return [];
+  const removingSet = new Set(removing);
+  const rows = await trx.customersHandledBy(email);
+  return rows.filter((row) => row.tags.some((tag) => removingSet.has(tag)));
 }
 
 function assertEmail(email: string): void {
@@ -575,6 +670,27 @@ export function createAdminService(repo: AdminRepository) {
       ];
     },
 
+    async userLocationConflicts(user: CrmContext, input: UserLocationConflictsInput) {
+      ensureAdmin(user);
+      const email = normalizeEmail(asText(input?.email));
+      const removing = normalizeImportList(input?.removing ?? []);
+
+      const [conflicts, users] = await Promise.all([
+        conflictingCustomers(repo, email, removing),
+        repo.listUsers()
+      ]);
+
+      const removingSet = new Set(removing);
+      return {
+        conflicts: conflicts.map((row) => ({
+          customerId: row.customerId,
+          customerName: row.name,
+          location: row.tags.find((tag) => removingSet.has(tag)) ?? row.tags[0] ?? ''
+        })),
+        eligibleHandlers: eligibleHandlerRows(users)
+      };
+    },
+
     async saveUser(user: CrmContext, input: SaveUserInput) {
       ensureAdmin(user);
       const email = normalizeEmail(asText(input?.email));
@@ -586,12 +702,64 @@ export function createAdminService(repo: AdminRepository) {
       const name = asText(input?.name) || existing?.name || localName(email);
       const allowedTags = normalizeAllowedTags(input?.allowedTags ?? []);
       const actor = normalizeEmail(user.email);
+      const reassign = normalizeReassignInput(input?.reassign);
+      // Only a location the user is losing can block the save; one they keep never does.
+      const removing = existing ? existing.allowedTags.filter((tag) => !allowedTags.includes(tag)) : [];
 
       if (email === actor && !active) throw new Error('You cannot deactivate your own account.');
       if (email === actor && role !== 'L6') throw new Error('You cannot lower your own level below L6.');
 
       await repo.withTransaction(async (tx) => {
         const trx = tx ?? repo;
+
+        if (removing.length) {
+          // Recomputed here, server-side, off the transaction handle - never trusting
+          // whatever conflict list the client last saw. See conflictingCustomers.
+          const blocking = await conflictingCustomers(trx, email, removing);
+          if (blocking.length) {
+            const unresolved = blocking.filter((row) => !reassign[row.customerId]);
+            if (unresolved.length) {
+              throw new Error(
+                `Reassign these customers to a new handler before removing this location: ${unresolved
+                  .map((row) => row.name)
+                  .join(', ')}.`
+              );
+            }
+
+            const usersForValidation = await trx.listUsers();
+            for (const row of blocking) {
+              assertValidReplacementHandler(reassign[row.customerId], usersForValidation);
+            }
+
+            // Apply every reassignment inside this same transaction: a partial apply
+            // here would leave customers half-reassigned with no error shown.
+            for (const row of blocking) {
+              const newHandlerEmail = reassign[row.customerId];
+              await trx.removeHandler(row.customerId, email);
+              await trx.addHandler({
+                customerId: row.customerId,
+                email: newHandlerEmail,
+                assignedBy: actor,
+                assignedAt: nowIso()
+              });
+              await trx.logActivity({
+                action: 'HANDLER_REMOVE',
+                entity: row.customerId,
+                customerId: row.customerId,
+                details: email,
+                who: actor
+              });
+              await trx.logActivity({
+                action: 'HANDLER_ADD',
+                entity: row.customerId,
+                customerId: row.customerId,
+                details: newHandlerEmail,
+                who: actor
+              });
+            }
+          }
+        }
+
         if (existing) {
           await trx.updateUser(email, { name, role, allowedTags, active });
           await trx.logActivity({
@@ -1302,6 +1470,28 @@ export class PostgresAdminRepository implements AdminRepository {
       values (${handler.customerId}, ${handler.email}, ${handler.assignedBy}, ${handler.assignedAt})
       on conflict (customer_id, user_email) do nothing
     `;
+  }
+
+  async removeHandler(customerId: string, email: string): Promise<void> {
+    await this.db`
+      delete from public.handlers
+      where customer_id = ${customerId}
+        and user_email = ${normalizeEmail(email)}
+    `;
+  }
+
+  /**
+   * One joined query for every customer the given user handles - never a
+   * per-customer lookup. See AdminRepository.customersHandledBy's doc comment.
+   */
+  async customersHandledBy(email: string): Promise<AdminHandledCustomerRow[]> {
+    const rows = (await this.db`
+      select c.customer_id, c.name, c.tags
+      from public.customers c
+      join public.handlers h on h.customer_id = c.customer_id
+      where h.user_email = ${normalizeEmail(email)}
+    `) as Array<{ customer_id: string; name: string; tags: string[] | null }>;
+    return rows.map((row) => ({ customerId: row.customer_id, name: row.name, tags: row.tags ?? [] }));
   }
 
   async listImportCustomers(): Promise<AdminImportCustomerRow[]> {

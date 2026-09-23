@@ -14,6 +14,9 @@ export function registerAdminRpcs(registry: Pick<RpcRegistry, 'registerRpc'>, ad
     { read: false }
   );
   registry.registerRpc('api_admin_links', ({ context }) => adminService.links(context));
+  registry.registerRpc('api_admin_userLocationConflicts', ({ args, context }) =>
+    adminService.userLocationConflicts(context, args[0] ?? {})
+  );
   registry.registerRpc('api_admin_runImport', ({ context }) => adminService.runImport(context), { read: false });
   registry.registerRpc('api_admin_runImportContacts', ({ context }) => adminService.runImportContacts(context), {
     read: false
