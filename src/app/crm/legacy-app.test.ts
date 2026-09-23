@@ -2466,26 +2466,11 @@ describe('case lifecycle UI', () => {
     expect(screen.getByRole('heading', { name: 'Panel upgrade' })).toBeInTheDocument();
   });
 
-  test('Cases offers customerless creation and posts the empty customer ID', async () => {
-    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
-    await screen.findByRole('heading', { name: 'Overview' });
-    window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
-    await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
-    set('fo_title', 'Panel upgrade'); set('fo_owner', 'other@automationsystems.org'); press('Create');
-    await waitFor(() => expect(calls.find(c => c.fn === 'api_createCase')?.args).toEqual(['', expect.objectContaining({ title: 'Panel upgrade', stage: 'Lead' })]));
-    await screen.findByRole('heading', { name: 'Panel upgrade' });
-    expect(document.getElementById('main')?.textContent).toContain('Customer not mapped');
-  });
-
-  test('Quick log explicitly defers customer selection', async () => {
-    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
-    await screen.findByRole('heading', { name: 'Overview' }); press(/Quick log/);
-    const toggle = screen.getByRole('checkbox', { name: 'Choose customer later' }) as HTMLInputElement;
-    toggle.checked = true; window.eval(toggle.getAttribute('onchange') ?? '');
-    set('ql_title', 'Panel upgrade'); press('Log case');
-    await waitFor(() => expect(calls.find(c => c.fn === 'api_quickLog')?.args).toEqual([expect.objectContaining({ customerLater: true, title: 'Panel upgrade' })]));
-    await screen.findByRole('heading', { name: 'Panel upgrade' });
-  });
+  // 'Cases offers customerless creation and posts the empty customer ID' and
+  // 'Quick log explicitly defers customer selection' are deleted: both exercised the
+  // "Create without customer" button and the quick-log "Choose customer later"
+  // checkbox, which are removed along with the server paths they drove - a case can
+  // no longer be created without a customer, so neither control exists to press.
 
   test.each(['builder', 'upload'])('unmapped %s chooses a FULL customer locally and cancel does not map', async (mode) => {
     mapped = false; stage = 'Lead'; await startCase();
@@ -2557,13 +2542,9 @@ describe('case lifecycle UI', () => {
     expect(document.getElementById('toast')?.className ?? '').not.toContain('err');
   });
 
-  test('customerless "New case" does not offer Order (Won), which the server always rejects for it', async () => {
-    mapped = false; stage = 'Lead'; mockRpc(rpc); render(createElement(CrmApp));
-    await screen.findByRole('heading', { name: 'Overview' });
-    window.eval('nav("cases")'); press('+ New case'); press('Create without customer');
-    await waitFor(() => expect(document.getElementById('fo_title')).not.toBeNull());
-    expect(screen.queryByRole('button', { name: 'Order (Won)' })).not.toBeInTheDocument();
-  });
+  // 'customerless "New case" does not offer Order (Won)' is deleted for the same
+  // reason: it depended on reaching the "New case" form with no customer via the
+  // now-removed "Create without customer" button, which no longer exists.
 
   test('Update stage button starts disabled and enables only when the selection differs from the current stage', async () => {
     stage = 'Opportunity';

@@ -613,6 +613,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
     async createCase(user: CrmContext, customerId: string, input: CaseInput) {
       requireLevel(user, 2);
       customerId = asText(customerId);
+      if (!customerId) {
+        throw new Error('Select a company for this case. A case cannot be created without one.');
+      }
       const customer = customerId ? await repo.getCustomer(customerId) : null;
       if (customerId && !customer) throw new Error(`Customer ${customerId} was not found.`);
       const handlers = await repo.listHandlers();
@@ -1209,7 +1212,9 @@ export function createCaseService(repo: CaseRepository, deps: CaseServiceDeps = 
           ensureFull(user, customerForAccess(customer), ownershipFor(await trx.listHandlers()));
         }
 
-        if (!customerId && asText(input.stage) === 'Quoted') throw new Error('Map a customer by saving the first quotation before marking this case Quoted.');
+        if (!customerId) {
+          throw new Error('Select a company for this case. A case cannot be created without one.');
+        }
         const id = await trx.nextCaseId();
         const now = nowIso();
         const row: CaseRow = {

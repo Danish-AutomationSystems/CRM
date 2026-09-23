@@ -564,12 +564,31 @@ describe('CRM integrated service flows', () => {
     await adminService.saveUser(admin, { email: revisionHolder.email, name: revisionHolder.name, role: 'L2', allowedTags: ['Punjab'] });
     await adminService.saveUser(admin, { email: outsider.email, name: outsider.name, role: 'L2', allowedTags: ['Gujarat'] });
 
-    // 1. Register a case with no customer (a Lead).
-    const created = await caseService.createCase(salesRep, '', {
+    // 1. A customerless (Lead) case can no longer be created through caseService -
+    // createCase now requires a customer. A row with no customer can still exist from
+    // before this rule (or from a migration), so it is injected directly here, matching
+    // exactly what createCase used to produce for this input, to keep the rest of this
+    // walk - mapping an already-existing unmapped case - covered.
+    const leadCaseId = await repo.nextCaseId();
+    const leadNow = new Date().toISOString();
+    repo.cases.push({
+      id: leadCaseId,
+      customerId: '',
       title: 'Cold lead - panel enquiry',
-      stage: 'Lead'
+      details: '',
+      source: '',
+      priority: '',
+      stage: 'Lead',
+      outcome: '',
+      orderValue: '',
+      wonCategories: [],
+      outcomeNote: '',
+      assignee: normalizeTestEmail(salesRep.email),
+      closedOn: '',
+      createdBy: normalizeTestEmail(salesRep.email),
+      createdAt: leadNow,
+      updatedAt: leadNow
     });
-    const leadCaseId = created.id;
 
     const leadRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(leadRow?.customerId).toBe('');
@@ -674,11 +693,29 @@ describe('CRM integrated service flows', () => {
       })
     ).rejects.toThrow(/different customer/i);
 
-    // Guardrail: a customerless case cannot become Quoted or Won before it has a customer.
-    const otherLead = await caseService.createCase(salesRep, '', {
+    // Guardrail: a legacy customerless case cannot become Quoted or Won before it has a
+    // customer. A new one can no longer be created this way, so it is injected directly.
+    const otherLeadId = await repo.nextCaseId();
+    const otherLeadNow = new Date().toISOString();
+    repo.cases.push({
+      id: otherLeadId,
+      customerId: '',
       title: 'Another cold lead',
-      stage: 'Lead'
+      details: '',
+      source: '',
+      priority: '',
+      stage: 'Lead',
+      outcome: '',
+      orderValue: '',
+      wonCategories: [],
+      outcomeNote: '',
+      assignee: normalizeTestEmail(salesRep.email),
+      closedOn: '',
+      createdBy: normalizeTestEmail(salesRep.email),
+      createdAt: otherLeadNow,
+      updatedAt: otherLeadNow
     });
+    const otherLead = { id: otherLeadId };
     await expect(caseService.setCaseStage(salesRep, otherLead.id, 'Quoted')).rejects.toThrow(/map a customer/i);
     await expect(
       caseService.setCaseOutcome(salesRep, otherLead.id, 'Won', {

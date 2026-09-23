@@ -397,6 +397,9 @@ async function createAutoCase(
   stage: string,
   detailPrefix: string
 ): Promise<string> {
+  if (!customer.id) {
+    throw new Error('Select a company for this case. A case cannot be created without one.');
+  }
   const id = await repo.nextCaseId();
   const now = nowIso();
   await repo.createCase({

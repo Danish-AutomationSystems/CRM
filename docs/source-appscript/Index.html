@@ -1354,7 +1354,6 @@ function saveNewCase(custId){
 /* pick a customer, then create a case (used from the Cases page) */
 function mPickCustomerThenCase(){
   openModal('New case — pick a customer',
-    '<button class="btn ghost" onclick="mNewCase(\'\')">Create without customer</button><p class="hint">Choose a customer when the first quotation is saved.</p>'+
     '<label for="pc_q">Customer</label><input id="pc_q" oninput="pcSearch()">'+
     '<div id="pc_res" class="ql-res" style="display:none"></div>'+
     '<p class="hint" style="margin-top:10px">Don\'t see them? Add the customer first from the Customers tab, or use Quick log.</p>',
@@ -1790,7 +1789,6 @@ var QL = { customerId:'', customerName:'', newMode:false };
 function mQuickLog(){
   QL = { customerId:'', customerName:'', newMode:false };
   var body =
-    '<label class="cbx"><input id="ql_later" type="checkbox" onchange="qlCustomerLater()"> Choose customer later</label>'+
     '<div id="ql_cust"></div>'+
     '<div class="frow" style="margin-top:6px"><div style="flex:2"><label class="req">Case title</label><input id="ql_title"></div>'+
     '<div><label>Stage</label><select id="ql_stage">'+selOptions(S.settings.stages.filter(function(s){ return s!=='Quoted' && s!=='Revision'; }), 'Lead')+'</select></div>'+
@@ -1801,9 +1799,7 @@ function mQuickLog(){
     '<button class="btn" id="ql_save" onclick="saveQuickLog()">Log case</button>');
   renderQLCust();
 }
-function qlCustomerLater(){ QL.customerLater=el('ql_later').checked; renderQLCust(); }
 function renderQLCust(){
-  if(QL.customerLater){ el('ql_cust').innerHTML='<p class="hint">Choose a customer when the first quotation is saved.</p>'; return; }
   if(QL.customerId){
     el('ql_cust').innerHTML = '<label>Customer</label><div class="qr"><div style="flex:1"><b>'+esc(QL.customerName)+'</b></div>'+
       '<button class="btn ghost sm" onclick="qlClear()">Change</button></div>';
@@ -1845,8 +1841,7 @@ function qlPick(id, name){ QL.customerId=id; QL.customerName=name; renderQLCust(
 function saveQuickLog(){
   var p = { title:v('ql_title'), stage:v('ql_stage'), priority:v('ql_casepri') };
   if(!p.title){ toast('Enter a case title.', true); return; }
-  if(QL.customerLater){ p.customerLater=true; }
-  else if(QL.customerId){ p.customerId = QL.customerId; }
+  if(QL.customerId){ p.customerId = QL.customerId; }
   else if(QL.newMode){
     var nm = v('ql_cname');
     if(!nm){ toast('Enter the new customer name.', true); return; }

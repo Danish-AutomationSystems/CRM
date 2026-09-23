@@ -1099,9 +1099,12 @@ describe('case service ownership and assignment', () => {
 
   it('getCase on a customerless case is held by the virtual Direct account, not the creator', async () => {
     const { repo, service } = makeService();
-    // A case creator gets no handler claim from creation alone; a customerless case
-    // has no real handler to derive from, so it falls to the virtual Direct account.
-    const { id } = await service.createCase(sales, '', { title: 'Unmapped enquiry' });
+    // A case can no longer be *created* without a customer, but a legacy row (from
+    // before this rule, or a migration) can still have customerId === ''. A case
+    // creator gets no handler claim from creation alone; a customerless case has no
+    // real handler to derive from, so it falls to the virtual Direct account.
+    repo.cases = [caseRow({ customerId: '' })];
+    const id = repo.cases[0].id;
 
     const detail = await service.getCase(sales, id);
 
@@ -1355,6 +1358,24 @@ describe('case service ownership and assignment', () => {
 
     const stored = await repo.getCase(created.id);
     expect(stored?.priority).toBe('');
+  });
+});
+
+describe('createCase requires a customer', () => {
+  it('rejects a case with no customer', async () => {
+    const { service } = makeService();
+
+    await expect(service.createCase(sales, '', { title: 'No company' })).rejects.toThrow(
+      /customer|company/i
+    );
+  });
+
+  it('still creates a case when a customer is given', async () => {
+    const { service } = makeService();
+
+    const created = await service.createCase(sales, 'CUST-0001', { title: 'With company' });
+
+    expect(created).toBeTruthy();
   });
 });
 
@@ -1903,27 +1924,20 @@ describe('case service validates priorities and won categories against the live 
 });
 
 describe('customerless cases', () => {
-  it.each(['Lead', 'Opportunity'])('creates %s held by the virtual Direct account, with existing assignment defaults', async (stage) => {
-    const { repo, service } = makeService();
-    const before = structuredClone(repo.handlers);
-    const { id } = await service.createCase(sales, '', { title: 'New enquiry', stage });
-    expect(repo.cases[0]).toMatchObject({ customerId: '', stage, createdBy: sales.email, assignee: sales.email });
-    // sales still sees the case (they are the default assignee), but creating it grants
-    // no handler claim - no customer means no real handlers to derive from, so it falls
-    // to the virtual Direct account, not the creator.
-    const detail = await service.getCase(sales, id);
-    expect(detail).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
-    expect(detail.case.handlerList.map((h) => h.email)).toEqual(['direct']);
-    expect((await service.listCases(sales))[0]).toMatchObject({ customerName: 'Customer not mapped' });
-    expect(repo.handlers).toEqual(before);
-  });
+  // A customerless case can no longer be CREATED (createCase and quickLog both
+  // require a customer - see 'createCase requires a customer' above); a previous
+  // test here proved a fresh customerless case fell to the virtual Direct account,
+  // but that scenario cannot occur anymore. A row with customerId === '' can still
+  // exist from before this rule (or a migration), and the rest of this describe
+  // block covers that legacy shape directly, by injecting the row rather than
+  // going through createCase/quickLog.
 
-  it('requires L2, rejects dangling IDs and requires mapping before Quoted or Won', async () => {
+  it('requires L2, rejects dangling IDs, and still requires mapping before Quoted or Won on a legacy customerless case', async () => {
     const { repo, service } = makeService();
     await expect(service.createCase({ ...sales, role: 'L1' }, '', { title: 'No' })).rejects.toThrow('L2');
     await expect(service.createCase(sales, 'typo', { title: 'No' })).rejects.toThrow('Customer typo');
-    await expect(service.createCase(sales, '', { title: 'No', stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
-    await expect(service.createCase(sales, '', { title: 'No', order: true, orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
+    // A legacy customerless case (customerId '') is still blocked from Quoted/Won
+    // until it is mapped, even though a new one can no longer be created this way.
     repo.cases = [caseRow({ customerId: '' })];
     await expect(service.setCaseStage(sales, repo.cases[0].id, 'Quoted')).rejects.toThrow(/map.*customer/i);
     await expect(service.setCaseOutcome(sales, repo.cases[0].id, 'Won', { orderValue: 100, categories: ['PLC'] })).rejects.toThrow(/map.*customer/i);
@@ -1954,25 +1968,30 @@ describe('customerless cases', () => {
     expect(await service.listCases(sales)).toEqual([]);
   });
 
-  it('supports explicit customerLater quick log without swallowing misspelled customer IDs', async () => {
+  it('quick log requires a customer even with customerLater set, and still does not swallow a misspelled customer ID', async () => {
     const { repo, service } = makeService();
-    const input = { customerLater: true, title: 'Identify later', stage: 'Lead' };
-    const result = await service.quickLog(sales, input);
-    expect(result.customerId).toBe('');
-    expect(repo.cases[0]).toMatchObject({ createdBy: sales.email, assignee: sales.email, customerId: '' });
-    expect(repo.customers).toHaveLength(1);
-    await expect(service.quickLog(sales, { ...input, customerId: 'typo' })).rejects.toThrow('Customer typo');
-    await expect(service.quickLog(sales, { ...input, stage: 'Quoted' })).rejects.toThrow(/map.*customer/i);
+    // customerLater used to let quick-log skip the customer outright; a case cannot be
+    // created without one at all now, so this is rejected the same as any other
+    // customerless attempt rather than silently creating an unmapped case.
+    await expect(
+      service.quickLog(sales, { customerLater: true, title: 'Identify later', stage: 'Lead' })
+    ).rejects.toThrow(/customer|company/i);
+    expect(repo.cases).toHaveLength(0);
+    await expect(service.quickLog(sales, { customerId: 'typo', title: 'No' })).rejects.toThrow('Customer typo');
     await expect(service.quickLog(sales, { title: 'No choice' })).rejects.toThrow('Pick an existing');
   });
 
-  it('retains backend explicit-assignee rule and lets the current assignee carry unmapped handovers and Revision edits', async () => {
+  it('retains backend explicit-assignee rule, and lets the current assignee carry unmapped handovers and Revision edits on a legacy customerless case', async () => {
     const { repo, service } = makeService();
     const backend = { ...sales, role: 'L5' as const };
-    await expect(service.createCase(backend, '', { title: 'New' })).rejects.toThrow('Choose who');
-    const { id } = await service.createCase(backend, '', { title: 'New', assignee: 'worker@automationsystems.org' });
-    // A customerless case has no real handler to grant access, and creating it grants
-    // no claim either - only the current assignee (or an L4+ user) can act on it next.
+    // The explicit-assignee rule applies regardless of customer.
+    await expect(service.createCase(backend, 'CUST-0001', { title: 'New' })).rejects.toThrow('Choose who');
+
+    // A customerless case can no longer be created, but a legacy row (customerId '')
+    // can still exist; it has no real handler to grant access, and no claim comes from
+    // having created it either - only the current assignee (or an L4+ user) can act on it.
+    repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org' })];
+    const id = repo.cases[0].id;
     const worker = { ...sales, email: 'worker@automationsystems.org', role: 'L1' as const };
     await service.assignTicket(worker, id, 'other@automationsystems.org', 'Please work');
     repo.cases[0].stage = 'Revision';

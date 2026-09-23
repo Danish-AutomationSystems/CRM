@@ -526,7 +526,29 @@ describe('CRM concurrency behavior', () => {
     const repo = new ConcurrentRepository();
     const cases = createCaseService(repo);
     const quotes = createQuoteService(repo);
-    const { id } = await cases.createCase(sales, '', { title: 'Unknown customer', stage: 'Lead' });
+    // A case can no longer be created without a customer - createCase now requires one.
+    // A legacy row (customerId '') can still exist from before this rule, so it is
+    // injected directly here to keep the concurrent-mapping race under test.
+    const id = await repo.nextCaseId();
+    const now = new Date().toISOString();
+    repo.cases.push({
+      id,
+      customerId: '',
+      title: 'Unknown customer',
+      details: '',
+      source: '',
+      priority: '',
+      stage: 'Lead',
+      outcome: '',
+      orderValue: '',
+      wonCategories: [],
+      outcomeNote: '',
+      assignee: sales.email,
+      closedOn: '',
+      createdBy: sales.email,
+      createdAt: now,
+      updatedAt: now
+    });
     repo.customers.push(repo.customer({ id: 'CUST-SECOND', name: 'Second account' }));
     repo.handlers.push({ customerId: 'CUST-SECOND', email: sales.email, assignedBy: sales.email, assignedAt: 'now' });
     const original = structuredClone(repo.cases[0]);
