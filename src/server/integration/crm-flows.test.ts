@@ -532,9 +532,11 @@ describe('CRM integrated service flows', () => {
     const { repo, adminService, customerService, caseService, quoteService } = makeServices();
 
     // L3+ with a matching tag gets FULL access to a matching-tag customer purely by tag
-    // match - never having been added as a handler. Also the case's creator, so it is the
-    // case's handler by the creator fallback and has case visibility while the case is
-    // still customerless (handler-visible, not customer-visible). Used to prove mapping neither needs nor grants handler membership.
+    // match - never having been added as a handler. Also the case's creator, and creating
+    // it below L5 with no explicit assignee makes salesRep its default assignee too, which
+    // is what gives them visibility while the case is still customerless (no customer to
+    // check tags against, and no handler claim from having created it). Used to prove
+    // mapping neither needs nor grants handler membership.
     const salesRep: CrmContext = {
       email: 'lead-sales@automationsystems.org',
       name: 'Lead Sales',
@@ -572,15 +574,16 @@ describe('CRM integrated service flows', () => {
     const leadRow = repo.cases.find((row) => row.id === leadCaseId);
     expect(leadRow?.customerId).toBe('');
 
-    // The case has no customer, so its handlers are derived with the creator as the
-    // fallback (caseHandlers). This stays true throughout the walk below, because the
-    // mapped customer never gains salesRep as a real handler.
-    const expectedHandlers = [normalizeTestEmail(salesRep.email)];
+    // The case has no customer, so it has no real handler to derive one from - it is held
+    // by the virtual Direct account (caseHandlers). This stays true throughout the walk
+    // below, because the mapped customer never gains salesRep as a real handler either.
+    const expectedHandlers = ['direct'];
 
     // 2. Someone with no relationship to the case cannot see it.
     await expect(caseService.getCase(outsider, leadCaseId)).rejects.toThrow(/access/i);
 
-    // The creator (a handler by fallback) and an L4+ can see it, even customerless.
+    // The creator (visible only as the case's default assignee, not as a handler) and an
+    // L4+ can see it, even customerless.
     const ownedView = await caseService.getCase(salesRep, leadCaseId);
     expect(ownedView.customer).toBeNull();
     expect(ownedView.case.id).toBe(leadCaseId);
@@ -615,8 +618,8 @@ describe('CRM integrated service flows', () => {
     );
     // Mapping never grants handler membership.
     expect(repo.handlers.some((row) => row.customerId === customer.id && row.email === normalizeTestEmail(salesRep.email))).toBe(false);
-    // caseHandlers is untouched by mapping - still the creator fallback, since the
-    // mapped customer has no real handlers of its own.
+    // caseHandlers is untouched by mapping - still the virtual Direct account, since the
+    // mapped customer has no real handlers of its own either.
     expect((await caseService.getCase(salesRep, leadCaseId)).case.handlerList.map((h) => h.email)).toEqual(expectedHandlers);
 
     // 4. Marking the first quotation Sent moves the case to Quoted with no ticket holder.
@@ -686,7 +689,7 @@ describe('CRM integrated service flows', () => {
     ).rejects.toThrow(/map a customer/i);
   });
 
-  it('agrees across all three case-creation paths on who owns the case: the account handlers, or the creator when there are none', async () => {
+  it('agrees across all three case-creation paths on who owns the case: the account handlers, or Direct when there are none', async () => {
     const { repo, adminService, customerService, caseService, quoteService } = makeServices();
 
     // U has FULL customer access purely by L3 tag match - never a handler on either
@@ -740,12 +743,13 @@ describe('CRM integrated service flows', () => {
     await expectHandlers(await createThreeWays(handledCustomer.id), [h.email]);
 
     // A Direct-only customer (no real handler, created by an L6 admin so nobody becomes a
-    // handler on creation): all three paths fall back to the creator, U.
+    // handler on creation): all three paths agree it is owned by Direct, not by U, its
+    // creator - creating a case grants no handler claim on its own.
     const directCustomer = await customerService.createCustomer(admin, {
       name: 'Direct Co', tags: ['Punjab'], type: 'OEM', priority: 'High', area: 'Ludhiana'
     });
     expect(repo.handlers.filter((row) => row.customerId === directCustomer.id).map((row) => row.email)).toEqual(['direct']);
-    await expectHandlers(await createThreeWays(directCustomer.id), [u.email]);
+    await expectHandlers(await createThreeWays(directCustomer.id), ['direct']);
   });
 });
 

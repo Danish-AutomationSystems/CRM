@@ -643,15 +643,18 @@ describe('dashboard service', () => {
 });
 
 describe('customerless dashboard', () => {
-  it('labels unmapped owned and assigned work and hides it from unrelated peer viewers', async () => {
+  it('labels unmapped assigned work by customer name, and never counts a customerless case as owned', async () => {
     const { repo, dashboard } = makeService();
     repo.cases = [caseRow({ customerId: '' })];
-    expect((await dashboard.dashboard(sales)).dash.cases[0].customerName).toBe('Customer not mapped');
+    // A customerless case has no real handler to derive ownership from, and being its
+    // creator or assignee grants no handler claim either - so it can only ever show up
+    // as assigned work ("tickets"), never as "owned" ("cases"), for any viewer.
     expect((await dashboard.dashboard(sales)).dash.tickets[0].customerName).toBe('Customer not mapped');
+    expect((await dashboard.dashboard(sales)).dash.cases).toEqual([]);
     const supervisor = repo.users.find((row) => row.role === 'L3')!;
     expect((await dashboard.dashboard(supervisor, sales.email)).dash.cases).toEqual([]);
     const manager = repo.users.find((row) => row.role === 'L4')!;
-    expect((await dashboard.dashboard(manager, sales.email)).dash.cases).toHaveLength(1);
+    expect((await dashboard.dashboard(manager, sales.email)).dash.cases).toEqual([]);
   });
 });
 
@@ -668,6 +671,9 @@ describe('mapped dashboard visibility filtering', () => {
   it("drops a mapped case the viewer cannot see from the subject's dashboard, but keeps it for L4+", async () => {
     const { repo, dashboard } = makeService();
     repo.customers.push(customer({ id: 'CUST-0003', name: 'Gamma NCR', tags: ['NCR'] }));
+    // sales must be a real handler of CUST-0003 for this to be their own work - creating
+    // or being assigned a case grants no handler claim on its own.
+    repo.handlers.push({ customerId: 'CUST-0003', email: sales.email, assignedBy: sales.email, assignedAt: 'now' });
     repo.cases = [
       caseRow({
         id: 'CASE-2026-0005',
@@ -735,16 +741,19 @@ describe('handler vs creator dashboard attribution', () => {
     expect(result.dash.cases).toEqual([]);
   });
 
-  it('lets the creator of an OPEN case on a handler-less mapped account see it on their dashboard', async () => {
+  it('denies the creator of an OPEN case on a handler-less mapped account any claim on their dashboard', async () => {
     const { repo, dashboard } = makeService();
     repo.customers.push(customer({ id: 'CUST-0005', name: 'Delta Unmanaged', tags: ['Punjab'] }));
-    // No repo.handlers entry for CUST-0005 at all - the account has no real handler.
+    // No repo.handlers entry for CUST-0005 at all - the account has no real handler, so
+    // it falls to the virtual Direct account, which grants access to nobody. Creating the
+    // case grants sales no claim either, and they are not its assignee here.
     repo.cases = [
       caseRow({ id: 'CASE-2026-0011', customerId: 'CUST-0005', title: 'Unhandled account enquiry', createdBy: sales.email, assignee: '' })
     ];
 
     const result = await dashboard.dashboard(sales);
 
-    expect(result.dash.cases.map((row) => row.id)).toContain('CASE-2026-0011');
+    expect(result.dash.cases.map((row) => row.id)).not.toContain('CASE-2026-0011');
+    expect(result.dash.tickets.map((row) => row.id)).not.toContain('CASE-2026-0011');
   });
 });

@@ -1191,7 +1191,9 @@ describe('first quotation customer mapping', () => {
   it.each(modes)('maps an unmapped case with %s quote without touching handler membership', async (mode) => {
     const { deps } = fakeDriveDeps();
     const { repo, service } = makeService(deps);
-    repo.cases[0] = caseRow({ customerId: '', assignee: 'worker@automationsystems.org' });
+    // sales must be the case's assignee to have access to it while it is customerless -
+    // creating it grants no handler claim on its own.
+    repo.cases[0] = caseRow({ customerId: '' });
     const original = structuredClone(repo.cases[0]);
     const handlers = structuredClone(repo.handlers);
     await save(service, mode);

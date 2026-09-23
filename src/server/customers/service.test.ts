@@ -449,7 +449,7 @@ describe('customer service mutations', () => {
     expect(detail.cases[0].handlers).toEqual(['ghost@automationsystems.org']);
   });
 
-  it('a Direct-only account falls each case back to its own creator as handler, not one shared handler', async () => {
+  it('a Direct-only account shows every one of its cases handled by Direct, not each case\'s own creator', async () => {
     const { repo, service } = makeService();
     repo.customers = [customer()];
     // The only handler is the virtual Direct account - no real handler exists.
@@ -490,9 +490,10 @@ describe('customer service mutations', () => {
     if (detail.access !== 'FULL') throw new Error('expected FULL access');
 
     const byId = Object.fromEntries(detail.cases.map((row) => [row.id, row]));
-    // Each case falls back to ITS OWN creator - there is no single shared account-level fallback.
-    expect(byId['CASE-2026-0001'].handlers).toEqual([baseUser.name]);
-    expect(byId['CASE-2026-0002'].handlers).toEqual(['Manager User']);
+    // The account's only handler is the virtual Direct account, shared by every case on
+    // it - creating a case grants its creator no per-case handler claim of their own.
+    expect(byId['CASE-2026-0001'].handlers).toEqual(['Direct']);
+    expect(byId['CASE-2026-0002'].handlers).toEqual(['Direct']);
     for (const row of detail.cases) {
       expect(row).not.toHaveProperty('owners');
       expect(row).not.toHaveProperty('createdBy');

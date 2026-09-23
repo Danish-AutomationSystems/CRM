@@ -952,17 +952,23 @@ describe('assignTicket commits verified attachments', () => {
 
 describe('assignTicket commit-time authorization', () => {
   for (const upload of [false, true]) {
-    it.each(['holder', 'creator', 'handler', 'customer tags', 'customer mapping'] as const)(
+    // 'creator' used to be in this matrix, relying on the now-removed creator fallback
+    // to grant initial access to an account with no real handler. Creating a case grants
+    // no access at all now, so that scenario is replaced with 'co-handler': one of
+    // *several* real handlers, who loses their own claim when they - specifically, not
+    // the whole roster - are dropped from the account mid-transaction.
+    it.each(['holder', 'co-handler', 'handler', 'customer tags', 'customer mapping'] as const)(
       `rejects revoked %s access after async work (upload=${upload})`,
       async (access) => {
         const { repo, drive, service } = makeAttachmentService();
         const caller: CrmContext = { ...sales, role: access === 'customer tags' ? 'L3' : 'L1' };
-        // The 'creator' case needs the account to start with no real handler, so the
-        // creator fallback is what grants access - so it, like every other non-handler
-        // scenario, starts with no handler rows.
-        repo.handlers = access === 'handler' || access === 'customer mapping' ? repo.handlers : [];
+        repo.handlers = access === 'handler' || access === 'customer mapping'
+          ? repo.handlers
+          : access === 'co-handler'
+            ? [...repo.handlers, { customerId: 'CUST-0001', email: 'someone@automationsystems.org', assignedBy: 'admin', assignedAt: 'now' }]
+            : [];
         repo.cases[0] = caseRow({
-          createdBy: access === 'creator' ? caller.email : 'other@automationsystems.org',
+          createdBy: 'other@automationsystems.org',
           assignee: access === 'holder' ? caller.email : 'worker@automationsystems.org'
         });
         repo.customers.push(customer({ id: 'CUST-0002', tags: ['NCR'] }));
@@ -976,8 +982,9 @@ describe('assignTicket commit-time authorization', () => {
         repo.withTransaction = async (fn) => fn(tx);
         const revoke = () => {
           if (access === 'holder') tx.cases[0].assignee = 'worker@automationsystems.org';
-          // Giving the account a real handler ends the creator's fallback claim.
-          if (access === 'creator') tx.handlers = [{ customerId: 'CUST-0001', email: 'someone@automationsystems.org', assignedBy: 'admin', assignedAt: 'now' }];
+          // The caller specifically is dropped; 'someone' remains a handler, so this is
+          // not the same as the account losing its last handler.
+          if (access === 'co-handler') tx.handlers = tx.handlers.filter((row) => row.email !== caller.email);
           if (access === 'handler') tx.handlers = [];
           if (access === 'customer tags') tx.customers[0].tags = ['NCR'];
           if (access === 'customer mapping') tx.cases[0].customerId = 'CUST-0002';
@@ -1010,6 +1017,9 @@ describe('assignTicket commit-time authorization', () => {
       const tx = new FakeCaseRepository();
       tx.cases = [caseRow({ customerId: 'CUST-0002', assignee: 'worker@automationsystems.org' })];
       tx.customers = [customer({ id: 'CUST-0002' })];
+      // sales must be a real handler of the transaction's current customer -
+      // creating a case grants no access on its own.
+      tx.handlers = [{ customerId: 'CUST-0002', email: sales.email, assignedBy: sales.email, assignedAt: 'now' }];
       repo.withTransaction = async (fn) => fn(tx);
       if (upload) drive.put({ id: 'FILE-1', name: driveNameFor('handover.pdf'), size: 1 });
       const uploads = upload
@@ -1087,17 +1097,19 @@ describe('case service ownership and assignment', () => {
     expect(detail.case).not.toHaveProperty('ownerList');
   });
 
-  it('getCase on a customerless case falls back to the creator as its sole handler', async () => {
+  it('getCase on a customerless case is held by the virtual Direct account, not the creator', async () => {
     const { repo, service } = makeService();
+    // A case creator gets no handler claim from creation alone; a customerless case
+    // has no real handler to derive from, so it falls to the virtual Direct account.
     const { id } = await service.createCase(sales, '', { title: 'Unmapped enquiry' });
 
     const detail = await service.getCase(sales, id);
 
-    expect(detail.case.handlers).toEqual([sales.name]);
-    expect(detail.case.handlerList).toEqual([{ email: sales.email, name: sales.name }]);
+    expect(detail.case.handlers).toEqual(['Direct']);
+    expect(detail.case.handlerList).toEqual([{ email: 'direct', name: 'Direct' }]);
   });
 
-  it('P10: a case on a Direct-handled customer falls back to its creator, not the virtual Direct account', async () => {
+  it('P10: a case on a Direct-handled customer is owned by Direct, not its creator', async () => {
     const { repo, service } = makeService();
     // Exactly the reported scenario: an L6 creates the customer, so the handler is Direct.
     repo.handlers = [{ customerId: 'CUST-0001', email: 'direct', assignedBy: 'admin@automationsystems.org', assignedAt: 'now' }];
@@ -1107,14 +1119,18 @@ describe('case service ownership and assignment', () => {
     const created = await service.createCase(admin, 'CUST-0001', { title: 'Direct enquiry', assignee: 'worker' });
     const detail = await service.getCase(admin, created.id);
 
-    expect(detail.case.handlers).toEqual(['Admin User']);
-    expect(detail.case.handlerList).toEqual([{ email: admin.email, name: 'Admin User' }]);
+    // P10 is what this used to get wrong: the creator (or the person the case was
+    // assigned to on creation) is not the account handler - Direct is - and no fallback
+    // grants them a handler claim just for creating it.
+    expect(detail.case.handlers).toEqual(['Direct']);
+    expect(detail.case.handlerList).toEqual([{ email: 'direct', name: 'Direct' }]);
   });
 
   it('listCases rows carry live handler display names and no owners key', async () => {
     const { repo, service } = makeService();
     repo.handlers.push({ customerId: 'CUST-0001', email: 'other@automationsystems.org', assignedBy: sales.email, assignedAt: 'now' });
-    // CASE-2026-0002 sits on a second account with no real handler, so its creator stands in.
+    // CASE-2026-0002 sits on a second account with no real handler, so it is held by the
+    // virtual Direct account until a real handler is added below.
     repo.customers.push(customer({ id: 'CUST-0002', name: 'Handlerless Account' }));
     repo.cases = [
       caseRow({ id: 'CASE-2026-0001', createdBy: 'worker@automationsystems.org' }),
@@ -1125,12 +1141,12 @@ describe('case service ownership and assignment', () => {
     const rows = Object.fromEntries((await service.listCases(manager)).map((row) => [row.id, row]));
 
     expect(rows['CASE-2026-0001'].handlers).toEqual([sales.name, 'Other Sales']);
-    expect(rows['CASE-2026-0002'].handlers).toEqual(['Ticket Worker']);
+    expect(rows['CASE-2026-0002'].handlers).toEqual(['Direct']);
     for (const row of Object.values(rows)) {
       expect(row).not.toHaveProperty('owners');
     }
 
-    // Derived live: a handler added afterwards replaces the creator on the next read.
+    // Derived live: a handler added afterwards replaces the virtual Direct account on the next read.
     repo.handlers.push({ customerId: 'CUST-0002', email: 'other@automationsystems.org', assignedBy: 'admin', assignedAt: 'now' });
     const reread = (await service.listCases(manager)).find((row) => row.id === 'CASE-2026-0002');
     expect(reread?.handlers).toEqual(['Other Sales']);
@@ -1143,29 +1159,32 @@ describe('case service ownership and assignment', () => {
     expect('removeCaseOwner' in service).toBe(false);
   });
 
-  it('listCases owned=true returns a handler\'s cases; the creator loses it once the account gets a real handler unless they are the assignee', async () => {
+  it('listCases owned=true returns a handler\'s cases; a handler loses it once removed from the account unless they are the assignee', async () => {
     const { repo, service } = makeService();
     // sales is CUST-0001's only handler by default (makeService fixture).
     repo.cases = [caseRow({ id: 'CASE-2026-0001', createdBy: 'other@automationsystems.org', assignee: 'other@automationsystems.org' })];
 
     expect((await service.listCases(sales, { owned: true })).map((row) => row.id)).toEqual(['CASE-2026-0001']);
 
-    // Now the creator (not sales) created this case on a handler-less second account -
-    // creator fallback makes it theirs, until a real handler shows up.
+    // A second account where 'other' is a real handler - not the creator, since creating a
+    // case grants no ownership claim on its own.
     repo.customers.push(customer({ id: 'CUST-0002', tags: ['Punjab'] }));
-    const creator: CrmContext = { ...sales, email: 'other@automationsystems.org', name: 'Other Sales', allowedTags: ['Punjab'] };
-    repo.cases = [caseRow({ id: 'CASE-2026-0002', customerId: 'CUST-0002', createdBy: creator.email, assignee: 'worker@automationsystems.org' })];
+    const handler: CrmContext = { ...sales, email: 'other@automationsystems.org', name: 'Other Sales', allowedTags: ['Punjab'] };
+    repo.handlers.push({ customerId: 'CUST-0002', email: handler.email, assignedBy: 'admin', assignedAt: 'now' });
+    repo.cases = [caseRow({ id: 'CASE-2026-0002', customerId: 'CUST-0002', createdBy: 'someone-else@automationsystems.org', assignee: 'worker@automationsystems.org' })];
 
-    expect((await service.listCases(creator, { owned: true })).map((row) => row.id)).toEqual(['CASE-2026-0002']);
+    expect((await service.listCases(handler, { owned: true })).map((row) => row.id)).toEqual(['CASE-2026-0002']);
 
+    // Swap 'other' out for a different real handler: the claim goes with the handler row.
+    repo.handlers = repo.handlers.filter((row) => !(row.customerId === 'CUST-0002' && row.email === handler.email));
     repo.handlers.push({ customerId: 'CUST-0002', email: 'handler@automationsystems.org', assignedBy: 'admin', assignedAt: 'now' });
     repo.users.push(user({ email: 'handler@automationsystems.org', name: 'Account Handler' }));
 
-    expect((await service.listCases(creator, { owned: true })).map((row) => row.id)).toEqual([]);
-    // ...unless the creator is also the assignee, which is a separate claim entirely.
-    repo.cases[0].assignee = creator.email;
-    expect((await service.listCases(creator, { owned: true })).map((row) => row.id)).toEqual([]);
-    expect((await service.listCases(creator, { assigned: true })).map((row) => row.id)).toEqual(['CASE-2026-0002']);
+    expect((await service.listCases(handler, { owned: true })).map((row) => row.id)).toEqual([]);
+    // ...unless the former handler is also the assignee, which is a separate claim entirely.
+    repo.cases[0].assignee = handler.email;
+    expect((await service.listCases(handler, { owned: true })).map((row) => row.id)).toEqual([]);
+    expect((await service.listCases(handler, { assigned: true })).map((row) => row.id)).toEqual(['CASE-2026-0002']);
   });
 
   it('closed-case liveness: a new handler added after a case is Won still shows up on it', async () => {
@@ -1884,15 +1903,17 @@ describe('case service validates priorities and won categories against the live 
 });
 
 describe('customerless cases', () => {
-  it.each(['Lead', 'Opportunity'])('creates %s with the creator as fallback handler and existing assignment defaults', async (stage) => {
+  it.each(['Lead', 'Opportunity'])('creates %s held by the virtual Direct account, with existing assignment defaults', async (stage) => {
     const { repo, service } = makeService();
     const before = structuredClone(repo.handlers);
     const { id } = await service.createCase(sales, '', { title: 'New enquiry', stage });
     expect(repo.cases[0]).toMatchObject({ customerId: '', stage, createdBy: sales.email, assignee: sales.email });
+    // sales still sees the case (they are the default assignee), but creating it grants
+    // no handler claim - no customer means no real handlers to derive from, so it falls
+    // to the virtual Direct account, not the creator.
     const detail = await service.getCase(sales, id);
     expect(detail).toMatchObject({ customer: null, canMapCustomer: true, canQuote: true });
-    // No customer means no handlers to derive from - the creator is the fallback.
-    expect(detail.case.handlerList.map((h) => h.email)).toEqual([sales.email]);
+    expect(detail.case.handlerList.map((h) => h.email)).toEqual(['direct']);
     expect((await service.listCases(sales))[0]).toMatchObject({ customerName: 'Customer not mapped' });
     expect(repo.handlers).toEqual(before);
   });
@@ -1911,10 +1932,16 @@ describe('customerless cases', () => {
     expect(repo.cases[0]).toMatchObject({ title: 'Updated', stage: 'Lead', customerId: '' });
   });
 
-  it('allows the creator (handler by fallback), assigned L1 and L4+ on a customerless case, denying unrelated users even with matching tags', async () => {
+  it('allows the assignee (L1) and L4+ on a customerless case, denying the creator and unrelated users even with matching tags', async () => {
     const { repo, service } = makeService();
     repo.cases = [caseRow({ customerId: '', assignee: 'worker@automationsystems.org' })];
-    for (const viewer of [sales, repo.users[2], repo.users[3]]) {
+
+    // sales created this case but is not its assignee - creating it grants no claim,
+    // so with no real handler to fall back on either, sales cannot see it at all.
+    await expect(service.getCase(sales, repo.cases[0].id)).rejects.toThrow('access');
+    expect(await service.listCases(sales)).toEqual([]);
+
+    for (const viewer of [repo.users[2], repo.users[3]]) {
       expect((await service.getCase(viewer, repo.cases[0].id)).customer).toBeNull();
       expect(await service.listCases(viewer)).toHaveLength(1);
     }
@@ -1939,15 +1966,19 @@ describe('customerless cases', () => {
     await expect(service.quickLog(sales, { title: 'No choice' })).rejects.toThrow('Pick an existing');
   });
 
-  it('retains backend explicit-assignee rule and supports unmapped handovers and Revision edits', async () => {
+  it('retains backend explicit-assignee rule and lets the current assignee carry unmapped handovers and Revision edits', async () => {
     const { repo, service } = makeService();
     const backend = { ...sales, role: 'L5' as const };
     await expect(service.createCase(backend, '', { title: 'New' })).rejects.toThrow('Choose who');
     const { id } = await service.createCase(backend, '', { title: 'New', assignee: 'worker@automationsystems.org' });
-    await service.assignTicket(sales, id, 'other@automationsystems.org', 'Please work');
+    // A customerless case has no real handler to grant access, and creating it grants
+    // no claim either - only the current assignee (or an L4+ user) can act on it next.
+    const worker = { ...sales, email: 'worker@automationsystems.org', role: 'L1' as const };
+    await service.assignTicket(worker, id, 'other@automationsystems.org', 'Please work');
     repo.cases[0].stage = 'Revision';
-    await service.updateCase(sales, id, { details: 'Revision notes' });
-    await service.assignTicket(sales, id, 'worker@automationsystems.org');
+    const other = { ...sales, email: 'other@automationsystems.org', allowedTags: ['NCR'] };
+    await service.updateCase(other, id, { details: 'Revision notes' });
+    await service.assignTicket(other, id, 'worker@automationsystems.org');
     expect(repo.cases[0]).toMatchObject({ stage: 'Revision', details: 'Revision notes', customerId: '', assignee: 'worker@automationsystems.org' });
   });
 });
