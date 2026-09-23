@@ -33,8 +33,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // api/cap is the temporary capacity probe and is excluded to isolate whether
-  // the remaining burst failures come from this middleware's network auth call
-  // or from the data path. Removed with the probe.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/cap).*)']
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)']
 };
