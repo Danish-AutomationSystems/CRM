@@ -1106,6 +1106,44 @@ describe('contact and handler service APIs', () => {
   });
 });
 
+describe('a customer holds exactly one location', () => {
+  it('rejects a customer created with two locations', async () => {
+    const { service } = makeService();
+    const l2: CrmContext = { email: 'l2@automationsystems.org', role: 'L2', allowedTags: ['Punjab'], name: 'L2', active: true };
+
+    await expect(
+      service.createCustomer(l2, { name: 'Two Tags', tags: ['Punjab', 'NCR'] })
+    ).rejects.toThrow(/one location/i);
+  });
+
+  it('rejects a customer created with no location', async () => {
+    const { service } = makeService();
+    const l2: CrmContext = { email: 'l2@automationsystems.org', role: 'L2', allowedTags: ['Punjab'], name: 'L2', active: true };
+
+    await expect(service.createCustomer(l2, { name: 'No Tags', tags: [] })).rejects.toThrow(/location/i);
+  });
+
+  it('accepts exactly one location', async () => {
+    const { service } = makeService();
+    const l2: CrmContext = { email: 'l2@automationsystems.org', role: 'L2', allowedTags: ['Punjab'], name: 'L2', active: true };
+
+    const created = await service.createCustomer(l2, { name: 'One Tag', tags: ['Punjab'] });
+
+    expect(created).toBeTruthy();
+  });
+
+  it('rejects an edit that would set two locations', async () => {
+    const { service } = makeService();
+    const l2: CrmContext = { email: 'l2@automationsystems.org', role: 'L2', allowedTags: ['Punjab'], name: 'L2', active: true };
+    const l3: CrmContext = { ...l2, role: 'L3', email: 'manager@automationsystems.org' };
+    const created = await service.createCustomer(l2, { name: 'Editable', tags: ['Punjab'] });
+
+    await expect(
+      service.updateCustomer(l3, created.id, { tags: ['Punjab', 'NCR'] })
+    ).rejects.toThrow(/one location/i);
+  });
+});
+
 describe('removeHandler keeps ownership non-empty', () => {
   const admin: CrmContext = { ...baseUser, role: 'L3', email: 'manager@automationsystems.org' };
 

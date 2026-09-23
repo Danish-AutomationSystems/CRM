@@ -251,11 +251,19 @@ async function allowedSeiNames(repo: CustomerRepository): Promise<string[]> {
   return parsePipe(await repo.getSetting(SEI_NAMES_SETTING_KEY));
 }
 
-/** P7: a customer must always carry at least one recognised location. */
+/**
+ * P7: a customer must always carry at least one recognised location.
+ * Multiple locations may be given to a user, never to a customer - a customer
+ * holds exactly one location tag. This is enforced here so it cannot be
+ * bypassed on either the create or the update path.
+ */
 function requiredTags(value: unknown, allowed: readonly string[], stored: readonly string[] = []): string[] {
   const tags = validTags(value, allowed, stored);
   if (!tags.length) {
     throw new Error('Pick at least one location for this customer.');
+  }
+  if (tags.length > 1) {
+    throw new Error('A customer can have only one location.');
   }
   return tags;
 }
