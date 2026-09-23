@@ -405,12 +405,22 @@ function accessBadge(a){
 
 /* ---------------- pickers ---------------- */
 function tgTag(btn){ btn.className = btn.className==='on'?'':'on'; }
-function tagPickerHTML(id, all, selected, withStar){
+/* A customer holds exactly one location, so picking replaces rather than adds.
+   It never clears: location is mandatory, and clearing would only produce a
+   state the server rejects. Users keep multi-select via tgTag. */
+function tgOne(btn){
+  var all = btn.parentNode.querySelectorAll('button');
+  for(var i=0;i<all.length;i++) all[i].className = '';
+  btn.className = 'on';
+}
+/* `single` picks the mode. The '*' wildcard button is gone: the server rejects
+   '*' outright, so offering it could only ever produce an error. */
+function tagPickerHTML(id, all, selected, single){
   var sel = selected||[];
+  var fn = single ? 'tgOne(this)' : 'tgTag(this)';
   var html = '<div class="tagpick" id="'+id+'">';
-  if(withStar) html += '<button type="button" data-t="*" class="'+(sel.indexOf('*')>-1?'on':'')+'" onclick="tgTag(this)">All tags (*)</button>';
   (all||[]).forEach(function(t){
-    html += '<button type="button" data-t="'+esc(t)+'" class="'+(sel.indexOf(t)>-1?'on':'')+'" onclick="tgTag(this)">'+esc(t)+'</button>';
+    html += '<button type="button" data-t="'+esc(t)+'" class="'+(sel.indexOf(t)>-1?'on':'')+'" onclick="'+fn+'">'+esc(t)+'</button>';
   });
   return html+'</div>';
 }
@@ -1005,8 +1015,8 @@ function priorityFieldHTML(c){
    The DB/RPC field is still `tags` - only the label changed. */
 function locationFieldHTML(sel){
   return '<label class="req">Location</label>'+
-    tagPickerHTML('f_tags', S.settings.tags, sel||[], false)+
-    '<p class="hint">Controls who can see this customer. Pick at least one.</p>';
+    tagPickerHTML('f_tags', S.settings.tags, sel||[], true)+
+    '<p class="hint">Controls who can see this customer. Pick one.</p>';
 }
 /* `afterName` is injected between the name row and everything else so the
    location picker can be the second thing on the form. */
@@ -1042,7 +1052,7 @@ function saveNewCustomer(force){
   if(!d.name){ toast('Customer name is required.', true); return; }
   /* P7: mirrors the server's mandatory-location rule so the user is told
      before the round trip. */
-  if(!d.tags.length){ toast('Location is required — pick at least one.', true); return; }
+  if(!d.tags.length){ toast('Location is required — pick one.', true); return; }
   el('saveCustBtn').disabled = true;
   gs('api_createCustomer', d).then(function(r){
     closeModal(); toast('Customer created — '+r.id); nav('customer', r.id);
@@ -1085,7 +1095,7 @@ function saveEditCustomer(id){
   if(canCls){
     d.tags = pickerVal('f_tags'); d.type = v('f_type'); d.status = v('f_status');
     /* P7: an edit may never leave a customer with no location. */
-    if(!d.tags.length){ toast('Location is required — pick at least one.', true); return; }
+    if(!d.tags.length){ toast('Location is required — pick one.', true); return; }
   }
   if(canPri && el('f_priority')){ d.priority = v('f_priority'); }
   el('saveBtn').disabled = true;
@@ -2183,7 +2193,7 @@ function bcRowHTML(row, i){
   return '<div class="card" style="background:#FAFBFA;padding:12px;margin-bottom:8px">'+
     '<div class="frow"><div style="flex:2"><label class="req">Name</label><input id="bc_name_'+i+'" value="'+esc(row.name||'')+'"></div>'+
     '<div style="flex:0;display:flex;align-items:flex-end">'+removeBtn+'</div></div>'+
-    '<div class="frow"><div style="flex:1"><label>Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], false)+'</div></div>'+
+    '<div class="frow"><div style="flex:1"><label>Location</label>'+tagPickerHTML('bc_tags_'+i, S.settings.tags, row.tags||[], true)+'</div></div>'+
     '<div class="frow">'+
     '<div><label>Type</label><select id="bc_type_'+i+'"><option value="">—</option>'+selOptions(S.settings.types, row.type)+'</select></div>'+
     '<div><label>Priority</label><select id="bc_priority_'+i+'"><option value="">—</option>'+selOptions(S.settings.priorities, row.priority)+'</select></div>'+
@@ -2249,7 +2259,7 @@ function renderAdmin(users, links){
     var lc = u.role==='L6'?'b-green':(u.role==='L5'?'b-blue':(u.role==='L4'?'b-blue':(u.role==='L1'?'b-grey':'b-amber')));
     html += '<tr><td class="mono">'+esc(u.email)+'</td><td>'+esc(u.name)+'</td>'+
       '<td><span class="badge '+lc+'">'+esc(u.role)+'</span></td>'+
-      '<td>'+(u.allowedTags.indexOf('*')>-1?'<span class="chip">All (*)</span>':tagChips(u.allowedTags))+'</td>'+
+      '<td>'+tagChips(u.allowedTags)+'</td>'+
       '<td>'+(u.active?'<span class="badge b-green">Active</span>':'<span class="badge b-red">Inactive</span>')+'</td>'+
       '<td><button class="btn ghost sm" onclick=\'mUser('+JSON.stringify(u).replace(/'/g,'&#39;')+')\'>Edit</button></td></tr>';
   });
@@ -2398,7 +2408,7 @@ function mUser(u){
     '<div><label>Status</label><select id="au_active"><option value="1"'+(u.active!==false?' selected':'')+'>Active</option><option value="0"'+(u.active===false?' selected':'')+'>Inactive</option></select></div></div>'+
     '<p class="hint" id="au_hint" style="margin-top:-4px"></p>'+
     '<label>Allowed locations (full access to matching customers; needed for L2/L3)</label>'+
-    tagPickerHTML('au_tags', S.settings.tags, u.allowedTags||[], true)+
+    tagPickerHTML('au_tags', S.settings.tags, u.allowedTags||[], false)+
     '<p class="hint">L4 and L5 see everything regardless of location.</p>',
     '<button class="btn ghost" onclick="closeModal()">Cancel</button>'+
     '<button class="btn" onclick="saveUser(\''+esc(u.email||'')+'\')">Save user</button>', true);

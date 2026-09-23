@@ -2749,3 +2749,76 @@ describe('case lifecycle UI', () => {
     expect(document.getElementById('main')?.textContent).not.toContain('1 quotation');
   });
 });
+
+describe('location rules in the client', () => {
+  test('the user location picker no longer offers the wildcard', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['Punjab'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_admin_listRecycle') return { customers: [] };
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    window.eval(edit.getAttribute('onclick') ?? '');
+
+    const picker = document.getElementById('au_tags') as HTMLElement;
+    expect(picker).toBeTruthy();
+    // '*' is rejected by the server now, so a button offering it can only ever error.
+    expect(picker.querySelector('[data-t="*"]')).toBeNull();
+    expect(picker.textContent).not.toContain('All tags');
+  });
+
+  test('the admin users table never renders a wildcard chip', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return workspace('L6');
+      if (fn === 'api_admin_listUsers') return [{ ...bootstrap('L6').user, allowedTags: ['*'], active: true }];
+      if (fn === 'api_admin_links') return { database: 'Supabase Postgres', supabaseUrl: 'https://example.supabase.co', tables: [] };
+      if (fn === 'api_admin_listRecycle') return { customers: [] };
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('nav("admin")');
+    await screen.findByRole('heading', { name: 'Admin' });
+
+    expect(document.getElementById('main')?.textContent).not.toContain('All (*)');
+  });
+
+  test('a customer keeps only the last location picked', async () => {
+    mockRpc((fn) => {
+      if (fn === 'api_workspace') return gridWorkspace('L6');
+      throw new Error(`Unexpected RPC ${fn}`);
+    });
+
+    render(createElement(CrmApp));
+    await screen.findByRole('heading', { name: 'Overview' });
+    window.eval('mNewCustomer("Acme Controls")');
+
+    const picker = document.getElementById('f_tags') as HTMLElement;
+    const buttons = [...picker.querySelectorAll('button')] as HTMLElement[];
+    expect(buttons.length).toBeGreaterThan(1);
+
+    // Inline handlers do not auto-fire under this jsdom setup, and they rely on
+    // `this`, so invoke the attribute with the button bound as the receiver.
+    const clickPicker = (index: number) =>
+      window.eval(
+        `(function(){ ${document.querySelectorAll('#f_tags button')[index].getAttribute('onclick')} })` +
+          `.call(document.querySelectorAll('#f_tags button')[${index}])`
+      );
+    clickPicker(0);
+    clickPicker(1);
+
+    // A customer holds exactly one location, so picking a second replaces the first.
+    const selected = picker.querySelectorAll('.on');
+    expect(selected.length).toBe(1);
+    expect(selected[0].getAttribute('data-t')).toBe(buttons[1].getAttribute('data-t'));
+  });
+});
