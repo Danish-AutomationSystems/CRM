@@ -33,6 +33,21 @@ describe('normalizeRpcError', () => {
     expect(normalized.status).toBeLessThan(500);
   });
 
+  it.each([
+    'Select a company for this case. A case cannot be created without one.',
+    'Pick at least one location for this customer.',
+    'A customer can have only one location.',
+    'Pick at least one location for this customer. (row "Bad Co")',
+    'Reassign these customers to a new handler before removing this location: Acme Ltd, Beta Corp.',
+    '"x@automationsystems.org" is not an eligible replacement handler. Choose an active L2-L4 user, or Direct.',
+    '"*" is no longer a valid location. Assign explicit locations instead.'
+  ])('surfaces the ownership/location rule message %j to the user with a 400', (message) => {
+    const normalized = normalizeRpcError(new Error(message));
+
+    expect(normalized.message).toBe(message);
+    expect(normalized.status).toBe(400);
+  });
+
   it('does not leak unrelated internal error text', () => {
     const error = new Error('connection terminated unexpectedly at db pool');
 

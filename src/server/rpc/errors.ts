@@ -32,7 +32,13 @@ const USER_FACING_PATTERNS = [
   // "Attachment exceeds the 100 MB limit."
   // Anchored on the whole phrase so it cannot match an arbitrary internal error
   // that merely mentions megabytes.
-  /attachment exceeds the \d+(\.\d+)? ?mb limit/i
+  /attachment exceeds the \d+(\.\d+)? ?mb limit/i,
+  /^select a company for this case\./i,
+  /^pick at least one location for this customer\./i,
+  /^a customer can have only one location\./i,
+  /^reassign these customers to a new handler before removing this location:/i,
+  /is not an eligible replacement handler\. choose an active l2-l4 user, or direct\.$/i,
+  /is no longer a valid location\. assign explicit locations instead\.$/i
 ];
 
 export class RpcError extends Error {
