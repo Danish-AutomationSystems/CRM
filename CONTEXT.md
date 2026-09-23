@@ -612,7 +612,11 @@ Migrations:
 - `supabase/migrations/0012_case_revision_workflow.sql` - adds `Revision` to the stage CHECK constraint, clears (with audit) any existing Quoted case that still held an assignee, adds `cases_quoted_unassigned_check`.
 - `supabase/migrations/0013_customerless_cases.sql` - drops `cases.customer_id`'s NOT NULL (keeps the FK), adds `cases_quoted_customer_check` (Quoted/Won requires a customer).
 - `supabase/migrations/0014_drop_case_owner_columns.sql` - drops `cases.owner`, `cases.extra_owners`, and the `cases_owner_outcome_idx` index (case ownership is now derived live from account handlers, `src/server/auth/access.ts`'s `caseHandlers()`, never stored). **Applied to production 2026-09-19** with the owner's go-ahead, after a clean pre-flight (0 cases with null `created_by` + `owner`) and dry-run. See the backup-restore caveat in the migration file's own header comment before restoring any pre-`0014` backup afterward. Before its dry-run, check `select count(*) from public.cases where created_by is null and owner is not null` - those rows would lose the creator fallback after `0014` (`cases.created_by` is nullable per `0001`).
-- **All 14 migrations are applied in production** (`0001`-`0014`). `0014` applied 2026-09-19 after a read-only pre-flight (7 cases, 0 with null `created_by` + `owner`) and dry-run; verified after: both columns and `cases_owner_outcome_idx` gone, `public.schema_migrations` = 14 rows. Verify with `scripts/apply-migrations.mjs --dry-run` before assuming otherwise - do not trust a stale count in this file.
+- `supabase/migrations/0015_backfill_direct_handlers.sql` - gives every customer with no handler row a `direct` row (ownership rule P1). Applied 2026-09-23.
+- `supabase/migrations/0016_customer_single_location.sql` - `customers_single_location_check` (`cardinality(tags) = 1`). Applied 2026-09-23.
+- `supabase/migrations/0017_remove_allowed_tags_wildcard.sql` - removes the `*` wildcard from `users.allowed_tags`. Applied 2026-09-23.
+- `supabase/migrations/0018_require_case_customer.sql` - deletes the one customerless case (`CASE-2026-0012`, test row, audit-logged) and restores `cases.customer_id NOT NULL`. **Committed 2026-09-23, NOT yet applied** (a verified backup `backups/pre-0018.json` was taken first). The app works with or without it.
+- Historical note: **all 14 migrations were applied in production** (`0001`-`0014`) as of 2026-09-19; `0015`-`0017` followed on 2026-09-23. `0014` applied 2026-09-19 after a read-only pre-flight (7 cases, 0 with null `created_by` + `owner`) and dry-run; verified after: both columns and `cases_owner_outcome_idx` gone, `public.schema_migrations` = 14 rows. Verify with `scripts/apply-migrations.mjs --dry-run` before assuming otherwise - do not trust a stale count in this file.
 
 Migration helper:
 
@@ -1017,6 +1021,29 @@ Shipped 2026-08-19 (`d1205d4`, design `docs/superpowers/specs/2026-08-18-admin-c
   Merged to `main` (`c4e8d43`) and pushed 2026-09-19. Migration `0014` applied to production
   2026-09-19 after a clean pre-flight and dry-run (see the Current Production Status entry above for
   the backup-restore caveat).
+
+- 2026-09-22/23: "Access pending" outage. Root cause: `computeDash` issued one query per case (N+1);
+  `bootstrap` awaits it, so a second dashboard load on a warm instance exhausted the 10-connection pool.
+  Fixed with request-scoped memoized repositories and HMAC-signed forwarded identity
+  (`CRM_IDENTITY_SECRET`). Measured ceilings and guards: `docs/reports/2026-09-23-capacity-assessment.md`,
+  `src/server/rpc/per-request-wiring.test.ts`. Do not set the postgres.js pool to `max: 1` - transaction
+  callbacks here can hold one connection while checking out another.
+- 2026-09-23: Ownership and location rules (spec
+  `docs/superpowers/specs/2026-09-23-ownership-and-location-rules-design.md`, supersedes parts of
+  `docs/reports/2026-09-21-case-creation-redesign.html`). A case's owners are its customer's handlers;
+  with none, the virtual `direct` owns it (no creator fallback). Every case needs a customer. Creators
+  L2-L4 become the handler, L5/L6 yield `direct`; removing the last handler falls back to `direct`.
+  A customer has exactly one location; the `*` wildcard is gone; removing a user's location is blocked
+  until the customers they handle there are reassigned (one transaction). Shipped `1059bbc..a099744`,
+  migrations `0015`-`0017` applied the same day.
+- 2026-09-23 (later): Post-ship audit found and fixed two live defects: (1) every new rule's error
+  message was masked as "Something went wrong." by `normalizeRpcError` (`969db55`); (2) quick-log, bulk
+  add and the admin import could still write a customer with no location, which `0016`'s constraint
+  rejected as an opaque 500 (`79631c3`, shared `src/server/domain/locations.ts`). Also: P7 no longer adds
+  `direct` beside a remaining real handler; migration `0018` written; staff guide
+  `role-guide-l1-l6.docx` rewritten against current code (`0d8daf4`). 846/846 tests, typecheck and build
+  clean. **Pending: push to `main` and apply `0018`** - both were blocked by the agent's permission
+  classifier and need the owner to run them.
 
 ## If A New Agent Takes Over
 
