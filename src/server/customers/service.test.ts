@@ -173,6 +173,10 @@ class FakeCustomerRepository implements CustomerRepository {
   }): Promise<void> {
     this.logs.push(entry);
   }
+
+  handlersFor(customerId: string): string[] {
+    return this.handlers.filter((handler) => handler.customerId === customerId).map((handler) => handler.email);
+  }
 }
 
 function customer(overrides: Partial<CustomerRow> = {}): CustomerRow {
@@ -307,6 +311,45 @@ describe('customer service search and grids', () => {
     expect(result.customers).toHaveLength(400);
     expect(result.canEditPriority).toBe(true);
     expect(result.canEditClass).toBe(false);
+  });
+});
+
+describe('createCustomer assigns the account handler', () => {
+  it('makes an L2 creator the account handler', async () => {
+    const { service, repo } = makeService();
+    const l2: CrmContext = { email: 'l2@automationsystems.org', role: 'L2', allowedTags: ['Punjab'], name: 'L2', active: true };
+
+    const created = await service.createCustomer(l2, { name: 'Acme', tags: ['Punjab'] });
+
+    expect(repo.handlersFor(created.id)).toEqual(['l2@automationsystems.org']);
+  });
+
+  it('makes an L4 creator the account handler', async () => {
+    const { service, repo } = makeService();
+    const l4: CrmContext = { email: 'l4@automationsystems.org', role: 'L4', allowedTags: [], name: 'L4', active: true };
+
+    const created = await service.createCustomer(l4, { name: 'Beta', tags: ['Punjab'] });
+
+    expect(repo.handlersFor(created.id)).toEqual(['l4@automationsystems.org']);
+  });
+
+  it('gives a customer created by L6 to Direct, never to the creator', async () => {
+    const { service, repo } = makeService();
+    const l6: CrmContext = { email: 'l6@automationsystems.org', role: 'L6', allowedTags: [], name: 'L6', active: true };
+
+    const created = await service.createCustomer(l6, { name: 'Gamma', tags: ['Punjab'] });
+
+    expect(repo.handlersFor(created.id)).toEqual(['direct']);
+    expect(repo.handlersFor(created.id)).not.toContain('l6@automationsystems.org');
+  });
+
+  it('gives a customer created by L5 to Direct', async () => {
+    const { service, repo } = makeService();
+    const l5: CrmContext = { email: 'l5@automationsystems.org', role: 'L5', allowedTags: [], name: 'L5', active: true };
+
+    const created = await service.createCustomer(l5, { name: 'Delta', tags: ['Punjab'] });
+
+    expect(repo.handlersFor(created.id)).toEqual(['direct']);
   });
 });
 
